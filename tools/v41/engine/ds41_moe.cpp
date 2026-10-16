@@ -605,9 +605,9 @@ std::vector<std::pair<int32_t, int32_t>> rank_routes(const std::string& path, in
 
 // ================================ Ds41MoeImpl ================================
 
+struct Rebal;        ///< STRATA_ARENA_REBAL: the conversation-adaptive arena (defined with rebalance_*; null in a CPU build)
 #if defined(DS4_MOE_CUDA)
 struct ChunkStage;   ///< chunk_prefetch's two pinned slabs (defined below, after `acquire`)
-struct Rebal;        ///< STRATA_ARENA_REBAL: the conversation-adaptive arena (defined with rebalance_*)
 #endif
 
 struct Ds41MoeImpl {
@@ -5607,8 +5607,8 @@ static void rebal_retire(Ds41MoeImpl& im, int max_n) {
 void Ds41MoeTier::rebalance_begin_prompt() {
 #if defined(DS4_MOE_CUDA)
     if (!im_ || !im_->gpu || !im_->gpu->arena.base || im_->cfg.cpu_only) return;
-    if (!im_->rebal) {   // STRATA_ARENA_REBAL=1 turns it on (off by default)
-        static const bool on = std::getenv("STRATA_ARENA_REBAL") && std::getenv("STRATA_ARENA_REBAL")[0] == '1';
+    if (!im_->rebal) {   // on by default (s5: -10% small-turn prefill, e2e 21/21 10/10 3/3); STRATA_ARENA_REBAL=0 turns it off
+        static const bool on = !(std::getenv("STRATA_ARENA_REBAL") && std::getenv("STRATA_ARENA_REBAL")[0] == '0');
         if (!on) return;
         im_->rebal = std::make_unique<Rebal>();
         Rebal& r0 = *im_->rebal;
