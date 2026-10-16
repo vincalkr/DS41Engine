@@ -1437,6 +1437,7 @@ int main(int argc, char ** argv) {
                 bias_now = a.bias_prompt > 0;
                 apply_bias();
             }
+            tier.rebalance_begin_prompt();
             tier.reset_stats();
             if (const char* rl = std::getenv("STRATA_ROUTE_LOG")) {   // a turn marker for the route log (see ds41_moe.cpp)
                 if (FILE* f = std::fopen(rl, "a")) { std::fprintf(f, "# turn %d new %d %s\n", n_req, dh, by_step ? "passes" : "batch"); std::fclose(f); }
@@ -1602,6 +1603,7 @@ int main(int argc, char ** argv) {
                 std::fprintf(stderr, "serve: VRAM %.2f GiB free -> %lld experts in VRAM (seed %.2f s)\n", seed_free,
                              (long long) tier.resident(), seed_s);
             }
+            if (ok) tier.rebalance_plan();
             tier.reset_stats();
             const double td0 = now_ms();
             int gen = 0, pos = total;
@@ -1665,6 +1667,7 @@ int main(int argc, char ** argv) {
                     dirty = acc < k;
                     P += 1 + acc;
                     t = tn;
+                    tier.rebalance_tick();
                     if (!more) break;
                 }
                 dsp_next = P + 1;   // the ring holds every position <= P (the last emitted token is not fed)
@@ -1683,6 +1686,7 @@ int main(int argc, char ** argv) {
                 if (!step(tok, pos) || !dense.logits(0, 1, lg.data())) { finish = "error"; break; }
                 hist.push_back(tok); pen_record(tok);
                 ++pos;
+                tier.rebalance_tick();
             }
             const double dec_ms = now_ms() - td0;
             const Ds41MoeStats st = tier.stats();
@@ -1700,6 +1704,7 @@ int main(int argc, char ** argv) {
                 std::fprintf(stderr, "serve: DSpark %ld passes, %.2f tokens/pass (all requests %.2f)\n", rq_pass,
                              1.0 + (double) rq_acc / rq_pass, 1.0 + (double) sv_acc / std::max(1L, sv_pass));
 #endif
+            tier.rebalance_tick(true);   // the gap until the next request: retire a large batch for the reader
             std::printf("DONE %d %d %.1f %.1f %s 0 0 %d %lld %lld 0 %lld 0 %d\n", gen, total, prompt_ms, dec_ms, finish, reused,
                         (long long) st.hits, (long long) st.lookups(), (long long) st.file_tier, total - reused);
             std::fflush(stdout);

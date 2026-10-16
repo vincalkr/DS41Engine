@@ -4,7 +4,7 @@
 An agent re-sends its whole conversation every step; with prefix reuse the engine only prefills the new tail, so
 the number that matters is the cost of a +N-token turn on top of a long context, not one-shot prefill.
 
-  turnbench.py <url> [--base 4000] [--deltas 64,182,512,1024,2048] [--log /tmp/strata-ds41.log] [--json out.json]
+  turnbench.py <url> [--base 4000] [--deltas 64,182,512,1024,2048] [--gap 0] [--log /tmp/strata-ds41.log] [--json out.json]
 
 Turn 0 sends a ~base-token user message (code); every next turn appends the reply and a new user message of ~delta
 tokens. Each request asks for 1 token with thinking off, so the wall time is the prompt. Prints per turn: new
@@ -35,6 +35,7 @@ def main():
     url = sys.argv[1]
     base, deltas = int(arg("--base", 4000)), [int(x) for x in arg("--deltas", "64,182,512,1024,2048").split(",")]
     log, out = arg("--log", None), arg("--json", None)
+    gap = float(arg("--gap", 0))   # seconds between turns: the agent's tool time (the engine's idle window)
     text, cur = corpus(), 0
 
     def take(ntok):
@@ -49,6 +50,8 @@ def main():
     rows = []
     for i, d in enumerate([0] + deltas):
         if d:
+            if gap:
+                time.sleep(gap)
             msgs.append({"role": "user", "content": "More code:\n" + take(d)})
         logpos = os.path.getsize(log) if log and os.path.exists(log) else 0
         body = {"model": "x", "messages": msgs, "max_tokens": 1, "temperature": 0, "reasoning_effort": "none", "stream": False}

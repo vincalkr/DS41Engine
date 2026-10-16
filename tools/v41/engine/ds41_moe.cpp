@@ -607,6 +607,7 @@ std::vector<std::pair<int32_t, int32_t>> rank_routes(const std::string& path, in
 
 #if defined(DS4_MOE_CUDA)
 struct ChunkStage;   ///< chunk_prefetch's two pinned slabs (defined below, after `acquire`)
+struct Rebal;        ///< STRATA_ARENA_REBAL: the conversation-adaptive arena (defined with rebalance_*)
 #endif
 
 struct Ds41MoeImpl {
@@ -659,7 +660,10 @@ struct Ds41MoeImpl {
 #if defined(DS4_MOE_CUDA)
     std::unique_ptr<ChunkStage> cstage;   ///< chunk_prefetch: the two pinned slabs
 #endif
+    std::unique_ptr<Rebal> rebal;         ///< STRATA_ARENA_REBAL (null = off)
 };
+
+void rebal_count(Ds41MoeImpl& im, int64_t layer, const int32_t* ids, int64_t n);   // defined with rebalance_*
 
 
 // ---- the one place a blob's address is decided: the arena first, the blob source second ----------------
@@ -4660,6 +4664,7 @@ bool gpu_run_chunk(Ds41MoeImpl& im, int64_t layer, int n, const int32_t* ids, co
         slot_e[(size_t) e] = sl;
         order[sl >= 0 ? 0 : gp.arena.ptr(layer, e) ? 1 : 2].push_back((int32_t) e);
     }
+    if (first_pass) rebal_count(im, layer, ids, NE);   // the conversation-adaptive arena's usage counts (all classes)
     // STRATA_ROUTE_LOG=<file> (diagnostic, off by default): every routed expert of this batch pass with its tier
     // (0 VRAM cache, 1 RAM arena, 2 file) and token count - turnbench's cross-turn overlap analysis reads it
     if (static FILE* rlog = std::getenv("STRATA_ROUTE_LOG") ? std::fopen(std::getenv("STRATA_ROUTE_LOG"), "a") : nullptr; rlog) {
@@ -5208,6 +5213,7 @@ bool chunk_classes(Ds41MoeImpl& im, int64_t layer, int n, const int32_t* ids, co
 bool Ds41MoeTier::run(int64_t layer, const int32_t* ids6, const float* w6, const float* x, float* out) {
     if (!im_->inited || !im_->pool) return false;
     if (!ids6 || !w6 || !x || !out) return false;
+    rebal_count(*im_, layer, ids6, im_->g.top_k);
     if (!im_->g.routed(layer)) return false;
     if (im_->cfg.cpu_only) return cpu_run(*im_, layer, ids6, w6, x, out);
 #if defined(DS4_MOE_CUDA)
@@ -5220,6 +5226,7 @@ bool Ds41MoeTier::run(int64_t layer, const int32_t* ids6, const float* w6, const
 bool Ds41MoeTier::run_to_dev(int64_t layer, const int32_t* ids6, const float* w6, const float* x, void* out_dev) {
     if (!im_->inited || !im_->pool) return false;
     if (!ids6 || !w6 || !x || !out_dev) return false;
+    rebal_count(*im_, layer, ids6, im_->g.top_k);
     if (!im_->g.routed(layer) || im_->cfg.cpu_only) return false;
 #if defined(DS4_MOE_CUDA)
     return gpu_run(*im_, layer, ids6, w6, x, nullptr, nullptr, out_dev);
@@ -5231,6 +5238,7 @@ bool Ds41MoeTier::run_to_dev(int64_t layer, const int32_t* ids6, const float* w6
 bool Ds41MoeTier::run_multi(int64_t layer, int nt, const int32_t* ids, const float* w, const float* x, float* out) {
     if (!im_->inited || !im_->pool) return false;
     if (!ids || !w || !x || !out || nt < 1 || nt > kMaxTok) return false;
+    rebal_count(*im_, layer, ids, (int64_t) nt * im_->g.top_k);
     if (!im_->g.routed(layer)) return false;
     if (im_->cfg.cpu_only) {   // the CPU tier: token by token (no sharing; it is not the verify path)
         const int64_t K = im_->g.top_k, H = im_->g.n_embd;
@@ -5263,6 +5271,7 @@ void Ds41MoeTier::profiler(bool on) {
 bool Ds41MoeTier::run_multi_to_dev(int64_t layer, int nt, const int32_t* ids, const float* w, const float* x, void* out_dev) {
     if (!im_->inited || !im_->pool) return false;
     if (!ids || !w || !x || !out_dev || nt < 1 || nt > kMaxTok) return false;
+    rebal_count(*im_, layer, ids, (int64_t) nt * im_->g.top_k);
     if (!im_->g.routed(layer)) return false;
     if (std::getenv("DS41_DBG_X")) std::fprintf(stderr, "[dbg_x] ENTER run_multi_to_dev layer=%lld nt=%d\n", (long long) layer, nt);
 #if defined(DS4_MOE_CUDA)
@@ -5444,6 +5453,7 @@ bool Ds41MoeTier::run_chunk_dev(int64_t layer, int n, const int32_t* ids, const 
 bool Ds41MoeTier::run_dev(int64_t layer, const int32_t* ids6, const float* w6, const void* x_dev, float* out) {
     if (!im_->inited) return false;
     if (!ids6 || !w6 || !x_dev || !out) return false;
+    rebal_count(*im_, layer, ids6, im_->g.top_k);
     if (!im_->g.routed(layer)) return false;
     if (im_->cfg.cpu_only) return false;   // there is no device input without a device tier
 #if defined(DS4_MOE_CUDA)
@@ -5476,7 +5486,245 @@ bool ds41_moe_cpu_expert(const cpu::NativeFmt& f, int64_t n_embd, int64_t n_ff, 
     return true;
 }
 
+// ================================ the conversation-adaptive arena (STRATA_ARENA_REBAL) ================================
+//
+// A serve turn's exact prompt routes most of the model: a +189-token turn on top of 4K routed ~7,000 distinct experts,
+// ~2,600 of them only on NVMe (24 GB at 5.2 GB/s - the turn's floor).  Turns of one conversation reuse 97-99% of the
+// file-tier experts earlier turns read, but the conversation's union is ~67 GB, so no cache holds it; what DOES help is
+// FREQUENCY - replaying the s14 route trace, an arena holding the conversation's most-used experts (decayed routed-token
+// counts) cuts a small turn's file-tier experts by ~35-45%.  LRU admission made it worse (the long first turn evicts
+// the ranked arena).  So: count, plan after each prompt, and swap in the idle NVMe time (decode, and between requests).
+//
+// Safety - only the ENGINE thread ever reads or writes arena.slot_of:
+//   retire (engine, after cudaDeviceSynchronize: no copy or kernel in flight): the victim's slot_of = -1, so nothing
+//     maps to the slot and no later DMA / demotion / arena_adapt swap can touch it;
+//   read (the background thread): the candidate's blob from the file straight into the retired slot;
+//   publish (engine, once the read is done): the candidate's slot_of = the slot.  If decode's own arena_adapt brought
+//     the candidate in meanwhile, the slot goes to `free_slots` and the next swap uses it without retiring anyone.
+// Reads pause during prompt turns (they would compete with the prompt's own NVMe reads).  The prompt's routing is
+// exact, so its logits do not depend on where a blob is served from; decode's selection bias (route bias / file
+// penalty) does depend on residency, as it already does under arena_adapt.
+struct Rebal {
+    std::vector<float> score;   ///< (layer, expert) routed tokens (prompt + decode), decayed by `decay` per plan
+    struct Pair { int32_t layer, cand, victim; float gain; };
+    std::vector<Pair> queue;
+    size_t qpos = 0;
+    struct Job { int32_t layer, e, slot; std::atomic<int> done{0}; };
+    std::vector<std::unique_ptr<Job>> inflight;   ///< engine thread's list (retired, not yet published)
+    std::deque<Job*> todo;                        ///< the reader's queue (under mu)
+    std::vector<int32_t> free_slots;              ///< slots nobody maps (see publish)
+    std::mutex mu;
+    std::condition_variable cv;
+    bool pause = false, stop = false;
+    std::thread th;
+    int64_t passes = 0, retired = 0, published = 0, wasted = 0;
+    int64_t skip[5] = {};   ///< retire rejections: cand already in, victim gone, victim VRAM-resident, victim recently used, slot too small
+    float decay = 0.9f, margin = 1.0f, min_score = 2.0f;
+    int per_tick = 64, every = 4, max_plan = 6000, max_inflight = 4096, end_batch = 2048;
+};
+
+void rebal_count(Ds41MoeImpl& im, int64_t layer, const int32_t* ids, int64_t n) {
+    if (!im.rebal || layer < 0 || layer >= im.g.n_layers) return;
+    const int64_t NX = im.g.n_experts;
+    float* sc = im.rebal->score.data() + (size_t) (layer * NX);
+    for (int64_t i = 0; i < n; ++i)
+        if (ids[i] >= 0 && ids[i] < NX) sc[ids[i]] += 1.0f;
+}
+
+#if defined(DS4_MOE_CUDA)
+static void rebal_publish(Ds41MoeImpl& im) {
+    Rebal& r = *im.rebal;
+    Gpu& gp = *im.gpu;
+    const int64_t NX = im.g.n_experts;
+    size_t k = 0;
+    for (size_t i = 0; i < r.inflight.size(); ++i) {
+        Rebal::Job& j = *r.inflight[i];
+        if (!j.done.load(std::memory_order_acquire)) { r.inflight[k++] = std::move(r.inflight[i]); continue; }
+        int32_t& so = gp.arena.slot_of[(size_t) (j.layer * NX + j.e)];
+        static const bool check = std::getenv("DS41_CHECK_ARENA") != nullptr;
+        if (check) {   // the slot's bytes against the file, byte for byte, before anything can use them
+            static int64_t n_chk = 0, n_bad = 0;
+            const size_t len = (size_t) im.bl[(size_t) im.g.cls(j.layer, j.e)];
+            std::vector<uint8_t> ref((size_t) im.blob);
+            im.blobs->read(j.layer, j.e, ref.data());
+            const bool good = std::memcmp((const uint8_t*) gp.arena.base + gp.arena.off[(size_t) j.slot], ref.data(), len) == 0;
+            ++n_chk; n_bad += !good;
+            if (!good) std::fprintf(stderr, "[rebal-chk] L%d e%d slot %d BAD\n", j.layer, j.e, j.slot);
+            if (n_chk % 500 == 0) std::fprintf(stderr, "[rebal-chk] %lld published swaps checked, %lld bad\n", (long long) n_chk, (long long) n_bad);
+        }
+        if (so < 0) { so = j.slot; ++r.published; }
+        else { r.free_slots.push_back(j.slot); ++r.wasted; }   // arena_adapt brought it in first: keep the slot for later
+    }
+    r.inflight.resize(k);
+}
+
+/// Retire up to `max_n` planned swaps (the caller just synchronized the device) and hand them to the reader.
+static void rebal_retire(Ds41MoeImpl& im, int max_n) {
+    Rebal& r = *im.rebal;
+    Gpu& gp = *im.gpu;
+    const int64_t NX = im.g.n_experts;
+    const bool cache = gp.cache && !im.cfg.no_cache;
+    int n = 0;
+    std::vector<Rebal::Job*> add;
+    while (n < max_n && r.qpos < r.queue.size() && (int) r.inflight.size() < r.max_inflight) {
+        const Rebal::Pair p = r.queue[r.qpos++];
+        int32_t& sc = gp.arena.slot_of[(size_t) (p.layer * NX + p.cand)];
+        if (sc >= 0) { ++r.skip[0]; continue; }                           // already in (arena_adapt)
+        const uint64_t need = (uint64_t) im.bl[(size_t) im.g.cls(p.layer, p.cand)];
+        int32_t slot = -1;
+        for (size_t f = 0; f < r.free_slots.size(); ++f)                  // a slot nobody maps first
+            if (gp.arena.off[(size_t) r.free_slots[f] + 1] - gp.arena.off[(size_t) r.free_slots[f]] >= need) {
+                slot = r.free_slots[f];
+                r.free_slots.erase(r.free_slots.begin() + (long) f);
+                break;
+            }
+        if (slot < 0) {
+            int32_t& sv = gp.arena.slot_of[(size_t) (p.layer * NX + p.victim)];
+            if (sv < 0) { ++r.skip[1]; continue; }                        // the victim left already
+            if (cache && gp.cache->slot_of(p.layer, p.victim) >= 0) { ++r.skip[2]; continue; }   // VRAM-resident now
+            if (!im.last_use.empty() && im.last_use[(size_t) (p.layer * NX + p.victim)] > im.tick - 4 * im.g.n_layers)
+                { ++r.skip[3]; continue; }                                // decode used it in the last few tokens
+            if (gp.arena.off[(size_t) sv + 1] - gp.arena.off[(size_t) sv] < need) { ++r.skip[4]; continue; }
+            slot = sv;
+            sv = -1;                                                      // retired: nothing maps to `slot` now
+        }
+        auto j = std::make_unique<Rebal::Job>();
+        j->layer = p.layer; j->e = p.cand; j->slot = slot;
+        add.push_back(j.get());
+        r.inflight.push_back(std::move(j));
+        ++r.retired;
+        ++n;
+    }
+    if (add.empty()) return;
+    {
+        std::lock_guard<std::mutex> lk(r.mu);
+        for (Rebal::Job* j : add) r.todo.push_back(j);
+    }
+    r.cv.notify_all();
+}
+#endif
+
+void Ds41MoeTier::rebalance_begin_prompt() {
+#if defined(DS4_MOE_CUDA)
+    if (!im_ || !im_->gpu || !im_->gpu->arena.base || im_->cfg.cpu_only) return;
+    if (!im_->rebal) {   // STRATA_ARENA_REBAL=1 turns it on (off by default)
+        static const bool on = std::getenv("STRATA_ARENA_REBAL") && std::getenv("STRATA_ARENA_REBAL")[0] == '1';
+        if (!on) return;
+        im_->rebal = std::make_unique<Rebal>();
+        Rebal& r0 = *im_->rebal;
+        r0.score.assign((size_t) (im_->g.n_layers * im_->g.n_experts), 0.0f);
+        Ds41MoeImpl* imp = im_.get();
+        r0.th = std::thread([imp] {   // the reader: retired slots <- the candidate's blob, outside stream order
+            Rebal& r = *imp->rebal;
+            Gpu& gp = *imp->gpu;
+            for (;;) {
+                Rebal::Job* j = nullptr;
+                {
+                    std::unique_lock<std::mutex> lk(r.mu);
+                    r.cv.wait(lk, [&] { return r.stop || (!r.pause && !r.todo.empty()); });
+                    if (r.stop) return;
+                    j = r.todo.front();
+                    r.todo.pop_front();
+                }
+                imp->blobs->read(j->layer, j->e, (uint8_t*) gp.arena.base + gp.arena.off[(size_t) j->slot]);
+                j->done.store(1, std::memory_order_release);
+            }
+        });
+        std::fprintf(stderr, "arena rebalance: on (conversation-adaptive arena, reads in the idle NVMe time)\n");
+    }
+    Rebal& r = *im_->rebal;
+    {
+        std::lock_guard<std::mutex> lk(r.mu);
+        r.pause = true;
+    }
+    rebal_publish(*im_);
+#endif
+}
+
+void Ds41MoeTier::rebalance_plan() {
+#if defined(DS4_MOE_CUDA)
+    if (!im_ || !im_->rebal || !im_->gpu || !im_->gpu->arena.base) return;
+    Ds41MoeImpl& im = *im_;
+    Rebal& r = *im.rebal;
+    Gpu& gp = *im.gpu;
+    const int64_t NX = im.g.n_experts;
+    const bool cache = gp.cache && !im.cfg.no_cache;
+    r.queue.clear();
+    r.qpos = 0;
+    std::vector<int32_t> cand, vict;
+    for (int64_t l = 0; l < im.g.n_layers; ++l) {
+        if (!im.g.routed(l)) continue;
+        const float* sc = r.score.data() + (size_t) (l * NX);
+        cand.clear();
+        vict.clear();
+        for (int64_t e = 0; e < NX; ++e) {
+            if (!im.cfg.exclude.empty() && im.cfg.exclude[(size_t) (l * NX + e)]) continue;
+            if (gp.arena.slot_of[(size_t) (l * NX + e)] < 0) { if (sc[e] >= r.min_score) cand.push_back((int32_t) e); }
+            else if (!cache || gp.cache->slot_of(l, e) < 0) vict.push_back((int32_t) e);
+        }
+        std::sort(cand.begin(), cand.end(), [&](int32_t a, int32_t b) { return sc[a] > sc[b]; });
+        std::sort(vict.begin(), vict.end(), [&](int32_t a, int32_t b) { return sc[a] < sc[b]; });
+        // each candidate takes the least-used victim whose SLOT holds its blob: the arena packs every slot at its
+        // seeded expert's own blob size and DS4's 9 format classes differ, so index-order pairing was rejected at
+        // retire time for nearly every pair ("slot small", s14: 3,178 of 3,178 rejections)
+        std::vector<char> taken(vict.size(), 0);
+        size_t lo = 0;   // victims before lo are all taken
+        for (int32_t c : cand) {
+            const uint64_t need = (uint64_t) im.bl[(size_t) im.g.cls(l, c)];
+            while (lo < vict.size() && taken[lo]) ++lo;
+            if (lo >= vict.size() || sc[c] - sc[vict[lo]] <= r.margin) break;   // no victim left worth evicting
+            for (size_t j = lo; j < vict.size(); ++j) {
+                if (taken[j]) continue;
+                if (sc[c] - sc[vict[j]] <= r.margin) break;   // victims are sorted: the rest gain even less
+                const int32_t sv = gp.arena.slot_of[(size_t) (l * NX + vict[j])];
+                if (gp.arena.off[(size_t) sv + 1] - gp.arena.off[(size_t) sv] < need) continue;
+                taken[j] = 1;
+                r.queue.push_back({ (int32_t) l, c, vict[j], sc[c] - sc[vict[j]] });
+                break;
+            }
+        }
+    }
+    std::sort(r.queue.begin(), r.queue.end(), [](const Rebal::Pair& a, const Rebal::Pair& b) { return a.gain > b.gain; });
+    if ((int) r.queue.size() > r.max_plan) r.queue.resize((size_t) r.max_plan);
+    for (float& v : r.score) v *= r.decay;
+    std::fprintf(stderr, "arena rebalance: %zu swaps planned (so far %lld retired, %lld published, %lld slots re-used; "
+                 "skipped: cand in %lld, victim gone %lld, victim in VRAM %lld, victim recent %lld, slot small %lld)\n",
+                 r.queue.size(), (long long) r.retired, (long long) r.published, (long long) r.wasted, (long long) r.skip[0],
+                 (long long) r.skip[1], (long long) r.skip[2], (long long) r.skip[3], (long long) r.skip[4]);
+    {
+        std::lock_guard<std::mutex> lk(r.mu);
+        r.pause = false;
+    }
+    r.cv.notify_all();
+#endif
+}
+
+void Ds41MoeTier::rebalance_tick(bool request_end) {
+#if defined(DS4_MOE_CUDA)
+    if (!im_ || !im_->rebal || !im_->gpu) return;
+    Rebal& r = *im_->rebal;
+    rebal_publish(*im_);
+    if (r.qpos >= r.queue.size()) return;
+    if (!request_end && (++r.passes % r.every) != 0) return;
+    if ((int) r.inflight.size() >= r.max_inflight) return;
+    cudaDeviceSynchronize();   // no copy or kernel may still touch a slot we retire
+    rebal_retire(*im_, request_end ? r.end_batch : r.per_tick);
+#else
+    (void) request_end;
+#endif
+}
+
 void Ds41MoeTier::close() {
+    if (im_ && im_->rebal) {   // the reader first: it writes arena memory
+        Rebal& r = *im_->rebal;
+        {
+            std::lock_guard<std::mutex> lk(r.mu);
+            r.stop = true;
+        }
+        r.cv.notify_all();
+        if (r.th.joinable()) r.th.join();
+        im_->rebal.reset();
+    }
     if (im_ && im_->trace) { std::fclose(im_->trace); im_->trace = nullptr; }
 #if defined(DS4_MOE_CUDA)
     if (g_prof_n > 0) {
