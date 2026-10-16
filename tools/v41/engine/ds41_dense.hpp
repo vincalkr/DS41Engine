@@ -107,6 +107,8 @@ public:
     /// write a layer-major batch's routed sums straight into it (run_chunk_dev) instead of upload_routed's host trip.
     float * routed_dev();
     bool finish_span(int il, int col0, int n);
+    /// STRATA_DENSE_PROF=1: print + reset the batch dense split (build / alloc / compute / Engram / readback) - diagnostic
+    void prof_report(const char * tag);
     /// Give the prompt passes' compute buffer back to the device (rebuilt by the next multi-token pass): the deferred
     /// VRAM expert cache opens into it after the prompt.
     void release_pass();

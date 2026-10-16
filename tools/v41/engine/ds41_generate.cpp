@@ -1438,6 +1438,9 @@ int main(int argc, char ** argv) {
                 apply_bias();
             }
             tier.reset_stats();
+            if (const char* rl = std::getenv("STRATA_ROUTE_LOG")) {   // a turn marker for the route log (see ds41_moe.cpp)
+                if (FILE* f = std::fopen(rl, "a")) { std::fprintf(f, "# turn %d new %d %s\n", n_req, dh, by_step ? "passes" : "batch"); std::fclose(f); }
+            }
             const double tp0 = now_ms();
             auto pp = [&](int done) {
                 const double ms = now_ms() - tp0;
@@ -1549,6 +1552,7 @@ int main(int argc, char ** argv) {
                 pp(delta);
             }
 #endif
+            dense.prof_report("turn");
             std::fprintf(stderr, "serve: prompt phases: %d new = %d %s (%.2f s: dense %.2f, experts %.2f, logits %.2f) + DSpark tail %d%s "
                          "(cache open %.2f s, seed %.2f s)\n", delta, dh, by_step ? "passes" : "batch", ph_feed / 1000.0,
                          (fd_dense - fd0[0]) / 1000.0, (fd_tier - fd0[1]) / 1000.0, (fd_logits - fd0[2]) / 1000.0,

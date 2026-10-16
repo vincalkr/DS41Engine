@@ -472,6 +472,10 @@ struct Gpu {
     void* p_buf = nullptr;
     size_t p_cap = 0;
     int p_layer = -1;
+    /// The layer an eager prestage WOULD have filled, when a narrow call skipped it (STRATA_PRESTAGE_MIN): exactly that
+    /// layer - no other - gets the lazy fill, so the set of region-served layers (and so every kernel) is production's.
+    /// Cleared wherever p_layer is reset by a release.
+    int p_lazy_layer = -1;
     bool p_off = false, p_used_rec = false;
     std::vector<unsigned long long> p_ptr;
     cudaEvent_t p_copied = nullptr, p_used = nullptr;
@@ -4429,10 +4433,16 @@ void chunk_prestage(Ds41MoeImpl& im, int64_t layer, int h) {
 // Layer prestage: start DMAing `layer`'s arena experts into the prestage region (see Gpu::p_buf).  Called right after
 // the previous layer's expert passes are queued, so the copies run on s_cp while the caller computes `layer`'s dense
 // half (a different stream).  The region is reused only after the previous layer's launches from it (p_used).
-void chunk_pstage_issue(Ds41MoeImpl& im, int64_t layer) {
+/// STRATA_PRESTAGE_MIN (rows, default 4096): calls narrower than this get the LAZY prestage (see gpu_run_chunk).
+int chunk_pstage_min() {
+    static const int pmin = std::getenv("STRATA_PRESTAGE_MIN") ? std::atoi(std::getenv("STRATA_PRESTAGE_MIN")) : 4096;
+    return pmin;
+}
+
+/// The prestage region, allocated once (false = prestage off for good: STRATA_PRESTAGE_GIB=0 or no room).
+bool chunk_pstage_alloc(Ds41MoeImpl& im) {
     Gpu& gp = *im.gpu;
-    gp.p_layer = -1;
-    if (gp.p_off || !gp.s_cp || !gp.arena.base || !im.g.routed(layer)) return;
+    if (gp.p_off) return false;
     if (!gp.p_buf) {
         const char* env = std::getenv("STRATA_PRESTAGE_GIB");
         const double gib = env ? std::atof(env) : 3.0;
@@ -4447,13 +4457,22 @@ void chunk_pstage_issue(Ds41MoeImpl& im, int64_t layer) {
             (void) cudaGetLastError();
             gp.p_buf = nullptr;
             gp.p_off = true;
-            return;
+            return false;
         }
         ck(cudaEventCreateWithFlags(&gp.p_copied, cudaEventDisableTiming), "ev");
         ck(cudaEventCreateWithFlags(&gp.p_used, cudaEventDisableTiming), "ev");
         static bool said = false;
         if (!said) { said = true; std::fprintf(stderr, "chunk prestage: %.2f GiB device region\n", gp.p_cap / 1073741824.0); }
     }
+    return true;
+}
+
+/// The prestage layout of `layer` (arena experts not VRAM-resident, ascending id, packed at 256 B, up to p_cap) into
+/// p_ptr - DMAing every one (`routed` null: the eager prestage) or only those `routed` marks (the lazy one, below).
+/// One loop for both, so an expert's region address - and with it the launch grouping and the kernel each run takes
+/// (MMVQ from the region, MMQ when streamed) - never depends on which of the two filled it.
+int chunk_pstage_fill(Ds41MoeImpl& im, int64_t layer, const int32_t* routed) {
+    Gpu& gp = *im.gpu;
     if (gp.p_used_rec) ck(cudaStreamWaitEvent(gp.s_cp, gp.p_used, 0), "pstage wait used");
     const int64_t NX = im.g.n_experts;
     gp.p_ptr.assign((size_t) NX, 0ull);
@@ -4465,14 +4484,36 @@ void chunk_pstage_issue(Ds41MoeImpl& im, int64_t layer) {
         if (!src) continue;
         const size_t bl = (size_t) im.bl[(size_t) (im.g.per_expert() ? im.g.cls(layer, (int32_t) e) : layer)];
         if (off + bl > gp.p_cap) break;
-        ck(cudaMemcpyAsync((uint8_t*) gp.p_buf + off, src, bl, cudaMemcpyHostToDevice, gp.s_cp), "pstage dma");
-        gp.p_ptr[(size_t) e] = (unsigned long long) gp.p_buf + off;
+        if (!routed || routed[e]) {
+            ck(cudaMemcpyAsync((uint8_t*) gp.p_buf + off, src, bl, cudaMemcpyHostToDevice, gp.s_cp), "pstage dma");
+            gp.p_ptr[(size_t) e] = (unsigned long long) gp.p_buf + off;
+            ++nput;
+        }
         off = (off + bl + 255) & ~(size_t) 255;
-        ++nput;
     }
-    if (!nput) return;
+    if (std::getenv("STRATA_PSTAGE_TRACE")) {   // diagnostic: which layers fill, how many, and the region's packing
+        static int said = 0;
+        if (said++ < 4) {
+            const int64_t c = im.g.per_expert() ? -1 : layer;
+            std::fprintf(stderr, "pstage fill L%lld %s: %d experts, blob %llu, packed %llu, MMQ stride %lld (cls %lld)\n",
+                         (long long) layer, routed ? "lazy" : "eager", nput, (unsigned long long) im.bl[(size_t) (c >= 0 ? c : 0)],
+                         (unsigned long long) ((im.bl[(size_t) (c >= 0 ? c : 0)] + 255) & ~(uint64_t) 255),
+                         (long long) chunk_stride(im, c >= 0 ? c : 0), (long long) c);
+        }
+    }
+    if (!nput) return 0;
     ck(cudaEventRecord(gp.p_copied, gp.s_cp), "pstage copied");
     gp.p_layer = (int) layer;
+    return nput;
+}
+
+void chunk_pstage_issue(Ds41MoeImpl& im, int64_t layer) {
+    Gpu& gp = *im.gpu;
+    gp.p_layer = -1;
+    gp.p_lazy_layer = -1;
+    if (gp.p_off || !gp.s_cp || !gp.arena.base || !im.g.routed(layer)) return;
+    if (!chunk_pstage_alloc(im)) return;
+    chunk_pstage_fill(im, layer, nullptr);
 }
 
 // cf >= 0 (per-expert geometry): only the entries whose expert is of class cf; `first` uploads and quantizes the
@@ -4618,6 +4659,13 @@ bool gpu_run_chunk(Ds41MoeImpl& im, int64_t layer, int n, const int32_t* ids, co
         const int32_t sl = (gp.cache && !im.cfg.no_cache) ? gp.cache->slot_of(layer, e) : -1;
         slot_e[(size_t) e] = sl;
         order[sl >= 0 ? 0 : gp.arena.ptr(layer, e) ? 1 : 2].push_back((int32_t) e);
+    }
+    // STRATA_ROUTE_LOG=<file> (diagnostic, off by default): every routed expert of this batch pass with its tier
+    // (0 VRAM cache, 1 RAM arena, 2 file) and token count - turnbench's cross-turn overlap analysis reads it
+    if (static FILE* rlog = std::getenv("STRATA_ROUTE_LOG") ? std::fopen(std::getenv("STRATA_ROUTE_LOG"), "a") : nullptr; rlog) {
+        for (int t = 0; t < 3; ++t)
+            for (int32_t e : order[t]) std::fprintf(rlog, "%lld %d %d %d\n", (long long) layer, e, t, cnt[(size_t) e]);
+        std::fflush(rlog);
     }
     std::vector<int32_t> first((size_t) NX + 1, 0);
     {
@@ -4808,6 +4856,25 @@ bool gpu_run_chunk(Ds41MoeImpl& im, int64_t layer, int n, const int32_t* ids, co
     // a batch waits only for the blobs it DMAs.
     // chunk_prestage: this layer's arena experts may already sit in a device half (issued by the previous call)
     std::vector<int32_t> arena_e(order[1]);
+    // lazy prestage (a call narrower than STRATA_PRESTAGE_MIN, which skipped the eager one): the same region layout,
+    // filled now that the routing is known with only the arena experts this call routes - production's kernels and
+    // numerics, without DMAing the ~40% of a small turn's layer it never uses
+    // (first_pass: once per layer, marking the routed arena experts of EVERY format class - the eager fill covers all
+    // classes too, and a later class pass must find its experts in the region exactly as it would have)
+    if (gp.p_lazy_layer == (int) layer && first_pass && gp.s_cp && gp.arena.base && !gp.p_off && chunk_pstage_alloc(im)) {
+        gp.p_lazy_layer = -1;
+        std::vector<int32_t> routed((size_t) NX, 0);
+        int nr = 0;
+        for (int64_t j = 0; j < NE; ++j) {
+            const int32_t e = ids[j];
+            if (routed[(size_t) e] || !gp.arena.ptr(layer, e)) continue;
+            if (gp.cache && !im.cfg.no_cache && gp.cache->slot_of(layer, e) >= 0) continue;
+            routed[(size_t) e] = 1;
+            ++nr;
+        }
+        gp.p_layer = -1;
+        if (nr) chunk_pstage_fill(im, layer, routed.data());
+    }
     if (gp.p_layer == (int) layer && !arena_e.empty()) {   // layer prestage: launch the arena experts already on the card
         std::vector<int32_t> es, rest;
         std::vector<unsigned long long> ps;
@@ -5092,11 +5159,24 @@ bool gpu_run_chunk(Ds41MoeImpl& im, int64_t layer, int n, const int32_t* ids, co
 #if defined(DS4_MOE_CUDA)
 // a chunk over every format class present (one pass each; the sum after the last)
 // the next routed layer after `layer` (wrapping: the next chunk's layer 0) gets the layer prestage
-void chunk_pstage_next(Ds41MoeImpl& im, int64_t layer) {
+void chunk_pstage_next(Ds41MoeImpl& im, int64_t layer, int n) {
+    // STRATA_PRESTAGE_MIN (rows, default 4096): a narrower call skips the next layer's prestage.  The prestage DMAs the
+    // next layer's WHOLE arena share (~1.5 GiB) before its routing is known; a small serve turn routes ~60% of it and
+    // its dense half queued behind those copies (s14 turnbench, +189 tokens: 9.83 -> 8.39 s with no prestage).  The
+    // region is invalidated, never left holding an older layer the arena may have swapped since.
     int64_t nl = layer;
     for (int64_t k = 0; k < im.g.n_layers; ++k) {
         nl = (nl + 1) % im.g.n_layers;
         if (im.g.routed(nl)) break;
+    }
+    if (n < chunk_pstage_min()) {
+        if (im.gpu) {
+            im.gpu->p_layer = -1;
+            // what chunk_pstage_issue would have filled (it returns early on these conditions, so then nothing)
+            const Gpu& g = *im.gpu;
+            im.gpu->p_lazy_layer = (!g.p_off && g.s_cp && g.arena.base && im.g.routed(nl)) ? (int) nl : -1;
+        }
+        return;
     }
     chunk_pstage_issue(im, nl);
 }
@@ -5108,7 +5188,7 @@ bool chunk_classes(Ds41MoeImpl& im, int64_t layer, int n, const int32_t* ids, co
     chunk_pf_prepare(im, layer, n);
     if (!im.g.per_expert()) {
         if (!gpu_run_chunk(im, layer, n, ids, w, x, out, out_dev)) return false;
-        chunk_pstage_next(im, layer);
+        chunk_pstage_next(im, layer, n);
         return true;
     }
     const int64_t NE = (int64_t) n * im.g.top_k;
@@ -5120,7 +5200,7 @@ bool chunk_classes(Ds41MoeImpl& im, int64_t layer, int n, const int32_t* ids, co
     std::sort(cl.begin(), cl.end());
     for (size_t i = 0; i < cl.size(); ++i)
         if (!gpu_run_chunk(im, layer, n, ids, w, x, out, out_dev, cl[i], i == 0, i + 1 == cl.size())) return false;
-    chunk_pstage_next(im, layer);
+    chunk_pstage_next(im, layer, n);
     return true;
 }
 #endif
@@ -5269,6 +5349,7 @@ bool Ds41MoeTier::release_prestage() {
     gp.p_copied = gp.p_used = nullptr;
     gp.p_cap = 0;
     gp.p_layer = -1;
+    gp.p_lazy_layer = -1;
     gp.p_used_rec = false;
     gp.p_off = true;           // no prestage for the rest of this prompt (release_chunk re-arms it)
     return true;
@@ -5332,6 +5413,7 @@ void Ds41MoeTier::release_chunk() {
     gp.p_copied = gp.p_used = nullptr;
     gp.p_cap = 0;
     gp.p_layer = -1;
+    gp.p_lazy_layer = -1;
     gp.p_off = gp.p_used_rec = false;
     gp.free_mmq();
 #endif
