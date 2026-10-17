@@ -1,0 +1,334 @@
+memguard: scope ds4-guard-976489 MemoryMax=110G swap=0 floor=4 GiB (avail 108 GiB)
+ggml_cuda_init: found 3 ROCm devices (Total VRAM: 111819 MiB):
+  Device 0: AMD Radeon RX 7900 XTX, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 24560 MiB
+  Device 1: AMD Radeon RX 7900 XTX, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 24560 MiB
+  Device 2: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 62699 MiB
+kv: compressed KV + indexer keys as q8_0 (--kv-q8/--kv-type)
+enc-skip: cut at layer 20 (last kv source), replay window 2560 (reach 2560)
+VRAM: 15.48 GiB free after the dense half -> 14.48 GiB of expert slots (margin 1.00)
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 46079 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE))
+tier: 0 experts in VRAM, 9508 in the RAM arena (90.0 GiB), 4181 file tier; seeded in 19.4 s
+loaded in 20.4 s: 40 layers, ctx 8192, prefill chunk 0, experts gpu, 9 classes
+enc-skip: first batch B=19, cut=0 (phase A 0 cols, phase B 19)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 11/11/42)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 143/143/11)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 11/11/11)
+chunk prestage: 3.00 GiB device region
+ds4_moe: run_chunk: layer 2 stays on MMVQ (types 42/42/11)
+ds4_moe: run_chunk: layer 31 stays on MMVQ (types 11/11/143)
+prompt 19/19
+VRAM after the prompt: 15.15 GiB free -> 14.15 GiB of expert slots: 1633 experts in VRAM (3.4 s)
+prompt: 19 tokens in 11.46 s = 1.7 tok/s (experts 0 hit / 0 cpu / 4560 pcie / 2261 file)
+prompt split: dense 2.1 s, experts 9.2 s (file wait 4.0 s), logits 0.0 s
+STRATA_FORCE_IDS: 300 forced tokens from local/sweep-gsq/ref-sposi.ids
+666
+43
+13887
+60096
+327
+1589
+75
+666
+1298
+105033
+3062
+92
+13102
+7269
+612
+34361
+7660
+127074
+26918
+3693
+23056
+59975
+73747
+1543
+71863
+78871
+339
+7529
+55086
+28261
+337
+532
+28384
+7905
+1298
+2619
+50653
+7660
+92497
+69540
+3873
+666
+312
+2619
+86643
+601
+50947
+4537
+13510
+3504
+111282
+3044
+60096
+878
+21339
+1639
+124409
+32820
+458
+591
+3493
+93912
+47587
+260
+decode step ms/token: begin 4.63 predict 0.00 attn_router 60.51 tier 108.20 finish 21.59 spec 0.00 (64 steps)
+40248
+12986
+9
+13590
+376
+30131
+1543
+5897
+347
+6846
+2619
+13222
+110128
+margin: step 77 argmax 42499 (32.0654) forced 77460 (31.5534) gap 0.5120
+77460
+17498
+17724
+34190
+439
+11898
+114735
+1137
+15
+7740
+110128
+27920
+48431
+532
+1119
+92
+2317
+399
+314
+58728
+10621
+1543
+35298
+8625
+6589
+2619
+41
+997
+82932
+666
+margin: step 107 argmax 343 (32.0815) forced 312 (31.7326) gap 0.3489
+312
+1543
+3423
+434
+2619
+97257
+31571
+2154
+13935
+5866
+15
+85166
+margin: step 119 argmax 7269 (32.9401) forced 14 (32.8811) gap 0.0590
+14
+margin: step 120 argmax 716 (33.7432) forced 498 (33.7021) gap 0.0411
+498
+1120
+101233
+1298
+21991
+31571
+2154
+13935
+decode step ms/token: begin 5.03 predict 0.00 attn_router 59.79 tier 90.98 finish 14.03 spec 0.00 (128 steps)
+14
+3152
+29588
+1269
+601
+295
+612
+49207
+81
+260
+4649
+3373
+201
+15
+14619
+7660
+58041
+705
+260
+71829
+14
+39123
+41512
+25963
+6593
+1495
+43459
+105005
+592
+1543
+70106
+312
+13686
+3693
+201
+15
+342
+3504
+3152
+4769
+4728
+716
+82957
+21901
+14
+88889
+5007
+35724
+321
+13593
+14
+2312
+318
+601
+312
+45393
+271
+17057
+34361
+7660
+41259
+67
+399
+847
+decode step ms/token: begin 5.47 predict 0.00 attn_router 62.11 tier 88.66 finish 11.83 spec 0.00 (192 steps)
+4664
+4178
+312
+64065
+1298
+7740
+110128
+22320
+847
+2619
+82
+15036
+1543
+223
+9265
+18
+13510
+312
+2472
+560
+14619
+7660
+312
+85166
+46054
+52434
+117896
+260
+46852
+37764
+14
+95568
+18923
+710
+58728
+10621
+1298
+2619
+26821
+266
+31571
+2154
+13935
+666
+312
+1543
+45330
+71
+2619
+40
+9505
+15612
+22780
+8278
+81
+77460
+54
+22485
+6672
+75
+28
+847
+9516
+88
+decode step ms/token: begin 5.69 predict 0.00 attn_router 60.37 tier 83.69 finish 10.12 spec 0.00 (256 steps)
+8632
+3373
+2646
+2091
+14
+847
+7487
+583
+59156
+46995
+14
+847
+285
+14010
+14
+margin: step 271 argmax 312 (33.3719) forced 314 (33.2518) gap 0.1201
+314
+9
+395
+4370
+3221
+312
+847
+3468
+3309
+11036
+6866
+75
+583
+571
+500
+1543
+123832
+16
+margin: step 289 argmax 1 (31.2336) forced 66978 (31.0111) gap 0.2225
+66978
+2255
+3693
+3493
+2342
+331
+4612
+81
+8340
+7010
+19133
+decode: 300 tokens in 46.30 s = 6.46 tok/s; experts 49250 hit / 6424 cpu / 16086 pcie / 1062 file (68.6% VRAM hits), cpu 2973 ms, file 5979 ms; spec reads 0 issued / 0 used; prefetch 0 issued / 0 outside the arena / 0 used

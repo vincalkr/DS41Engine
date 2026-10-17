@@ -1,0 +1,59 @@
+exact                        divina-breve   diff=0    decode: 300 tokens in 105.57 s = 2.83 tok/s; experts 32923 hit / 5695 cpu / 33142 pcie / 16060 file (45.9% VRAM hits), cpu 5974 ms, file 44296 ms; spec reads 0 issued / 0
+exact                        circles        diff=0    decode: 84 tokens in 29.98 s = 2.77 tok/s; experts 10329 hit / 1405 cpu / 8186 pcie / 3972 file (51.9% VRAM hits), cpu 1403 ms, file 10685 ms; spec reads 0 issued / 0 use
+exact-again                  divina-breve   diff=2    decode: 300 tokens in 88.86 s = 3.36 tok/s; experts 32940 hit / 5693 cpu / 33127 pcie / 16048 file (45.9% VRAM hits), cpu 5997 ms, file 42253 ms; spec reads 0 issued / 0 
+flat-0.5-0.3                 divina-breve   diff=30   decode: 300 tokens in 47.94 s = 6.24 tok/s; experts 58605 hit / 2121 cpu / 11034 pcie / 4673 file (81.7% VRAM hits), cpu 1671 ms, file 14984 ms; spec reads 0 issued / 0 u
+margin0.02                   divina-breve   diff=5    decode: 300 tokens in 117.44 s = 2.55 tok/s; experts 32759 hit / 6262 cpu / 32739 pcie / 13954 file (45.7% VRAM hits), cpu 6348 ms, file 42735 ms; spec reads 0 issued / 0
+margin0.05                   divina-breve   diff=8    decode: 300 tokens in 88.30 s = 3.39 tok/s; experts 35012 hit / 6116 cpu / 30632 pcie / 12284 file (48.8% VRAM hits), cpu 5892 ms, file 37599 ms; spec reads 0 issued / 0 
+spec4                        divina-breve   diff=2    decode: 300 tokens in 99.86 s = 2.99 tok/s; experts 32940 hit / 5693 cpu / 33127 pcie / 16048 file (45.9% VRAM hits), cpu 5738 ms, file 25752 ms; spec reads 14114 issued 
+fileonly0.3-prot4            divina-breve   diff=6    decode: 300 tokens in 89.43 s = 3.34 tok/s; experts 36280 hit / 6096 cpu / 29384 pcie / 11096 file (50.6% VRAM hits), cpu 6071 ms, file 35355 ms; spec reads 0 issued / 0 
+DONE
+exact-rankmixed              divina-breve   diff=5    decode: 300 tokens in 51.07 s = 5.86 tok/s; experts 57970 hit / 2999 cpu / 10791 pcie / 1794 file (80.8% VRAM hits), cpu 2432 ms, file 9866 ms; spec reads 0 issued / 0 us
+exact                        sposi          diff=0    decode: 300 tokens in 88.81 s = 3.37 tok/s; experts 34218 hit / 5749 cpu / 31793 pcie / 14549 file (47.7% VRAM hits), cpu 5569 ms, file 40539 ms; spec reads 0 issued / 0 
+exact-rankmixed              sposi          diff=4    decode: 300 tokens in 60.33 s = 4.96 tok/s; experts 55887 hit / 2784 cpu / 13089 pcie / 4740 file (77.9% VRAM hits), cpu 2162 ms, file 16628 ms; spec reads 0 issued / 0 u
+exact                        code-en        diff=0    decode: 212 tokens in 53.72 s = 3.93 tok/s; experts 31157 hit / 3594 cpu / 15889 pcie / 5108 file (61.5% VRAM hits), cpu 3266 ms, file 17655 ms; spec reads 0 issued / 0 u
+exact-rankmixed              code-en        diff=5    decode: 212 tokens in 46.93 s = 4.50 tok/s; experts 31874 hit / 3111 cpu / 15655 pcie / 6322 file (62.9% VRAM hits), cpu 2744 ms, file 15113 ms; spec reads 0 issued / 0 u
+DONE2
+rankmixed-adapt              sposi          diff=3    decode: 300 tokens in 50.84 s = 5.88 tok/s; experts 58726 hit / 4052 cpu / 8982 pcie / 1058 file (81.8% VRAM hits), cpu 2435 ms, file 5926 ms; spec reads 0 issued / 0 use
+rankmixed-adapt              code-en        diff=3    decode: 212 tokens in 40.50 s = 5.21 tok/s; experts 36534 hit / 4393 cpu / 9713 pcie / 1155 file (72.1% VRAM hits), cpu 2943 ms, file 6169 ms; spec reads 0 issued / 0 use
+rankmixed-dspark             sposi          diff=0    decode: 300 tokens in 69.85 s = 4.28 tok/s; experts 131322 hit / 8 cpu / 83470 pcie / 17122 file (61.1% VRAM hits), cpu 2 ms, file 25885 ms; spec reads 0 issued / 0 used;
+rankmixed-dspark             code-en        diff=0    decode: 223 tokens in 31.62 s = 7.02 tok/s; experts 33048 hit / 28 cpu / 41324 pcie / 8201 file (44.4% VRAM hits), cpu 7 ms, file 12061 ms; spec reads 0 issued / 0 used; 
+DONE3
+ceiling-allvram              sposi          diff=123  decode: 300 tokens in 14.47 s = 20.66 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0
+rankmixed-adapt-prof         sposi          diff=3    decode: 300 tokens in 45.39 s = 6.59 tok/s; experts 58726 hit / 4052 cpu / 8982 pcie / 1058 file (81.8% VRAM hits), cpu 2230 ms, file 5725 ms; spec reads 0 issued / 0 use
+DONE4
+adapt-pcie0                  sposi          diff=4    decode: 300 tokens in 50.11 s = 5.97 tok/s; experts 57597 hit / 14163 cpu / 0 pcie / 1063 file (80.3% VRAM hits), cpu 6140 ms, file 5858 ms; spec reads 0 issued / 0 used;
+adapt-pcie1                  sposi          diff=7    decode: 300 tokens in 49.97 s = 5.98 tok/s; experts 58940 hit / 1067 cpu / 11753 pcie / 1067 file (82.1% VRAM hits), cpu 408 ms, file 4699 ms; spec reads 0 issued / 0 use
+adapt-pfb3                   sposi          diff=5    decode: 300 tokens in 49.26 s = 6.07 tok/s; experts 63348 hit / 2901 cpu / 5511 pcie / 1063 file (88.3% VRAM hits), cpu 1463 ms, file 5011 ms; spec reads 0 issued / 0 use
+adapt-pfb0                   sposi          diff=6    decode: 300 tokens in 46.30 s = 6.46 tok/s; experts 49250 hit / 6424 cpu / 16086 pcie / 1062 file (68.6% VRAM hits), cpu 2973 ms, file 5979 ms; spec reads 0 issued / 0 us
+adapt-margin0.5              sposi          diff=7    decode: 300 tokens in 43.25 s = 6.91 tok/s; experts 59020 hit / 3951 cpu / 8789 pcie / 1021 file (82.2% VRAM hits), cpu 1918 ms, file 5287 ms; spec reads 0 issued / 0 use
+DONE5
+adapt-nodummy                sposi          diff=3    decode: 300 tokens in 44.48 s = 6.72 tok/s; experts 58726 hit / 4052 cpu / 8982 pcie / 1058 file (81.8% VRAM hits), cpu 1952 ms, file 5432 ms; spec reads 0 issued / 0 use
+adapt-nodummy-peer           sposi          diff=6    decode: 300 tokens in 41.03 s = 7.29 tok/s; experts 51227 hit / 2636 cpu / 4953 pcie / 985 file (87.1% VRAM hits), cpu 1320 ms, file 4730 ms; spec reads 0 issued / 0 used
+adapt-nodummy-peer           code-en        diff=4    decode: 212 tokens in 36.12 s = 5.84 tok/s; experts 30908 hit / 2944 cpu / 5793 pcie / 1012 file (78.0% VRAM hits), cpu 1463 ms, file 4946 ms; spec reads 0 issued / 0 use
+DONE6
+peer-t12                     sposi          diff=7    decode: 300 tokens in 28.79 s = 10.39 tok/s; experts 51188 hit / 2652 cpu / 4971 pcie / 995 file (87.0% VRAM hits), cpu 638 ms, file 3646 ms; spec reads 0 issued / 0 used
+peer-t16                     sposi          diff=6    decode: 300 tokens in 29.95 s = 9.98 tok/s; experts 51227 hit / 2636 cpu / 4953 pcie / 985 file (87.1% VRAM hits), cpu 640 ms, file 3215 ms; spec reads 0 issued / 0 used;
+peer-t12-m0.5                sposi          diff=5    decode: 300 tokens in 27.99 s = 10.68 tok/s; experts 51538 hit / 2572 cpu / 4856 pcie / 953 file (87.4% VRAM hits), cpu 611 ms, file 3932 ms; spec reads 0 issued / 0 used
+DONE7
+best                         code-en        diff=4    decode: 212 tokens in 21.42 s = 9.85 tok/s; experts 31207 hit / 2875 cpu / 5675 pcie / 983 file (78.5% VRAM hits), cpu 692 ms, file 3232 ms; spec reads 0 issued / 0 used;
+best                         divina-breve   diff=4    decode: 300 tokens in 29.74 s = 10.05 tok/s; experts 51288 hit / 2345 cpu / 4887 pcie / 716 file (87.6% VRAM hits), cpu 561 ms, file 3307 ms; spec reads 0 issued / 0 used
+best-nopeer                  sposi          diff=7    decode: 300 tokens in 29.07 s = 10.29 tok/s; experts 59020 hit / 3951 cpu / 8789 pcie / 1021 file (82.2% VRAM hits), cpu 953 ms, file 3721 ms; spec reads 0 issued / 0 use
+best-t8                      sposi          diff=7    decode: 300 tokens in 27.77 s = 10.77 tok/s; experts 51601 hit / 2550 cpu / 4797 pcie / 950 file (87.5% VRAM hits), cpu 695 ms, file 3771 ms; spec reads 0 issued / 0 used
+best-free                    divina-breve   diff=0    decode: 257 tokens in 22.94 s = 11.16 tok/s; experts 43842 hit / 1944 cpu / 4013 pcie / 606 file (88.0% VRAM hits), cpu 473 ms, file 2435 ms; spec reads 0 issued / 0 used
+best-free                    circles        diff=0    decode: 108 tokens in 10.66 s = 10.04 tok/s; experts 17573 hit / 941 cpu / 1868 pcie / 318 file (86.2% VRAM hits), cpu 221 ms, file 1116 ms; spec reads 0 issued / 0 used;
+DONE8
+best-dspark                  sposi          diff=0    decode: 247 tokens in 36.08 s = 6.82 tok/s; experts 111720 hit / 0 cpu / 52680 pcie / 1774 file (68.0% VRAM hits), cpu 0 ms, file 5545 ms; spec reads 0 issued / 0 used; p
+best-dspark                  code-en        diff=0    decode: 221 tokens in 25.46 s = 8.64 tok/s; experts 39296 hit / 0 cpu / 33424 pcie / 1845 file (54.0% VRAM hits), cpu 0 ms, file 5163 ms; spec reads 0 issued / 0 used; pr
+best-dspark-d2               sposi          diff=0    decode: 291 tokens in 41.51 s = 6.99 tok/s; experts 93727 hit / 0 cpu / 44033 pcie / 1707 file (68.0% VRAM hits), cpu 0 ms, file 5258 ms; spec reads 0 issued / 0 used; pr
+best-dspark-d2               code-en        diff=0    decode: 226 tokens in 25.24 s = 8.91 tok/s; experts 37050 hit / 0 cpu / 29190 pcie / 1729 file (55.9% VRAM hits), cpu 0 ms, file 5792 ms; spec reads 0 issued / 0 used; pr
+DONE9
+dspark-peer                  code-en        diff=0    decode: 221 tokens in 17.85 s = 12.33 tok/s; experts 34038 hit / 0 cpu / 22613 pcie / 1532 file (60.1% VRAM hits), cpu 0 ms, file 3589 ms; spec reads 0 issued / 0 used; p
+dspark-peer                  sposi          diff=0    decode: 247 tokens in 29.28 s = 8.40 tok/s; experts 99756 hit / 0 cpu / 34661 pcie / 1521 file (74.2% VRAM hits), cpu 0 ms, file 4901 ms; spec reads 0 issued / 0 used; pr
+dspark-peer-bp0.5            code-en        diff=0    decode: 215 tokens in 13.76 s = 15.55 tok/s; experts 34470 hit / 10650 cpu / 12609 pcie / 1558 file (59.7% VRAM hits), cpu 2427 ms, file 3519 ms; spec reads 0 issued / 0 
+dspark-peer-bp0.5            sposi          diff=0    decode: 286 tokens in 26.86 s = 10.61 tok/s; experts 110557 hit / 18980 cpu / 21634 pcie / 1759 file (73.1% VRAM hits), cpu 4055 ms, file 5251 ms; spec reads 0 issued / 0
+DONE10
+dspark-peer-bp0              code-en        diff=0    decode: 229 tokens in 16.25 s = 14.03 tok/s; experts 28829 hit / 33900 cpu / 1895 pcie / 1630 file (44.6% VRAM hits), cpu 5405 ms, file 3372 ms; spec reads 0 issued / 0 u
+dspark-peer-bp0              sposi          diff=0    decode: 272 tokens in 24.50 s = 11.06 tok/s; experts 91127 hit / 50082 cpu / 1906 pcie / 1711 file (63.7% VRAM hits), cpu 7895 ms, file 4247 ms; spec reads 0 issued / 0 u
+dspark-peer-bp0.25           code-en        diff=0    decode: 226 tokens in 24.31 s = 9.26 tok/s; experts 39262 hit / 19331 cpu / 8181 pcie / 1620 file (58.8% VRAM hits), cpu 4326 ms, file 3355 ms; spec reads 0 issued / 0 us
+dspark-peer-bp0.25           sposi          diff=0    decode: 287 tokens in 25.87 s = 11.06 tok/s; experts 119730 hit / 33553 cpu / 12951 pcie / 1728 file (72.0% VRAM hits), cpu 7150 ms, file 4090 ms; spec reads 0 issued / 0
+DONE11

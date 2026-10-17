@@ -231,8 +231,8 @@ because the free-VRAM budget (`slot_gib`) was only honoured for a per-layer/per-
 ### Measured
 
 Same machine as the rest of this README (RX 7900 XTX 24 GiB, 122 GiB RAM), `--kv-q8`, `--ctx 262144`, arena 75 GiB,
-24 threads, the GSQ's `rank.bin` (no Q2 profile exists), the GSQ Engram tables, `local/prompts/divina.i32`, 200 new
-tokens, greedy:
+24 threads, the GSQ's `rank.bin` (the only profile that existed when this was measured; the Q2's own rank is below),
+the GSQ Engram tables, `local/prompts/divina.i32`, 200 new tokens, greedy:
 
 | | Q2 | GSQ (same binary, same settings) |
 |---|---|---|
@@ -257,10 +257,66 @@ the nine were not named.
 
 Exact routing costs the Q2 9x its biased speed (9.01 -> 0.97 tok/s) and the GSQ 3.4x (10.81 -> 3.19), because with
 the GSQ's rank the Q2's own routing hits the VRAM cache 45.7% of the time and reads ~86 experts per token from the
-file tier (9.49 MiB each, about 1 GB/s of SSD). A `rank.bin` measured on the Q2 (`v41_rank.py` from its routing
-counts) is the missing piece; there is no Q2-matched DSpark drafter either. The GSQ's MTP sidecar does load and draft
-for the Q2 (1.47 accepted drafts/pass, 2.47 tokens/pass) but exact-routing decode got slower, 0.82 against 0.97
-tok/s: the verify pass reads every token's experts, so a drafter cannot help an I/O-bound decode.
+file tier (9.49 MiB each, about 1 GB/s of SSD). A `rank.bin` measured on the Q2 itself is the missing piece, and the
+next subsection is that measurement; there is no Q2-matched DSpark drafter either. The GSQ's MTP sidecar does load
+and draft for the Q2 (1.47 accepted drafts/pass, 2.47 tokens/pass) but exact-routing decode got slower, 0.82 against
+0.97 tok/s: the verify pass reads every token's experts, so a drafter cannot help an I/O-bound decode.
+
+### The Q2's own `rank.bin` (2026-10-17)
+
+`local/rank-q2.bin` is ranked from the Q2's own routing counts. `ds41_generate` grew a `--dump-routes DIR` flag: the
+router's `ids` were already a graph output (`o_ids`) and already copied host-ward for the expert tier, so counting
+them changes no arithmetic; the run writes `DIR/LNN.json` with `experts[e].n` = tokens routed to `e`, which is exactly
+what `tools/v41/engine/v41_rank.py` reads. On the Q2 no `--map` is needed: the tool's default blob,
+2 x IQ2_XXS (1320 B/row at 5120) + Q2_K (756 B/row at 2304) = 9,953,280 B, is the Q2's expert to the byte, so every
+expert is ranked by routed count alone.
+
+The corpus is 8,154 prompt tokens of mixed text (`local/calib-q2/corpus.i32` = 2,500 tokens of
+`docs/DETAILS.md` + 2,500 of `ds41_generate.cpp` + 800 of `README.md` + the 656-token `long-it` + `divina` prompts +
+the 1,669-token Italian answer in `local/v41-text.log`) and the acceptance prompt with its answer (60 tokens, replayed
+with `STRATA_FORCE_IDS` so the counts are exactly the routing that answer takes) = **8,296 tokens, 1,991,040
+(layer, expert) selections, 129.6 a pair**. The counts are in `local/calib-q2/stats-{corpus,circles}`, merged by
+`local/calib-q2/merge_stats.py`. A first attempt on 6,581 tokens built from the prompts already in `local/prompts/`
+was 88% one repeated code-review prompt: it covered 99.0% of *that* corpus at 80 GiB but only 85.9% of the
+nine-circles routing and decoded at 2.10 tok/s - a repeat-heavy corpus overfits, so the final rank is the diverse one.
+
+Coverage printed by `v41_rank.py`: the first 8 GiB of experts cover 38.0% of the calibration routing, 16 GiB 52.4%,
+32 GiB 70.3%, 48 GiB 81.7%, 64 GiB 89.4%, 80 GiB 94.5%, 100 GiB 98.2%. On the nine-circles routing (the 79 tokens of
+the prompt and its answer, so in-sample) the top 1,526 experts - what the VRAM cache seeds - cover 47.0%, the top
+8,090 - the 75 GiB arena - 88.8%, the top 11,229 - 90 GiB of arena plus the VRAM slots - 96.6%.
+
+Measured on the usual machine, one-shot greedy, exact routing (`--route-bias 0 --route-bias-file 0`), `--ctx 8192`,
+24 threads, the nine-circles prompt:
+
+| resident set | decode | file-tier reads |
+|---|---|---|
+| GSQ `rank.bin`, 75 GiB arena | 0.97 tok/s | ~86/token (36%) |
+| Q2 rank, 75 GiB arena (arena duplicates the VRAM head) | 3.13 tok/s | 1,203 / 60 tokens = 20/token |
+| Q2 rank, `--arena-skip-vram`, 75 GiB arena | 3.49 tok/s | 683 / 47 tokens = 14.5/token |
+| Q2 rank, `--arena-skip-vram`, 90 GiB arena (`memguard.sh 110 82`) | **4.53 tok/s** | 443 / 60 tokens = 7.4/token |
+
+`--arena-skip-vram` is new and opt-in: the arena holds the ranking *past* the VRAM cache's head instead of holding
+the same experts again, so the two tiers cover distinct experts (the tier already demotes an evicted VRAM expert into
+the slot its replacement vacates; that mode just had no flag). Every configuration named all nine circles; the
+wording is the 47-token "Lussuria, Gola, Avidità..." list in the 75 GiB `--arena-skip-vram` run and the 60-token
+"Lussuriosi, Golosi, Avari e Prodighi..." list in the other two, a near-tie difference, both correct. The command
+behind 4.53 tok/s:
+
+```
+bash tools/ds4/memguard.sh 110 82 -- ./build-hip-fused/ds41_generate \
+  -m "/run/media/vincenzo/SSD NVME SAMSUNG/ds4/gguf/DeepSeek-V4.1-Flash-Q2.gguf" \
+  --ids-file local/prompts/circles.i32 -n 64 --temp 0 --backend cuda --experts gpu \
+  --arena-gib 90 --ctx 8192 --kv-q8 --threads 24 --rank local/rank-q2.bin \
+  --engram models/engram/layers14:models/engram/layers1 --route-bias 0 --route-bias-file 0 --arena-skip-vram
+```
+
+The 90 GiB arena leaves ~20 GiB of RAM free on the 122 GiB machine (75 GiB with `memguard.sh 80 82` is the safe
+default, 3.49 tok/s). What is still on the table: the file tier is 3.1% of the decode's lookups and 4.5 s of the
+13.0 s at 90 GiB; the measured non-file cost is ~0.13 s/token, so even a zero file tier would be ~7.4-7.7 tok/s, not
+9.01. Reaching 9 needs more of the 142.4 GiB expert set resident than the 104 GiB this machine can hold (90 GiB arena
++ 14 GiB VRAM) or a faster file tier (the reads are serial 9.5 MiB preads at ~0.93 GB/s). Weighting the acceptance
+prompt's own counts 16-64x does reach 97-100% coverage on it, but that is a rank for that prompt, not for the model,
+so it was not kept.
 
 **Prose.** At exact routing both models are coherent and close: 300 greedy tokens of `raccontami la divina
 commedia` give the three cantiche, Virgilio and Beatrice, Lucifero at the centre, the seven cornici, the nine heavens

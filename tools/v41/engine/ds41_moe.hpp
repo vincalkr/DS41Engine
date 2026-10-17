@@ -285,6 +285,13 @@ struct Ds41MoeConfig {
     bool dither = true;           ///< error-diffused rounding for both the PCIe share and the prefetch budget
     bool cpu_only = false;        ///< no CUDA at all: the pool computes every expert
     bool no_cache = false;        ///< GPU tier without a VRAM cache (every miss is CPU or PCIe)
+    /// A SECOND card's expert tier (docs/ds4/V41_AMD_PEER_TIER.md), DECODE only.  -1 = off, the default path is then
+    /// byte-identical.  >= 0: that device's memory gets a copy of the host arena's ranked head that this card's VRAM
+    /// cache does NOT hold (up to STRATA_PEER_GIB, default 18 GiB), and a decode token's routed experts that the
+    /// peer holds are computed there - the same kernels and q8_1 activations, so the rows are bit-identical - while
+    /// the primary's stream runs its own kernels; the peer's row is deposited into the routing index's slot of
+    /// `d_parts` exactly like the CPU share's, and `decode_rows_sum` sums everything, unchanged.
+    int peer_device = -1;
     /// Uniform blobs (DS4): open the VRAM cache at the seed instead of at init, so prompt chunks (run_chunk) can use
     /// that VRAM first (build_arena_from_routes -> chunks -> release_chunk -> seed_from_routes).
     bool defer_cache = false;
@@ -455,6 +462,10 @@ public:
     const Ds41MoeConfig& config() const;
     const char* mode() const;          ///< "cpu-only" | "gpu" | "uninitialised"
     int64_t resident() const;          ///< experts admitted to the VRAM cache
+    /// The peer device's tier (Ds41MoeConfig::peer_device >= 0; 0 otherwise): experts its store holds and decode
+    /// rows it has computed.  Report-only.
+    int64_t peer_experts() const;
+    int64_t peer_rows() const;
     int64_t arena_experts() const;     ///< blobs the host arena holds
     int64_t file_tier() const;         ///< blobs the arena could not take
     double arena_gib() const;

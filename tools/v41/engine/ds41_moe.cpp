@@ -153,6 +153,81 @@ struct Arena {
     }
 };
 
+/// RAII device switch: the runtime's current device is per host thread, and the peer block below is the only place
+/// in this file that changes it, so every peer CUDA call happens between the constructor and the destructor and the
+/// primary's device is current again after it (docs/ds4/V41_AMD_PEER_TIER.md, "streams/events on the wrong device").
+struct DevGuard {
+    int prev = 0;
+    explicit DevGuard(int dev) {
+        if (cudaGetDevice(&prev) != cudaSuccess) { (void) cudaGetLastError(); prev = 0; }
+        if (dev != prev) (void) cudaSetDevice(dev);
+    }
+    ~DevGuard() {
+        if (prev >= 0) (void) cudaSetDevice(prev);
+    }
+};
+
+/// The SECOND card's expert tier (Ds41MoeConfig::peer_device >= 0).  It holds a rank-ordered slice of the host
+/// arena's experts that the primary's VRAM cache does NOT hold - the host arena is pinned, so the startup copies are
+/// cheap - and computes a decode token's routed rows that it holds with the SAME kernels and q8_1 activations as the
+/// primary's PCIe/file path, so an expert's row is bit-identical on either card.  Nothing else about the tier
+/// changes: the peer deposits its rows into the primary's `d_parts` at the routing index, exactly as the CPU share
+/// does, and `decode_rows_sum` still sums every producer.
+struct PeerGpu {
+    int dev = -1;
+    cudaStream_t s = nullptr;
+    cudaEvent_t done = nullptr;           ///< recorded on the peer after a layer's D2H; the primary waits on it
+    void* d_meta = nullptr;               ///< the same five metadata arrays as Gpu::d_meta
+    uint8_t* h_meta = nullptr;            ///< its pinned staging
+    void *d_x = nullptr, *d_xq = nullptr, *d_scratch = nullptr, *d_parts = nullptr;
+    float* h_parts = nullptr;             ///< pinned landing pad, kMaxParts x n_embd floats (compact rows)
+    std::vector<strata::kernels::NativeExpertLayout> gll;   ///< per format class, as Gpu::gll
+    /// The expert store: ONE cudaMalloc'd buffer on `dev`, packed exactly like struct Arena (each blob at its own
+    /// class's size), `slot_of[(layer, expert)]` -> store slot and `off[slot]` -> its byte offset.
+    void* base = nullptr;
+    uint64_t bytes = 0;
+    std::vector<int32_t> slot_of;
+    std::vector<uint64_t> off;
+    int64_t used = 0;
+    int64_t n_layers = 0, n_experts = 0;
+    bool built = false;                   ///< the first seed wins (a re-seed never re-reads the arena)
+    int64_t rows = 0, launches = 0;       ///< diagnostics: rows computed on the peer, layers that used it
+    double seed_ms = 0, wait_ms = 0;      ///< diagnostics: startup copies, primary time spent waiting on the peer
+
+    const uint8_t* ptr(int64_t layer, int64_t expert) const {
+        if (!base || layer < 0 || layer >= n_layers || expert < 0 || expert >= n_experts) return nullptr;
+        const int32_t sl = slot_of[(size_t) (layer * n_experts + expert)];
+        return sl < 0 ? nullptr : (const uint8_t*) base + (size_t) off[(size_t) sl];
+    }
+    ~PeerGpu() { close(); }
+    void close() {
+        if (dev < 0) return;
+        DevGuard dg(dev);
+        if (done) cudaEventDestroy(done);
+        if (d_meta) cudaFree(d_meta);
+        for (void* p : {d_x, d_xq, d_scratch, d_parts})
+            if (p) cudaFree(p);
+        if (base) cudaFree(base);
+        if (h_meta) cudaFreeHost(h_meta);
+        if (h_parts) cudaFreeHost(h_parts);
+        if (s) cudaStreamDestroy(s);
+        (void) cudaGetLastError();
+        dev = -1;
+        s = nullptr;
+        done = nullptr;
+        d_meta = nullptr;
+        h_meta = nullptr;
+        h_parts = nullptr;
+        d_x = d_xq = d_scratch = d_parts = nullptr;
+        base = nullptr;
+        bytes = 0;
+        used = 0;
+        built = false;
+        slot_of.clear();
+        off.clear();
+    }
+};
+
 /// A persistent pool for a call's file-tier reads: D3 spawned (and joined) up to 8 std::threads per call - nsys at
 /// x0.5 + arena-adapt: pthread_create 1.84 ms/token on the decode thread.  start() hands out task indices 0..n-1 to
 /// the workers; wait() returns when every task is done.  One batch at a time: every start() is followed by a wait()
@@ -314,6 +389,7 @@ struct SpecStash {
 /// All the device state, so the CPU-only flavour has none of it to leak.
 struct Gpu {
     Arena arena;
+    std::unique_ptr<PeerGpu> peer;     ///< the second card's expert tier (Ds41MoeConfig::peer_device >= 0), decode only
     std::unique_ptr<SpecStash> spec;   ///< spec_read's stash (opened on first use)
     std::unique_ptr<ReadPool> rpool;   ///< D3's file-tier readers (persistent; created on first use)
     std::unique_ptr<strata::core::ExpertCache> cache;
@@ -437,6 +513,7 @@ struct Gpu {
         }
         if (s_cp) cudaStreamDestroy(s_cp);
         free_mmq();
+        peer.reset();   // frees device-1 memory on device 1 (PeerGpu::close)
         spec.reset();
         cache.reset();
         arena.close();
@@ -1389,6 +1466,40 @@ bool Ds41MoeTier::init(const Ds41MoeGeom& geom, Ds41BlobSource* blobs, const Ds4
     // once in index order here, once from the profile when the caller seeds - would read the file twice and page
     // the second read through the first's cache.  The first build wins (build_arena), and the first build is the
     // seed's; a caller that never seeds gets the file tier for every expert, which is slower but not wrong.
+    // The peer card's own state (stream, staging, metadata, the store is filled by peer_seed at the seed)
+    if (cfg.peer_device >= 0) {
+        int ndev = 0;
+        ck(cudaGetDeviceCount(&ndev), "device count");
+        if (cfg.peer_device >= ndev) {
+            err = "peer device " + std::to_string(cfg.peer_device) + " does not exist (" + std::to_string(ndev) +
+                  " CUDA/HIP devices)";
+            return false;
+        }
+        gp.peer.reset(new PeerGpu());
+        PeerGpu& pg = *gp.peer;
+        pg.dev = cfg.peer_device;
+        {
+            DevGuard dg(pg.dev);
+            size_t pfr = 0, ptot = 0;
+            ck(cudaMemGetInfo(&pfr, &ptot), "peer meminfo");
+            ck(cudaStreamCreateWithFlags(&pg.s, cudaStreamNonBlocking), "peer stream");
+            ck(cudaEventCreateWithFlags(&pg.done, cudaEventDisableTiming), "peer event");
+            ck(cudaMalloc(&pg.d_x, (size_t) kMaxTok * H4), "peer d_x");
+            ck(cudaMalloc(&pg.d_xq, strata::kernels::native_q8_1_bytes((int) geom.n_embd, kMaxTok)), "peer d_xq");
+            ck(cudaMalloc(&pg.d_scratch, strata::kernels::native_expert_scratch_bytes(kMaxEnt, geom.n_ff)),
+               "peer d_scratch");
+            ck(cudaMalloc(&pg.d_parts, (size_t) kMaxEnt * H4), "peer d_parts");
+            ck(cudaMalloc(&pg.d_meta, kMetaBytes), "peer d_meta");
+            // PORTABLE pinned: the peer's D2H lands here and the primary reads it back (one process, two devices)
+            ck(cudaHostAlloc((void**) &pg.h_meta, kMetaBytes, cudaHostAllocPortable), "peer h_meta");
+            ck(cudaHostAlloc((void**) &pg.h_parts, (size_t) kMaxEnt * H4, cudaHostAllocPortable), "peer h_parts");
+            std::fprintf(stderr, "peer: device %d, %.2f GiB free of %.2f GiB\n", pg.dev, pfr / 1073741824.0,
+                         ptot / 1073741824.0);
+        }
+        pg.gll = gp.gll;
+        pg.n_layers = geom.n_layers;
+        pg.n_experts = geom.n_experts;
+    }
     im_->inited = true;
     return true;
 #endif
@@ -1595,6 +1706,123 @@ bool Ds41MoeTier::build_arena_ranked(const std::vector<std::pair<int32_t, int32_
     return build_arena(arena_order(*im_, drop_excluded(*im_, ranked_all)), err);
 }
 
+#if defined(DS4_MOE_CUDA)
+/// Fills the peer card's expert store (PeerGpu) out of the HOST ARENA: the SECOND HALF of this card's VRAM-resident
+/// head, then the ranked experts the arena holds beyond it, in rank order, until the peer's budget (STRATA_PEER_GIB,
+/// default what fits in ~18 GiB of its free memory).  The arena is pinned, so every H2D is a cheap copy; each blob
+/// lands at its own class's size, exactly like `struct Arena`.  Built once (the first seed wins), after the VRAM
+/// cache is filled so "the second half of the resident head" is the final answer.  `ranked` is the list the seed
+/// walked.
+bool peer_seed(Ds41MoeImpl& im, const std::vector<std::pair<int32_t, int32_t>>& ranked, std::string& err) {
+    if (!im.gpu || !im.gpu->peer) return true;
+    Gpu& gp = *im.gpu;
+    PeerGpu& pg = *gp.peer;
+    if (pg.built) return true;
+    if (!gp.arena.base || gp.arena.used == 0) {
+        std::fprintf(stderr, "peer: the RAM arena is empty, nothing for device %d\n", pg.dev);
+        pg.built = true;
+        return true;
+    }
+    DevGuard dg(pg.dev);
+    size_t pfr = 0, ptot = 0;
+    if (cudaMemGetInfo(&pfr, &ptot) != cudaSuccess) { (void) cudaGetLastError(); pfr = 0; }
+    const char* env = std::getenv("STRATA_PEER_GIB");
+    double want_gib = env ? std::atof(env) : 18.0;
+    if (env && want_gib <= 0.0) {   // STRATA_PEER_GIB=0: a configured device with no store (the tier stays off)
+        std::fprintf(stderr, "peer: STRATA_PEER_GIB=%s: no expert store on device %d\n", env, pg.dev);
+        pg.built = true;
+        return true;
+    }
+    const double free_gib = (double) pfr / 1073741824.0 - 1.0;   // keep 1 GiB for the peer's staging / the driver
+    if (free_gib < want_gib) want_gib = free_gib;
+    if (want_gib < 0.25) {
+        err = "the peer device has no free memory for an expert store";
+        return false;
+    }
+    const uint64_t budget = (uint64_t) (want_gib * 1073741824.0);
+    // THE SPLIT: card 0 computes the FIRST HALF of its VRAM-resident head, the peer the SECOND half - so the peer
+    // serves the hot resident rows, which is where the decode time is, not the ~8% of rows that are PCIe/arena
+    // misses (AMD_HIP_NOTES: with misses nearly eliminated by --route-bias-file 1.5 the tier moved 634.6 -> 604.3 ms
+    // a pass).  Past that head the peer keeps taking the next ranked experts the arena holds, resident or not.
+    // Card 0's cache is deliberately NOT shrunk for this: `tier.resident` is what the engine's route bias
+    // (ds41_generate's resident_now) reads at seed time, so a smaller cache would change the ROUTING - and with it
+    // the tokens.  The split is over who COMPUTES a ranked expert, and a row is bit-identical on either card.
+    int64_t nres = 0;
+    if (gp.cache && !im.cfg.no_cache)
+        for (int64_t l = 0; l < im.g.n_layers; ++l)
+            for (int64_t e = 0; e < im.g.n_experts; ++e)
+                if (gp.cache->slot_of(l, e) >= 0) ++nres;
+    // MISS mode (default): card 0 keeps its whole resident set, the peer stores only experts card 0 does not hold
+    static const bool peer_hot = std::getenv("STRATA_PEER_HOT") && std::getenv("STRATA_PEER_HOT")[0] == '1';
+    const int64_t keep_res = peer_hot ? nres / 2 : nres;
+    int64_t seen_res = 0;
+    std::vector<char> seen((size_t) (im.g.n_layers * im.g.n_experts), 0);
+    pg.slot_of.assign((size_t) (im.g.n_layers * im.g.n_experts), -1);
+    pg.off.assign(1, 0);
+    std::vector<std::pair<int32_t, int32_t>> pick;
+    for (const auto& le : ranked) {
+        const int64_t l = le.first, e = le.second;
+        if (l < 0 || l >= im.g.n_layers || e < 0 || e >= im.g.n_experts) continue;
+        if (!im.g.routed(l)) continue;
+        char& sn = seen[(size_t) (l * im.g.n_experts + e)];
+        if (sn) continue;
+        sn = 1;
+        const bool res = gp.cache && !im.cfg.no_cache && gp.cache->slot_of(l, e) >= 0;
+        if (res) {
+            if (seen_res < keep_res) { ++seen_res; continue; }   // card 0's half of the head
+            ++seen_res;
+        }
+        const uint8_t* p = gp.arena.ptr(l, e);
+        if (!p) continue;                                        // file tier: not in the arena
+        const uint64_t b = (uint64_t) im.bl[(size_t) im.g.cls(l, e)];
+        if (pg.off.back() + b > budget) continue;
+        pg.slot_of[(size_t) (l * im.g.n_experts + e)] = (int32_t) pick.size();
+        pick.push_back({(int32_t) l, (int32_t) e});
+        pg.off.push_back(pg.off.back() + b);
+    }
+    pg.used = (int64_t) pick.size();
+    pg.bytes = pg.off.back();
+    const double t0 = now_ms();
+    if (pg.bytes > 0) {
+        if (cudaMalloc(&pg.base, (size_t) pg.bytes) != cudaSuccess) {
+            (void) cudaGetLastError();
+            err = "peer: cudaMalloc of " + std::to_string(pg.bytes / 1073741824.0) + " GiB on device " +
+                  std::to_string(pg.dev) + " failed";
+            pg.base = nullptr;
+            pg.slot_of.clear();
+            pg.off.clear();
+            pg.used = 0;
+            pg.bytes = 0;
+            return false;
+        }
+        for (size_t i = 0; i < pick.size(); ++i) {
+            const int64_t l = pick[i].first, e = pick[i].second;
+            const uint64_t b = pg.off[i + 1] - pg.off[i];
+            if (cudaMemcpyAsync((uint8_t*) pg.base + pg.off[i], gp.arena.ptr(l, e), (size_t) b,
+                                cudaMemcpyHostToDevice, pg.s) != cudaSuccess) {
+                (void) cudaGetLastError();
+                err = "peer: H2D copy of L" + std::to_string(l) + " e" + std::to_string(e) + " failed";
+                return false;
+            }
+        }
+        if (cudaStreamSynchronize(pg.s) != cudaSuccess) {
+            (void) cudaGetLastError();
+            err = "peer: the expert store's copies failed";
+            return false;
+        }
+    }
+    pg.seed_ms = now_ms() - t0;
+    pg.built = true;
+    std::fprintf(stderr, "peer: device %d holds %lld experts (%.2f of a %.2f GiB budget), copied in %.1f s; the split "
+                         "leaves %lld of card 0's %lld resident experts to card 0\n",
+                 pg.dev, (long long) pg.used, pg.bytes / 1073741824.0, budget / 1073741824.0, pg.seed_ms / 1000.0,
+                 (long long) keep_res, (long long) nres);
+    return true;
+}
+#else
+bool peer_seed(Ds41MoeImpl&, const std::vector<std::pair<int32_t, int32_t>>&, std::string&) { return true; }
+#endif
+
 void Ds41MoeTier::set_slot_gib(double gib) { im_->cfg.slot_gib = gib; }
 
 void Ds41MoeTier::set_cache_enabled(bool on) {
@@ -1648,7 +1876,10 @@ bool Ds41MoeTier::seed_from_ranked(const std::vector<std::pair<int32_t, int32_t>
         im_->gpu->cache.reset(new strata::core::ExpertCache());
         if (!im_->gpu->cache->open_sized(sizes, im_->g.n_layers, im_->g.n_experts, err)) return false;
     }
-    if (!im_->gpu || !im_->gpu->cache) return true;   // no cache: nothing to seed
+    if (!im_->gpu || !im_->gpu->cache) {   // no cache: nothing to seed (the peer still mirrors the arena)
+        if (!peer_seed(*im_, ranked, err)) return false;
+        return true;
+    }
     const int64_t want = std::min<int64_t>(im_->cfg.slots, im_->gpu->cache->full_slots());
     // the order the slots fill in.  A per-layer-sized cache (MiMo) keeps the rank: its sizes list above pairs slot
     // i with ranked[i].  Everywhere else a preceding release_cache() supplies the warm set.
@@ -1727,6 +1958,7 @@ bool Ds41MoeTier::seed_from_ranked(const std::vector<std::pair<int32_t, int32_t>
             return false;
         }
         im_->admitted = filled;
+        if (!peer_seed(*im_, ranked, err)) return false;   // the peer mirrors the arena's non-resident head
         return true;
     }
     for (const auto& le : fill_order) {
@@ -1744,6 +1976,7 @@ bool Ds41MoeTier::seed_from_ranked(const std::vector<std::pair<int32_t, int32_t>
     }
     lru_seed_order(filled);
     im_->admitted = filled;
+    if (!peer_seed(*im_, ranked, err)) return false;
     return true;
 #endif
 }
@@ -1817,6 +2050,9 @@ void Ds41MoeTier::prefetch_multi(int64_t layer, const int32_t* ids, int n, int m
         const int32_t e = ids[i];
         if (e < 0 || e >= im_->g.n_experts) continue;
         if (gp.cache->slot_of(layer, e) >= 0) continue;
+        // MISS-mode peer: the pass computes a peer-held miss on the second card, so no prefetch DMA for it
+        static const bool pfm_peer_hot = std::getenv("STRATA_PEER_HOT") && std::getenv("STRATA_PEER_HOT")[0] == '1';
+        if (!pfm_peer_hot && gp.peer && gp.peer->built && gp.peer->ptr(layer, e)) continue;
         bool dup = false;
         for (int j = 0; j < im_->pf_n; ++j) dup = dup || im_->pf_e[j] == e;
         if (dup) continue;
@@ -1853,6 +2089,9 @@ void Ds41MoeTier::prefetch(int64_t layer, const int32_t* top16, int n) {
         const int32_t e = top16[i];
         if (e < 0 || e >= im_->g.n_experts) continue;
         if (gp.cache->slot_of(layer, e) >= 0) continue;
+        // MISS-mode peer: a miss the peer holds is computed there, so a prefetch DMA for it is wasted bandwidth
+        static const bool pf_peer_hot = std::getenv("STRATA_PEER_HOT") && std::getenv("STRATA_PEER_HOT")[0] == '1';
+        if (!pf_peer_hot && gp.peer && gp.peer->built && gp.peer->ptr(layer, e)) continue;
         bool dup = false;
         for (int j = 0; j < im_->pf_n; ++j) dup = dup || im_->pf_e[j] == e;
         if (dup) continue;
@@ -2132,15 +2371,41 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
         const int64_t NX = im.g.n_experts;
         if (im.last_use.empty()) im.last_use.assign((size_t) (im.g.n_layers * NX), -1);
         ++im.tick;
-        for (int64_t k = 0; k < K; ++k) im.last_use[(size_t) (layer * NX + ids6[k])] = im.tick;
+        // a peer-held expert is not a use of its arena copy (the peer computes it): leaving it old lets the arena
+        // swap it out for a file-tier expert, so RAM stops duplicating the peer's store
+        const bool pskip = gp.peer && gp.peer->built && !(std::getenv("STRATA_PEER_HOT") && std::getenv("STRATA_PEER_HOT")[0] == '1');
+        for (int64_t k = 0; k < K; ++k)
+            if (!(pskip && gp.peer->ptr(layer, ids6[k]))) im.last_use[(size_t) (layer * NX + ids6[k])] = im.tick;
     }
     const double t0 = now_ms();
     Ds41MoeStats st;
 
-    // ---- split the routed experts: resident, prefetched (also computed on the GPU), CPU, PCIe ----
+    // ---- split the routed experts: the peer's own, resident, prefetched (also computed on the GPU), CPU, PCIe ----
     int32_t hit_i[kMaxParts], cpu_i[kMaxParts], pcie_i[kMaxParts], slot_i[kMaxParts] = {};
+    int32_t pf_hit[kMaxParts];   ///< the prefetched rows of this call, owned by the peer or not (the LRU's promotion list)
     unsigned long long pf_ptr[kMaxParts] = {};
-    int nh = 0, nc = 0, np = 0, npf_hit = 0;
+    int nh = 0, nc = 0, np = 0, npf_hit = 0, npf_all = 0;
+    // The PEER card (Ds41MoeConfig::peer_device >= 0, DECODE only): the routed experts its store holds are PEER-OWNED
+    // - computed on the second card, on its own stream, overlapped with everything below - and leave card 0's plan.
+    // Its store is the second half of card 0's resident head plus the ranked experts after it, so these are the hot
+    // rows, not the misses.  A HIT row is taken here (the peer replaces card 0's hits kernel for it); a MISS stays in
+    // `cpu_i` for the PCIe budget below (so the budget, the file tier and the CPU pool see exactly the rows they see
+    // without a peer) and is carved out of the budget's output there.  Nothing moves between the CPU pool and a card:
+    // the CPU and the kernels do not round a row identically, so only rows the run without a peer computes on A CARD
+    // are ever taken.  Decode only: only the out_dev (sum-on-the-card) path has a place for a row.
+    // STRATA_PEER_CHECK=1 (diagnostic): card 0 runs the peer's rows TOO, and the two rows are compared at the sum.
+    int32_t peer_i[kMaxParts];
+    int npeer = 0;
+    static const bool peer_check = std::getenv("STRATA_PEER_CHECK") != nullptr;
+    // MISS mode (the default with a peer, 2026-10-17): under exact routing (--route-bias 0) the decode time is the
+    // misses (~2 ms each on the critical path: a 9.5 MiB DMA or a CPU pass), not the hits.  A MISS whose expert the
+    // peer's store holds is computed THERE and nothing else happens for it: no DMA, no CPU pass, no VRAM promotion -
+    // only n_embd floats cross the bus each way.  Card 0 keeps every hit and every prefetched row.  This drops the
+    // bit-identical-trajectory property of the hot split below (card 0's LRU sees fewer promotions, and a row the
+    // pool would have rounded on the CPU is rounded by a card): same routing, same experts, same weights, different
+    // rounding.  STRATA_PEER_HOT=1 = the original hot split (the peer also takes resident rows it holds).
+    static const bool peer_hot = std::getenv("STRATA_PEER_HOT") && std::getenv("STRATA_PEER_HOT")[0] == '1';
+    const bool peer_on = gp.peer && gp.peer->built && out_dev != nullptr;
     for (int64_t k = 0; k < K; ++k) {
         const int32_t e = ids6[k];
         const int32_t s = (gp.cache && !im.cfg.no_cache) ? gp.cache->slot_of(layer, e) : -1;
@@ -2148,12 +2413,25 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
         int pf_at = -1;
         for (int j = 0; j < im.pf_n && s < 0; ++j)
             if (im.pf_e[j] == e) pf_at = j;
-        if (s >= 0) {
+        if (!peer_hot && peer_on && s < 0 && pf_at < 0 && npeer < kMaxParts && gp.peer->ptr(layer, e) != nullptr) {
+            peer_i[npeer++] = (int32_t) k;   // a miss the peer holds: its row only, from the peer's store
+            continue;
+        }
+        if (s >= 0 || pf_at >= 0) {
+            const bool owned = peer_hot && peer_on && npeer < kMaxParts && gp.peer->ptr(layer, e) != nullptr;
+            if (pf_at >= 0) {
+                // A prefetched expert: the LRU promotes it into a VRAM slot below (the same promotion the run
+                // without a peer makes), so its row goes on the list whichever card computes it - the cache must
+                // keep following the same trajectory, or a later row lands in the CPU pool instead of on a card.
+                pf_ptr[k] = (unsigned long long) gp.d_pf + (size_t) pf_at * (size_t) B;
+                pf_hit[npf_all++] = (int32_t) k;
+            }
+            if (owned) {
+                peer_i[npeer++] = (int32_t) k;
+                if (!peer_check) continue;   // check mode: card 0 computes this row too, and compares the two
+            }
             hit_i[nh++] = (int32_t) k;
-        } else if (pf_at >= 0) {
-            pf_ptr[k] = (unsigned long long) gp.d_pf + (size_t) pf_at * (size_t) B;
-            hit_i[nh++] = (int32_t) k;
-            ++npf_hit;
+            if (pf_at >= 0) ++npf_hit;
         } else {
             cpu_i[nc++] = (int32_t) k;
         }
@@ -2208,6 +2486,18 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
         }
     }
     mark(8);
+    // ---- the peer's share of the MISSES (the resident rows it owns were taken at the split above): a miss the
+    // second card's store holds is a PEER row too.  It stays in `pcie_i` on purpose: the PCIe loop below still runs
+    // its DMA and its VRAM promotion (and that promotion's victim bookkeeping), which is what keeps this card's
+    // expert cache on exactly the trajectory it follows without a peer - only the KERNEL moves to the second card,
+    // because the loop leaves a peer row out of the launch arrays.  Removing it from `pcie_i` here instead would
+    // drop the promotion, the cache would hold different experts, a later row would land in the CPU pool rather
+    // than on a card, and the tokens would drift (that is what the first version of this block did).
+    const int np_plan = np;
+    if (peer_hot && peer_on && np > 0) {
+        for (int i = 0; i < np && npeer < kMaxParts; ++i)
+            if (gp.peer->ptr(layer, ids6[pcie_i[i]])) peer_i[npeer++] = pcie_i[i];
+    }
     int32_t cpu_keep[kMaxParts], nk = 0;
     bool cpu_k[kMaxParts] = {};   ///< routing index -> the pool computed it (the sum's source selector)
     for (int i = 0; i < nc; ++i) {
@@ -2226,7 +2516,7 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
     // bit.  STRATA_X_HOST=1 = always through the host (the old path).
     static const bool x_host_always = std::getenv("STRATA_X_HOST") || std::getenv("DS41_CHECK_POOL_BATCH") ||
                                       std::getenv("DS4_CHECK_GPU");
-    if (x_dev && nk == 0 && !x_host_always) {
+    if (x_dev && nk == 0 && npeer == 0 && !x_host_always) {
         strata::kernels::native_quantize_q8_1((const float*) x_dev, gp.d_xq, (int) H, 1, gp.s);
     } else {
         if (x_dev) {
@@ -2264,42 +2554,51 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
     // the five metadata arrays of a launch go into one region of the pinned h_meta block and up in ONE async copy
     // (they were five pageable copies per launch, ~20 per layer); regions are never reused within this call, and the
     // next call starts after this one's layer sync, so no copy can read a region that is being rewritten
-    size_t meta_at = 0;
-    // The five metadata arrays of ONE class sit in a region of the pinned h_meta block, laid out at `b` (meta_off) -
+    // The five metadata arrays of ONE class sit in a region of the pinned `h_meta` block, laid out at `b` (meta_off) -
     // and under STRATA_TIER_GRAPH every class has its own FIXED region at that same layout, capacity kMaxParts.
+    // The pack/launch helpers take the TARGET's buffers, so the same code packs and launches a group on the primary
+    // (gt: gp's d_xq/d_scratch/d_parts on gp.s) or on the peer card (its own staging and stream, Ds41MoeConfig::
+    // peer_device) - the two paths differ only in which device's memory the addresses name.
     auto moff = [](size_t b, int n) { return meta_off(b, n); };
-    auto pack_group1 = [&](int n, const std::vector<unsigned long long>& ptr, const std::vector<int32_t>& start,
-                           const std::vector<int32_t>& dst, const std::vector<int32_t>& tok) -> size_t {
-        const MetaOff o = moff(meta_at, n);
+    struct MetaTgt {
+        uint8_t* h_meta = nullptr;   ///< pinned metadata staging
+        void* d_meta = nullptr;      ///< its device twin
+        void* d_xq = nullptr;        ///< q8_1 activations, n_embd-wide rows
+        void* d_scratch = nullptr;   ///< native_expert_grouped's scratch, kMaxParts entries
+        void* d_parts = nullptr;     ///< kMaxParts x n_embd rows
+        cudaStream_t s = nullptr;
+        const std::vector<strata::kernels::NativeExpertLayout>* gll = nullptr;   ///< per format class
+        size_t at = 0;               ///< the running packing offset in h_meta
+    };
+    MetaTgt gt{gp.h_meta, gp.d_meta, gp.d_xq, gp.d_scratch, gp.d_parts, gp.s, &gp.gll, 0};
+    auto pack_group1 = [&](MetaTgt& t, int n, const std::vector<unsigned long long>& ptr,
+                           const std::vector<int32_t>& start, const std::vector<int32_t>& dst,
+                           const std::vector<int32_t>& tok) -> size_t {
+        const MetaOff o = moff(t.at, n);
         const int32_t one = n;
-        std::memcpy(gp.h_meta + o.ptr, ptr.data(), sizeof(unsigned long long) * (size_t) n);
-        std::memcpy(gp.h_meta + o.st, start.data(), sizeof(int32_t) * (size_t) (n + 1));
-        std::memcpy(gp.h_meta + o.ng, &one, sizeof(int32_t));
-        std::memcpy(gp.h_meta + o.dst, dst.data(), sizeof(int32_t) * (size_t) n);
-        std::memcpy(gp.h_meta + o.tok, tok.data(), sizeof(int32_t) * (size_t) n);
-        meta_at = o.end;
+        std::memcpy(t.h_meta + o.ptr, ptr.data(), sizeof(unsigned long long) * (size_t) n);
+        std::memcpy(t.h_meta + o.st, start.data(), sizeof(int32_t) * (size_t) (n + 1));
+        std::memcpy(t.h_meta + o.ng, &one, sizeof(int32_t));
+        std::memcpy(t.h_meta + o.dst, dst.data(), sizeof(int32_t) * (size_t) n);
+        std::memcpy(t.h_meta + o.tok, tok.data(), sizeof(int32_t) * (size_t) n);
+        t.at = o.end;
         return o.ptr;
     };
-    auto launch_group1 = [&](const strata::kernels::NativeExpertLayout& GL, int n, size_t off) {
+    auto launch_group1 = [&](MetaTgt& t, int cls, int n, size_t off) {
         const MetaOff o = moff(off, n);
-        uint8_t* dm = (uint8_t*) gp.d_meta;
-        strata::kernels::native_expert_grouped(GL, (const unsigned long long*) (dm + o.ptr),
+        uint8_t* dm = (uint8_t*) t.d_meta;
+        strata::kernels::native_expert_grouped((*t.gll)[(size_t) cls], (const unsigned long long*) (dm + o.ptr),
                                               (const int32_t*) (dm + o.st), (const int32_t*) (dm + o.ng),
                                               (const int32_t*) (dm + o.dst), (const int32_t*) (dm + o.tok),
-                                              kMaxParts, n, gp.d_xq, gp.d_scratch, (float*) gp.d_parts, gp.s, n);
+                                              kMaxParts, n, t.d_xq, t.d_scratch, (float*) t.d_parts, t.s, n);
     };
-    // Group the entries by format class (one kernel launch per class), but pack EVERY class's metadata into the
-    // block first and copy the whole span up in ONE cudaMemcpyAsync - the old shape copied per class, ~7 extra
-    // host calls a layer.  The classes read disjoint regions and gp.s orders them after the copy, so this is
-    // bit-identical: same kernels, same bytes, same order.  STRATA_GRP_ONE_COPY=0 = the per-class copy.
-    static const bool grp_one_copy = !std::getenv("STRATA_GRP_ONE_COPY") || std::atoi(std::getenv("STRATA_GRP_ONE_COPY")) != 0;
-    auto launch_group = [&](int site, int n, const std::vector<unsigned long long>& ptr,
-                            const std::vector<int32_t>& start, const std::vector<int32_t>& dst,
-                            const std::vector<int32_t>& tok) {
-        (void) start;
-        if (n <= 0) return;   // a site with nothing to run is skipped: all nine of its classes are idle anyway
-        struct Cls { int c = -1; int n = 0; size_t off = 0; std::vector<unsigned long long> p2;
-                     std::vector<int32_t> d2, t2, s2; };
+    // The entries of `n` lists grouped by format class: one kernel launch per class, in first-seen order.  Entry i's
+    // expert is ids6[ent_k[i]] (`ent_k` = its routing index), and its output row is dst[i] (the primary's sites write
+    // the routing index's row; the peer's compact rows are 0..n-1).
+    struct Cls { int c = -1; int n = 0; size_t off = 0; std::vector<unsigned long long> p2;
+                 std::vector<int32_t> d2, t2, s2; };
+    auto group_classes = [&](int n, const std::vector<unsigned long long>& ptr, const std::vector<int32_t>& ent_k,
+                             const std::vector<int32_t>& dst, const std::vector<int32_t>& tok) {
         std::vector<Cls> gs;
         int done = 0;
         bool used[kMaxParts] = {};
@@ -2307,7 +2606,7 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
             Cls g;
             for (int i = 0; i < n; ++i) {
                 if (used[i]) continue;
-                const int ci = im.g.cls(layer, ids6[dst[(size_t) i]]);
+                const int ci = im.g.cls(layer, ids6[ent_k[(size_t) i]]);
                 if (g.c < 0) g.c = ci;
                 if (ci != g.c) continue;
                 used[i] = true;
@@ -2321,6 +2620,19 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
             done += g.n;
             gs.push_back(std::move(g));
         }
+        return gs;
+    };
+    // Group the entries by format class (one kernel launch per class), but pack EVERY class's metadata into the
+    // block first and copy the whole span up in ONE cudaMemcpyAsync - the old shape copied per class, ~7 extra
+    // host calls a layer.  The classes read disjoint regions and gp.s orders them after the copy, so this is
+    // bit-identical: same kernels, same bytes, same order.  STRATA_GRP_ONE_COPY=0 = the per-class copy.
+    static const bool grp_one_copy = !std::getenv("STRATA_GRP_ONE_COPY") || std::atoi(std::getenv("STRATA_GRP_ONE_COPY")) != 0;
+    auto launch_group = [&](int site, int n, const std::vector<unsigned long long>& ptr,
+                            const std::vector<int32_t>& start, const std::vector<int32_t>& dst,
+                            const std::vector<int32_t>& tok) {
+        (void) start;
+        if (n <= 0) return;   // a site with nothing to run is skipped: all nine of its classes are idle anyway
+        std::vector<Cls> gs = group_classes(n, ptr, dst, dst, tok);
         if (grp_graph) {
             // Slice B: this site's block is FIXED - one slot per class (kMetaClsMax), each laid out for kMaxParts
             // entries, which is exactly what the capture used, so a class's slot is a stable address for the graph.
@@ -2347,36 +2659,67 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
         }
         bool one_copy = grp_one_copy;
         if (one_copy) {
-            size_t end = meta_at;   // top-k 6 -> <= 12 launches: the block always fits
+            size_t end = gt.at;   // top-k 6 -> <= 12 launches: the block always fits
             for (const Cls& g : gs) end = moff(end, g.n).end;
             if (end > kMetaBytes) {   // cannot happen with top-k 6; wrap once, and if it STILL does not fit
                 ck(cudaStreamSynchronize(gp.s), "meta wrap");   // fall back to the per-class path below -
-                meta_at = 0;                                    // never drop a group
+                gt.at = 0;                                      // never drop a group
                 end = 0;
                 for (const Cls& g : gs) end = moff(end, g.n).end;
                 one_copy = end <= kMetaBytes;
             }
         }
         if (one_copy) {
-            const size_t lo = meta_at;
-            for (Cls& g : gs) g.off = pack_group1(g.n, g.p2, g.s2, g.d2, g.t2);
-            const size_t hi = meta_at;
+            const size_t lo = gt.at;
+            for (Cls& g : gs) g.off = pack_group1(gt, g.n, g.p2, g.s2, g.d2, g.t2);
+            const size_t hi = gt.at;
             ck(cudaMemcpyAsync((uint8_t*) gp.d_meta + lo, gp.h_meta + lo, hi - lo, cudaMemcpyHostToDevice, gp.s),
                "grp meta");
-            for (const Cls& g : gs) launch_group1(gp.gll[(size_t) g.c], g.n, g.off);
+            for (const Cls& g : gs) launch_group1(gt, g.c, g.n, g.off);
         } else {
             for (Cls& g : gs) {
-                if (moff(meta_at, g.n).end > kMetaBytes) {   // one class at a time: wrap like the old code did
+                if (moff(gt.at, g.n).end > kMetaBytes) {   // one class at a time: wrap like the old code did
                     ck(cudaStreamSynchronize(gp.s), "meta wrap");
-                    meta_at = 0;
+                    gt.at = 0;
                 }
-                g.off = pack_group1(g.n, g.p2, g.s2, g.d2, g.t2);
+                g.off = pack_group1(gt, g.n, g.p2, g.s2, g.d2, g.t2);
                 ck(cudaMemcpyAsync((uint8_t*) gp.d_meta + g.off, gp.h_meta + g.off, moff(g.off, g.n).end - g.off,
                                    cudaMemcpyHostToDevice, gp.s), "grp meta");
-                launch_group1(gp.gll[(size_t) g.c], g.n, g.off);
+                launch_group1(gt, g.c, g.n, g.off);
             }
         }
     };
+
+    // ---- the peer's share of this layer: the SAME grouped kernel on the second card, from the same q8_1
+    // activation, over the blobs its store holds.  Everything is issued on the peer's stream NOW, so the peer works
+    // while the primary runs its own hits / PCIe / file-tier launches and the CPU pool below; the primary only waits
+    // for the peer's event at the sum, where the rows are deposited (the out_dev block).  The rows themselves stay
+    // in the PCIe plan below - the budget, the VRAM promotion and the victim bookkeeping are the same ones the run
+    // without a peer makes, and only the kernel of these rows runs on the other card. ----
+    if (npeer > 0) {
+        PeerGpu& pg = *gp.peer;
+        DevGuard dg(pg.dev);
+        // the activation: gp.h_x holds the same bytes the primary quantized (the branch above forces the host path
+        // whenever the peer has rows), so the peer's q8_1 rows are the primary's byte for byte
+        ck(cudaMemcpyAsync(pg.d_x, gp.h_x, (size_t) H * 4, cudaMemcpyHostToDevice, pg.s), "peer x h2d");
+        strata::kernels::native_quantize_q8_1((const float*) pg.d_x, pg.d_xq, (int) H, 1, pg.s);
+        MetaTgt pt{pg.h_meta, pg.d_meta, pg.d_xq, pg.d_scratch, pg.d_parts, pg.s, &pg.gll, 0};
+        std::vector<unsigned long long> ptr((size_t) npeer);
+        std::vector<int32_t> start((size_t) npeer + 1), dst((size_t) npeer), tok((size_t) npeer, 0);
+        for (int i = 0; i < npeer; ++i) {
+            ptr[(size_t) i] = (unsigned long long) pg.ptr(layer, ids6[peer_i[i]]);
+            start[(size_t) i] = i;   // compact rows 0..npeer-1: the kernel writes row i of pg.d_parts
+            dst[(size_t) i] = i;
+        }
+        start[(size_t) npeer] = npeer;
+        std::vector<Cls> pgs = group_classes(npeer, ptr, std::vector<int32_t>(peer_i, peer_i + npeer), dst, tok);
+        for (Cls& g : pgs) g.off = pack_group1(pt, g.n, g.p2, g.s2, g.d2, g.t2);
+        ck(cudaMemcpyAsync((uint8_t*) pt.d_meta, pt.h_meta, pt.at, cudaMemcpyHostToDevice, pt.s), "peer meta");
+        for (const Cls& g : pgs) launch_group1(pt, g.c, g.n, g.off);
+        ck(cudaMemcpyAsync(pg.h_parts, pg.d_parts, (size_t) npeer * (size_t) H * 4, cudaMemcpyDeviceToHost, pg.s),
+           "peer parts d2h");
+        ck(cudaEventRecord(pg.done, pg.s), "peer done");
+    }
 
     int ev_hit = -1, ev_pcie = -1;
     if (nh > 0) {
@@ -2437,9 +2780,11 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
         lc = ++im.lcalls[(size_t) layer];
         for (int64_t k = 0; k < K; ++k) im.vlast[(size_t) (layer * NXL + ids6[k])] = im.tick;
         // prefetched experts the routing used: device-to-device into a victim slot (the hits kernel above read the
-        // staging copy; this copy only reads it too, and the next prefetch waits for the layer sync)
-        for (int i = 0; i < nh; ++i) {
-            const int k = hit_i[i];
+        // staging copy; this copy only reads it too, and the next prefetch waits for the layer sync).  `pf_hit` and
+        // not `hit_i`: a prefetched row the PEER owns is not in the hits launch but the promotion must still happen,
+        // or the cache stops following the trajectory of the run without a peer.
+        for (int i = 0; i < npf_all; ++i) {
+            const int k = pf_hit[i];
             if (!pf_ptr[k] || !admit_ok(ids6[k])) continue;
             const int32_t v = lru_victim(ids6[k]);
             if (v < 0) continue;
@@ -2458,26 +2803,42 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
             lru_new[n_lru++] = ids6[k];
         }
     }
+    int np_slots = 0;   // d_stage slots the PCIe rows' DMAs take (a promoted row takes its victim slot instead)
     if (np > 0) {
         // STRATA_DMA_OVERLAP (see the Gpu::s_dc comment): the copies go on the demand-copy stream so they overlap the
         // resident-expert kernels already launched on gp.s, then ONE event orders gp.s before this group's kernels.
         // Sources are this call's arena experts and destinations are d_stage (or their own victim slot); the pool's
         // readers only write victims, and a victim is never routed this call, so the two sets are disjoint.
+        //
+        // PEER (Ds41MoeConfig::peer_device): the rows the second card's store holds keep their place in this plan -
+        // the same budget, the same VRAM promotion (so the cache follows the same trajectory it does without a
+        // peer), the same victim bookkeeping - but their KERNEL runs on the peer (see the block above) and they are
+        // left out of this site's launches; a peer row with no victim slot to fill does not even need its bytes
+        // copied.  What the primary computes is therefore the same set of experts it computes without a peer, each
+        // with the same kernel and the same bytes, which is what makes the two runs token-identical.
         const cudaStream_t cs = gp.s_dc ? gp.s_dc : gp.s;
-        std::vector<unsigned long long> ptr((size_t) np);
-        std::vector<int32_t> start((size_t) np + 1), dst((size_t) np, 0), tok((size_t) np, 0);
+        std::vector<unsigned long long> ptr;
+        std::vector<int32_t> start, dst, tok;
+        ptr.reserve((size_t) np);
+        start.reserve((size_t) np + 1);
+        dst.reserve((size_t) np);
+        tok.reserve((size_t) np);
         for (int i = 0; i < np; ++i) {
-            const uint8_t* p = gp.arena.ptr(layer, ids6[pcie_i[i]]);
-            uint8_t* to = (uint8_t*) gp.d_stage + (size_t) i * (size_t) B;
-            int32_t v = lru && admit_ok(ids6[pcie_i[i]]) ? lru_victim(ids6[pcie_i[i]]) : -1;
-            const int64_t BL = BLX(ids6[pcie_i[i]]);
-            if (v >= 0 && arena_slot(v) < 0 && arena_slot(ids6[pcie_i[i]]) < 0) v = -1;   // nowhere to demote to
+            const int32_t k = pcie_i[i];
+            bool to_peer = false;
+            for (int j = 0; j < npeer && !to_peer; ++j) to_peer = peer_i[j] == k;
+            if (peer_check) to_peer = false;   // diagnostic: run it here too, and compare the two rows
+            const uint8_t* p = gp.arena.ptr(layer, ids6[k]);
+            uint8_t* to = (uint8_t*) gp.d_stage + (size_t) np_slots * (size_t) B;
+            int32_t v = lru && admit_ok(ids6[k]) ? lru_victim(ids6[k]) : -1;
+            const int64_t BL = BLX(ids6[k]);   // the EXPERT's blob (k is only the routing index)
+            if (v >= 0 && arena_slot(v) < 0 && arena_slot(ids6[k]) < 0) v = -1;   // nowhere to demote to
             if (v >= 0) {
                 uint8_t* vs = gp.cache->device_slot(gp.cache->slot_of(layer, v));
                 im.vlast[(size_t) (layer * NXL + v)] = im.tick;
                 int32_t dem = -1;
                 if (arena_slot(v) < 0) {   // demote: arena -> stage, victim -> arena slot, stage -> victim slot
-                    dem = arena_slot(ids6[pcie_i[i]]);
+                    dem = arena_slot(ids6[k]);
                     ck(cudaMemcpyAsync(to, p, (size_t) BL, cudaMemcpyHostToDevice, cs), "pcie dma");
                     demote(gp.cache->slot_of(layer, v), dem, BL, cs);
                     ck(cudaMemcpyAsync(vs, to, (size_t) BL, cudaMemcpyDeviceToDevice, cs), "lru stage copy");
@@ -2487,22 +2848,27 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
                 }
                 lru_old[n_lru] = v;
                 lru_dem[n_lru] = dem;
-                lru_new[n_lru++] = ids6[pcie_i[i]];
-            } else {
+                lru_new[n_lru++] = ids6[k];   // the EXPERT id (the cache and the arena index by it, not by k)
+            } else if (!to_peer) {
                 ck(cudaMemcpyAsync(to, p, (size_t) BL, cudaMemcpyHostToDevice, cs), "pcie dma");
             }
-            ptr[(size_t) i] = (unsigned long long) to;
-            start[(size_t) i] = i;
-            dst[(size_t) i] = pcie_i[i];
+            ++np_slots;   // slots are handed out in order; a victim fill leaves its slot unwritten
+            if (to_peer) continue;   // the second card computes this row from its own store
+            ptr.push_back((unsigned long long) to);
+            start.push_back((int32_t) dst.size());
+            dst.push_back(k);
+            tok.push_back(0);
         }
-        start[(size_t) np] = np;
         if (gp.s_dc) {   // this group's bytes must be home before its kernels run - one wait covers the whole group
             ck(cudaEventRecord(gp.ev_dc, cs), "record demand copies");
             ck(cudaStreamWaitEvent(gp.s, gp.ev_dc, 0), "wait demand copies");
         }
-        launch_group(1, np, ptr, start, dst, tok);
-        ck(cudaEventRecord(gp.ev[3], gp.s), "record pcie");
-        ev_pcie = 3;
+        if (!ptr.empty()) {
+            start.push_back((int32_t) dst.size());
+            launch_group(1, (int) ptr.size(), ptr, start, dst, tok);
+            ck(cudaEventRecord(gp.ev[3], gp.s), "record pcie");
+            ev_pcie = 3;
+        }
     }
 
     // ---- file-tier misses (in neither VRAM nor the RAM arena) on the card: read with O_DIRECT into a pinned staging
@@ -2516,7 +2882,7 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
         int keep = 0;
         for (int i = 0; i < nk; ++i) {
             const int32_t k = cpu_keep[i];
-            if (!gp.arena.ptr(layer, ids6[k]) && np + nfg < kMaxParts) {
+            if (!gp.arena.ptr(layer, ids6[k]) && np_plan + nfg < kMaxParts) {   // the plan's count, not the launched one
                 fg_k[nfg++] = k;
                 cpu_k[k] = false;   // the sum reads its row from the card's parts
             } else {
@@ -2681,7 +3047,7 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
         std::vector<unsigned long long> ptr((size_t) nfg);
         std::vector<int32_t> start((size_t) nfg + 1), dst((size_t) nfg, 0), tok((size_t) nfg, 0);
         for (int j = 0; j < nfg; ++j) {
-            uint8_t* to = (uint8_t*) gp.d_stage + (size_t) (np + j) * (size_t) B;
+            uint8_t* to = (uint8_t*) gp.d_stage + (size_t) (np_slots + j) * (size_t) B;
             ck(cudaMemcpyAsync(to, fsrc[j], (size_t) BLX(ids6[fg_k[j]]), cudaMemcpyHostToDevice,
                                gp.s), "file dma");
             ptr[(size_t) j] = (unsigned long long) to;
@@ -2759,9 +3125,91 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
             ck(cudaMemcpyAsync((float*) gp.d_parts + (size_t) k * (size_t) H, hrow, (size_t) H * 4, cudaMemcpyHostToDevice,
                                gp.s), "cpu row h2d");
         }
+        // the PEER's rows (computed on the second card while everything above ran): wait for its event - recorded
+        // after its D2H - and copy one row each out of its pinned pad into its routing index's row of d_parts, the
+        // same deposit the CPU rows above do.  decode_rows_sum sums every producer, unchanged.
+        if (npeer > 0 && peer_check) {
+            // diagnostic (STRATA_PEER_CHECK=1): the primary ran these rows too (the pcie loop kept them in its
+            // launch) - compare the two bit for bit instead of depositing the peer's
+            const cudaError_t we = cudaStreamWaitEvent(gp.s, gp.peer->done, 0);
+            if (we != cudaSuccess) {
+                (void) cudaGetLastError();
+                ck(cudaEventSynchronize(gp.peer->done), "peer host wait");
+            }
+            std::vector<float> ref((size_t) npeer * (size_t) H);
+            for (int i = 0; i < npeer; ++i)
+                ck(cudaMemcpyAsync(ref.data() + (size_t) i * (size_t) H, (const float*) gp.d_parts + (size_t) peer_i[i] * (size_t) H,
+                                   (size_t) H * 4, cudaMemcpyDeviceToHost, gp.s), "peer check d2h");
+            ck(cudaStreamSynchronize(gp.s), "peer check sync");
+            for (int i = 0; i < npeer; ++i) {
+                const float* a = ref.data() + (size_t) i * (size_t) H;
+                const float* b = gp.peer->h_parts + (size_t) i * (size_t) H;
+                double num = 0, den = 0;
+                float mx = 0;
+                int nz = 0;
+                for (int64_t j = 0; j < H; ++j) {
+                    const double d = (double) a[j] - (double) b[j];
+                    num += d * d;
+                    den += (double) a[j] * (double) a[j];
+                    mx = std::max(mx, (float) std::fabs(d));
+                    nz += d != 0.0;
+                }
+                const int32_t e = ids6[peer_i[i]];
+                // ... and, for a row the two cards disagree on, a FRESH read from the source + the CPU expert as
+                // ground truth: it says which card holds the wrong bytes (both rows are valid only if the blob is)
+                double rp = -1, rq = -1;
+                if (nz > 0) {
+                    std::vector<uint8_t> blob((size_t) im.bl[(size_t) im.g.cls(layer, e)]);
+                    im.blobs->read(layer, e, blob.data());
+                    std::vector<float> refr((size_t) H);
+                    ds41_moe_cpu_expert(im.fl[(size_t) im.g.cls(layer, e)], H, im.g.n_ff, blob.data(), gp.h_x,
+                                        refr.data(), *im.pool);
+                    double na = 0, da = 0, nb = 0, db = 0;
+                    for (int64_t j = 0; j < H; ++j) {
+                        const double da_ = (double) a[j] - (double) refr[(size_t) j];
+                        const double db_ = (double) b[j] - (double) refr[(size_t) j];
+                        na += da_ * da_; da += (double) refr[(size_t) j] * (double) refr[(size_t) j];
+                        nb += db_ * db_; db += (double) refr[(size_t) j] * (double) refr[(size_t) j];
+                    }
+                    rp = std::sqrt(na / std::max(da, 1e-30));
+                    rq = std::sqrt(nb / std::max(db, 1e-30));
+                    // ... and is the peer's STORE the source of it?  Compare its bytes with the fresh read.
+                    std::vector<uint8_t> pblob(blob.size());
+                    { DevGuard dpg(gp.peer->dev);
+                      ck(cudaMemcpy(pblob.data(), gp.peer->ptr(layer, e), pblob.size(), cudaMemcpyDeviceToHost),
+                         "peer blob d2h");
+                      ck(cudaStreamSynchronize(gp.peer->s), "peer blob sync"); }
+                    const bool bdiff = std::memcmp(pblob.data(), blob.data(), blob.size()) != 0;
+                    const int32_t psl = gp.peer->slot_of[(size_t) (layer * im.g.n_experts + e)];
+                    const int64_t psz = psl < 0 ? -1 : (int64_t) (gp.peer->off[(size_t) psl + 1] - gp.peer->off[(size_t) psl]);
+                    std::fprintf(stderr, "[peer-chk]   peer blob %s (%zu B file/class vs %lld B in the store, slot %d, "
+                                         "arena %d)\n",
+                                 bdiff ? "DIFFERS" : "same", blob.size(), (long long) psz, psl,
+                                 gp.arena.ptr(layer, e) != nullptr ? 1 : 0);
+                }
+                std::fprintf(stderr, "[peer-chk] L%lld e%d primary-vs-peer rel %.3e maxabs %.3e ndiff %d cache %d pf %d "
+                                     "cpu-vs-primary %.3e cpu-vs-peer %.3e\n",
+                             (long long) layer, e, std::sqrt(num / std::max(den, 1e-30)), mx, nz,
+                             slot_i[peer_i[i]] >= 0 ? 1 : 0, pf_ptr[peer_i[i]] ? 1 : 0, rp, rq);
+            }
+            gp.peer->rows += npeer;
+            ++gp.peer->launches;
+        } else if (npeer > 0) {
+            const cudaError_t we = cudaStreamWaitEvent(gp.s, gp.peer->done, 0);
+            if (we != cudaSuccess || std::getenv("STRATA_PEER_HOSTWAIT")) {   // host wait: the fallback for a runtime
+                (void) cudaGetLastError();                                    // that refuses a cross-device wait
+                ck(cudaEventSynchronize(gp.peer->done), "peer host wait");
+            }
+            for (int i = 0; i < npeer; ++i)
+                ck(cudaMemcpyAsync((float*) gp.d_parts + (size_t) peer_i[i] * (size_t) H,
+                                   gp.peer->h_parts + (size_t) i * (size_t) H, (size_t) H * 4, cudaMemcpyHostToDevice,
+                                   gp.s), "peer row h2d");
+            gp.peer->rows += npeer;
+            ++gp.peer->launches;
+        }
         // the sum weights live AFTER the captured blocks under STRATA_TIER_GRAPH (the graph's nodes must never see
         // them rewritten), and in the running region otherwise
-        size_t o_w = grp_graph ? gp.tier_w_off : ((meta_at + 15) & ~(size_t) 15);
+        size_t o_w = grp_graph ? gp.tier_w_off : ((gt.at + 15) & ~(size_t) 15);
         if (o_w + sizeof(float) * (size_t) K > kMetaBytes) {
             ck(cudaStreamSynchronize(gp.s), "meta wrap");
             o_w = 0;
@@ -2769,6 +3217,23 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
         std::memcpy(gp.h_meta + o_w, wloc, sizeof(float) * (size_t) K);
         ck(cudaMemcpyAsync((uint8_t*) gp.d_meta + o_w, gp.h_meta + o_w, sizeof(float) * (size_t) K, cudaMemcpyHostToDevice,
                            gp.s), "sum weights");
+        // STRATA_PARTS_HASH=1 (diagnostic): the k rows this call summed, hashed - the first call whose hash differs
+        // between two runs is the call whose expert placement diverged
+        static const bool parts_hash = std::getenv("STRATA_PARTS_HASH") != nullptr;
+        if (parts_hash) {
+            std::vector<float> hb((size_t) K * (size_t) H);
+            ck(cudaMemcpyAsync(hb.data(), gp.d_parts, (size_t) K * (size_t) H * 4, cudaMemcpyDeviceToHost, gp.s), "hash d2h");
+            ck(cudaStreamSynchronize(gp.s), "hash sync");
+            uint64_t hh = 1469598103934665603ull;
+            const uint8_t* bb = (const uint8_t*) hb.data();
+            for (size_t i = 0; i < hb.size() * 4; ++i) { hh ^= bb[i]; hh *= 1099511628211ull; }
+            std::fprintf(stderr, "[parts] call %lld layer %lld hash %016llx plan h%d p%d c%d f%d peer%d [", (long long) im.run_seq,
+                         (long long) layer, (unsigned long long) hh, nh, np_plan, nc, nfg, npeer);
+            for (int i = 0; i < npeer; ++i) std::fprintf(stderr, " %d", peer_i[i]);
+            std::fprintf(stderr, " ] slots [");
+            for (int64_t k = 0; k < K; ++k) std::fprintf(stderr, " %d", slot_i[k]);
+            std::fprintf(stderr, " ]\n");
+        }
         strata::kernels::decode_rows_sum((const float*) gp.d_parts, (const float*) ((uint8_t*) gp.d_meta + o_w), (int) K, H,
                                          (float*) out_dev, gp.s);
         ck(cudaStreamSynchronize(gp.s), "sum sync");
@@ -2839,7 +3304,7 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
     mark(7);
     if (prof) ++g_prof_n;
     st.hits = nh;
-    st.pcie = np + nfg;   // file-tier misses run on the card count with the PCIe share (DMA'd too)
+    st.pcie = np_plan + nfg;   // the plan's card rows (the peer's included); file-tier misses count here too
     st.cpu = nk;
     st.wall_ms = now_ms() - t0;
     im.st.add(st);
@@ -3077,7 +3542,12 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
         ent_u[j] = u;
     }
     // ---- classify: resident slot / prefetch staging / miss ----
-    enum { HIT = 0, PCIE = 1, CPU = 2, FILEG = 3 };   // FILEG: a file-tier miss read to pinned staging, run on the card
+    enum { HIT = 0, PCIE = 1, CPU = 2, FILEG = 3, PEERC = 4 };   // FILEG: a file-tier miss read to pinned staging, run on the card
+    // PEERC (MISS-mode peer, as gpu_run): a miss whose expert the second card's store holds - computed there for every
+    // token of the pass that routes it; no DMA, no CPU pass, no LRU admission.  Only with the sum on the card.
+    static const bool peer_hot_x = std::getenv("STRATA_PEER_HOT") && std::getenv("STRATA_PEER_HOT")[0] == '1';
+    const bool peer_x = !peer_hot_x && gp.peer && gp.peer->built && out_dev != nullptr;
+    int npe_u = 0;
     int cls[kMaxEnt];
     bool from_pf[kMaxEnt] = {};   // a hit served out of a prefetch slot (prefetch_multi) - LRU-admitted below
     unsigned long long dptr[kMaxEnt] = {};
@@ -3091,6 +3561,7 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
             if (im.pf_e[j] == e) pf_at = j;
         if (sl >= 0) { cls[u] = HIT; dptr[u] = (unsigned long long) gp.cache->device_slot(sl); }
         else if (pf_at >= 0) { cls[u] = HIT; from_pf[u] = true; dptr[u] = (unsigned long long) gp.d_pf + (size_t) pf_at * (size_t) B; ++npf; }
+        else if (peer_x && gp.peer->ptr(layer, e)) { cls[u] = PEERC; ++npe_u; }
         else { cls[u] = CPU; miss[nmiss++] = u; }
     }
     // ---- the PCIe share of the distinct misses (same budget rule as gpu_run) ----
@@ -3158,7 +3629,8 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
         const int64_t NXA = im.g.n_experts;
         if (im.last_use.empty()) im.last_use.assign((size_t) (im.g.n_layers * NXA), -1);
         ++im.tick;
-        for (int u = 0; u < nu; ++u) im.last_use[(size_t) (layer * NXA + ue[u])] = im.tick;
+        for (int u = 0; u < nu; ++u)
+            if (cls[u] != PEERC) im.last_use[(size_t) (layer * NXA + ue[u])] = im.tick;   // a peer row is no arena use
     }
     if (nfg > 0 && !gp.h_fstage) ck(cudaMallocHost((void**) &gp.h_fstage, (size_t) kMaxParts * (size_t) B), "h_fstage");
     bool any_vic = false;
@@ -3216,6 +3688,59 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
     ck(cudaMemcpyAsync(gp.d_x, gp.h_x, (size_t) nt * (size_t) H * 4, cudaMemcpyHostToDevice, gp.s), "x h2d");
     strata::kernels::native_quantize_q8_1((const float*) gp.d_x, gp.d_xq, (int) H, nt, gp.s);
     if (npf > 0) ck(cudaStreamWaitEvent(gp.s, gp.ev_pf, 0), "wait prefetch");
+    // ---- the peer's rows (PEERC), issued now on its own stream so they overlap every launch below: the pass's
+    // activations go up, the same grouped kernel runs over the peer's store, and the compact rows come back to the
+    // pinned h_parts; the sum below waits for the peer's event and deposits each row at its routing index ----
+    int32_t pe_j[kMaxEnt];   // compact peer row r -> routing index j
+    int npe = 0;
+    if (npe_u > 0) {
+        PeerGpu& pg = *gp.peer;
+        DevGuard dg(pg.dev);
+        ck(cudaMemcpyAsync(pg.d_x, gp.h_x, (size_t) nt * (size_t) H * 4, cudaMemcpyHostToDevice, pg.s), "peer x h2d");
+        strata::kernels::native_quantize_q8_1((const float*) pg.d_x, pg.d_xq, (int) H, nt, pg.s);
+        size_t pat = 0;
+        bool pused[kMaxEnt] = {};
+        for (;;) {   // one launch per format class among the peer's experts
+            int c = -1;
+            for (int u = 0; u < nu && c < 0; ++u)
+                if (cls[u] == PEERC && !pused[u]) c = im.g.cls(layer, ue[u]);
+            if (c < 0) break;
+            std::vector<unsigned long long> ptr;
+            std::vector<int32_t> start, dst, tok;
+            for (int u = 0; u < nu; ++u) {
+                if (cls[u] != PEERC || pused[u] || im.g.cls(layer, ue[u]) != c) continue;
+                pused[u] = true;
+                ptr.push_back((unsigned long long) pg.ptr(layer, ue[u]));
+                start.push_back((int32_t) dst.size());
+                for (int j = 0; j < NE; ++j)
+                    if (ent_u[j] == u) { dst.push_back(npe); tok.push_back(j / (int) K); pe_j[npe++] = j; }
+            }
+            const int ng = (int) ptr.size();
+            start.push_back((int32_t) dst.size());
+            const size_t ne = dst.size();
+            auto a16 = [](size_t x) { return (x + 15) & ~(size_t) 15; };
+            const size_t o_ptr = pat, o_st = a16(o_ptr + 8 * (size_t) ng), o_ng = a16(o_st + 4 * (size_t) (ng + 1)),
+                         o_dst = a16(o_ng + 4), o_tok = a16(o_dst + 4 * ne), o_end = a16(o_tok + 4 * ne);
+            if (o_end > kMetaBytes) { std::fprintf(stderr, "ds4_moe: peer meta overflow\n"); std::abort(); }
+            const int32_t ngv = ng;
+            std::memcpy(pg.h_meta + o_ptr, ptr.data(), 8 * (size_t) ng);
+            std::memcpy(pg.h_meta + o_st, start.data(), 4 * (size_t) (ng + 1));
+            std::memcpy(pg.h_meta + o_ng, &ngv, 4);
+            std::memcpy(pg.h_meta + o_dst, dst.data(), 4 * ne);
+            std::memcpy(pg.h_meta + o_tok, tok.data(), 4 * ne);
+            ck(cudaMemcpyAsync((uint8_t*) pg.d_meta + o_ptr, pg.h_meta + o_ptr, o_end - o_ptr, cudaMemcpyHostToDevice, pg.s),
+               "peer grp meta");
+            pat = o_end;
+            uint8_t* dm = (uint8_t*) pg.d_meta;
+            strata::kernels::native_expert_grouped(pg.gll[(size_t) c], (const unsigned long long*) (dm + o_ptr),
+                                                  (const int32_t*) (dm + o_st), (const int32_t*) (dm + o_ng),
+                                                  (const int32_t*) (dm + o_dst), (const int32_t*) (dm + o_tok), ng,
+                                                  (int64_t) ne, pg.d_xq, pg.d_scratch, (float*) pg.d_parts, pg.s, ng);
+        }
+        ck(cudaMemcpyAsync(pg.h_parts, pg.d_parts, (size_t) npe * (size_t) H * 4, cudaMemcpyDeviceToHost, pg.s),
+           "peer parts d2h");
+        ck(cudaEventRecord(pg.done, pg.s), "peer done");
+    }
     xmark(1);
     // ---- one grouped launch per (site, class); groups = distinct experts, entries = the tokens routing to them ----
     // ---- vram_lru, as gpu_run: a PCIe miss that passes the admission filter (it also missed in one of the layer's
@@ -3454,6 +3979,17 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
             ck(cudaMemcpyAsync((float*) gp.d_parts + (size_t) j * (size_t) H, hrow, (size_t) H * 4, cudaMemcpyHostToDevice,
                                gp.s), "cpu row h2d");
         }
+        if (npe > 0) {   // the peer's rows: wait for its D2H, then each into its routing-index row
+            if (cudaStreamWaitEvent(gp.s, gp.peer->done, 0) != cudaSuccess) {
+                (void) cudaGetLastError();
+                ck(cudaEventSynchronize(gp.peer->done), "peer host wait");
+            }
+            for (int r = 0; r < npe; ++r)
+                ck(cudaMemcpyAsync((float*) gp.d_parts + (size_t) pe_j[r] * (size_t) H, gp.peer->h_parts + (size_t) r * (size_t) H,
+                                   (size_t) H * 4, cudaMemcpyHostToDevice, gp.s), "peer row h2d");
+            gp.peer->rows += npe;
+            ++gp.peer->launches;
+        }
         const size_t o_w = 0;   // [0, kMetaW): the pass's weights (NE <= kMaxEnt floats); the launches' metadata sits above
         static_assert(sizeof(float) * kMaxEnt <= 1024, "the weights must fit below kMetaW");
         std::memcpy(gp.h_meta + o_w, w, sizeof(float) * (size_t) NE);
@@ -3483,7 +4019,7 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
     // ---- vram_lru bookkeeping (the stream is synced above: every copy is home) ----
     if (lru) {
         for (int u = 0; u < nu; ++u)   // every lookup that was not a VRAM hit is a miss for the admission filter
-            if (cls[u] != HIT || from_pf[u]) im.vmiss[(size_t) (layer * NXL + ue[u])] = lc;
+            if ((cls[u] != HIT && cls[u] != PEERC) || from_pf[u]) im.vmiss[(size_t) (layer * NXL + ue[u])] = lc;
         for (int i = 0; i < n_lru; ++i) {   // the slots now hold the new experts
             gp.cache->replace(layer, lru_old[i], lru_new[i]);
             if (lru_dem[i] >= 0) {   // the arena slot changed hands: the demoted expert in, the promoted one out
@@ -3536,6 +4072,7 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
         if (fg_vic[b] >= 0) arena_check_swap(im, layer, ue[fg_u[b]], fg_slot[b]);
     for (int j = 0; j < NE; ++j) {
         const int c = cls[ent_u[j]];
+        if (c == PEERC) continue;   // the peer's rows: counted in PeerGpu::rows
         if (c == HIT) ++st.hits; else if (c == PCIE || c == FILEG) ++st.pcie; else ++st.cpu;
     }
     st.prefetched_useful = npf;
@@ -4681,6 +5218,20 @@ const char* Ds41MoeTier::mode() const {
 }
 
 int64_t Ds41MoeTier::resident() const { return im_->admitted; }
+int64_t Ds41MoeTier::peer_experts() const {
+#if defined(DS4_MOE_CUDA)
+    return im_ && im_->gpu && im_->gpu->peer ? im_->gpu->peer->used : 0;
+#else
+    return 0;
+#endif
+}
+int64_t Ds41MoeTier::peer_rows() const {
+#if defined(DS4_MOE_CUDA)
+    return im_ && im_->gpu && im_->gpu->peer ? im_->gpu->peer->rows : 0;
+#else
+    return 0;
+#endif
+}
 int64_t Ds41MoeTier::blob_bytes(int64_t layer) const {
     if (layer < 0 || layer >= (int64_t) im_->bl.size()) return 0;
     return im_->bl[(size_t) layer];

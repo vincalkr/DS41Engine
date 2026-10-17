@@ -82,3 +82,6 @@ build-vision-cuda12.bat
 
 # our launcher is part of this branch (the run-*.sh files the setup generates are not)
 !/run-v41-gsq.sh
+/local/calib-q2/stats/
+/local/calib-q2/stats-corpus/
+/local/calib-q2/stats-circles/
