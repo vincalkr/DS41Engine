@@ -33,7 +33,11 @@
   "--peer-device",
   "1",
   "--pf-b",
-  "0"
+  "0",
+  "--pcie",
+  "0",
+  "--dump-routes",
+  "local/routes-chat"
  ],
  "env": {
   "STRATA_NO_LARGEPAGES": "1",
@@ -44,7 +48,11 @@
   "STRATA_TEXT_LOG": "local/v41-text.log",
   "STRATA_PF_NO_DUMMY": "1",
   "STRATA_PEER_GIB": "22",
-  "HIP_VISIBLE_DEVICES": "0,1"
+  "HIP_VISIBLE_DEVICES": "0,1",
+  "STRATA_PEER_ADAPT": "1",
+  "STRATA_PEER_ADAPT_INFLIGHT": "8",
+  "STRATA_PEER_ADAPT_WIN": "16",
+  "STRATA_SERVE_PASS_BATCH": "1"
  },
  "cwd": ".",
  "tokenizer": "models/V41-GSQ/tokenizer",

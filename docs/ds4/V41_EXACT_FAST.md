@@ -82,6 +82,42 @@ the gaps between ~4,600 launches (~3.5 us each on HIP), which the host cannot hi
 kernel at a time either way. Removing them needs ggml's HIP graphs to replay instead of re-capturing every token
 (`AMD_HIP_NOTES.md`, "ggml's HIP graph capture costs more than it saves here").
 
+## Session 2 (2026-10-17 night): the miss path and the prompt passes
+
+Three opt-in changes, now in the chat config (`local/ds41-local.json`); one-shot numbers are greedy 300-token runs on
+the forced exact stream, server numbers are `./run-v41-gsq.sh` at temperature 0.
+
+1. **The peer store follows the working set** (`STRATA_PEER_ADAPT=1`, `STRATA_PEER_ADAPT_INFLIGHT=8`,
+   `STRATA_PEER_ADAPT_WIN=16`): a miss that recurs within 16 calls of its layer and is in the arena is copied to
+   card 1 on a separate stream (after the peer's last launch), into the least recently used peer slot of the same
+   format class; the victim is unmapped at once and the newcomer published when its copy's event fires (a layer's
+   copies are waited for at its next call, because that call may hand the source arena slot to someone else).
+   1,360-1,870 experts admitted per 300 tokens, never a wait. A/B, alternated: Promessi Sposi 13.16 -> 13.55 tok/s
+   (mean of 2 vs 3 runs), Python 10.92 -> 11.39 (one adaptive run at 8.89 left out as an outlier).
+2. **`--pcie 0`**: the arena misses on the CPU pool (12 threads) instead of DMA'd to card 0 - with the peer and
+   12 threads the CPU is the cheaper path for one token: Sposi 13.55 -> 14.63, Python 11.39 -> 12.35 (`--pcie 0.25`:
+   13.44 / 12.22). It made the server's short prompts slower (they ran token by token, each recomputing its misses on
+   the CPU: a 40-token prompt 2.7 -> 6.1 s), which 3. fixes.
+3. **`STRATA_SERVE_PASS_BATCH=1`**: the server's prompt passes (prompts up to 768 tokens) call the tier with
+   `run_multi_to_dev` per 8 tokens, as the DSpark verify pass does - each distinct expert is served once for every token
+   routing it - instead of `run_to_dev` per token.
+
+| server, temperature 0 | before session 2 (graphs on) | after 1+2 | after 1+2+3 (= now) |
+|---|---:|---:|---:|
+| Divina Commedia cold / repeated | 11.71 / 15.18 | 13.32 / 15.46 | 12.77 / **16.07** |
+| nine circles: TTFT / decode | 1.26 s / 14.04 | 2.40 s / 14.82 | **0.94 s / 15.11** |
+| Promessi Sposi: TTFT / decode | 0.89 s / 13.69 | 1.39 s / 13.20 | **0.72 s / 15.02** |
+| Python: TTFT / decode | 2.33 s / 10.80 | 4.86 s / 10.75 | **2.00 s / 11.81** |
+| thinking (40-token prompt): TTFT / decode | 2.73 s / 13.50 | 6.12 s / 13.50 | 3.07 s / 12.86 |
+
+Answers checked: the nine circles, Beatrice (dead in 1290, guide from the Earthly Paradise). Gate (default flags,
+`code_review.i32`): tokens and tier counters identical to `local/gate-before.txt`.
+
+**The rank from the chat's own routing.** The chat config also runs `--dump-routes local/routes-chat`: in `--serve`
+the engine loads the counts already there at start and writes them after every request, so they accumulate across
+restarts (git-ignored: they are this user's routing). `local/rebuild-rank.sh [chat-weight]` adds them to the
+calibration counts and writes `local/rank-gsq-chat.bin`; point `--rank` at it and restart to use it.
+
 ## ggml's HIP graphs pay now (`GGML_CUDA_DISABLE_GRAPHS` removed from the chat config)
 
 `AMD_HIP_NOTES.md` measured the graphs as a loss (biased routing, an older state: 20 captures per token). In this

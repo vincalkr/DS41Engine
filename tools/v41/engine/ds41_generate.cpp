@@ -42,6 +42,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <functional>
 #include <memory>
 #include <iostream>
@@ -75,6 +76,31 @@ struct RouteCounts {
     void init(const std::string & d, int nl, int ne, int tk) {
         dir = d; n_layer = nl; n_experts = ne; top_k = tk;
         if (on()) cnt.assign((size_t) nl * (size_t) ne, 0);
+    }
+    /// --serve: start from the counts already in `dir` (a previous server's), so the counts add up across restarts.
+    /// Reads the format write() produces ("\"e\": {\"n\": N}"); a missing or unreadable file is just zeros.
+    uint64_t load() {
+        if (!on()) return 0;
+        uint64_t total = 0;
+        for (int l = 0; l < n_layer; ++l) {
+            char name[64];
+            std::snprintf(name, sizeof(name), "L%02d.json", l);
+            std::ifstream f(dir + "/" + name);
+            if (!f) continue;
+            const std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            const size_t ex = txt.find("\"experts\"");
+            if (ex == std::string::npos) continue;
+            for (size_t at = ex; (at = txt.find("{\"n\": ", at)) != std::string::npos;) {
+                size_t q1 = txt.rfind('"', at);          // the closing quote of the expert's key
+                size_t q0 = q1 == std::string::npos ? q1 : txt.rfind('"', q1 - 1);
+                at += 7;
+                if (q0 == std::string::npos) continue;
+                const int e = std::atoi(txt.c_str() + q0 + 1);
+                const uint64_t n = std::strtoull(txt.c_str() + at, nullptr, 10);
+                if (e >= 0 && e < n_experts) { cnt[(size_t) l * (size_t) n_experts + (size_t) e] += n; total += n; }
+            }
+        }
+        return total;
     }
     /// Count n tokens' routing for layer l (ids: n * top_k ints, token-major).
     void add(int l, const int * ids, int n) {
@@ -482,6 +508,10 @@ int main(int argc, char ** argv) {
     const Ds41MoeGeom & TG = src.geom();
     g_routes.init(a.dump_routes, (int) TG.n_layers, (int) TG.n_experts, (int) TG.top_k);
     if (g_routes.on()) std::fprintf(stderr, "routes: counting every (layer, expert) selection -> %s\n", a.dump_routes.c_str());
+    if (g_routes.on() && a.serve) {   // the server's counts accumulate across restarts, and are written after each request
+        const uint64_t prev = g_routes.load();
+        std::fprintf(stderr, "routes: %llu earlier selections loaded from %s\n", (unsigned long long) prev, a.dump_routes.c_str());
+    }
     double slot_gib = 0;
     if (a.experts != "cpu" && !ggml_backend_is_cpu(be)) {
         size_t fr = 0, tot = 0;
@@ -749,6 +779,22 @@ int main(int argc, char ** argv) {
             const float * fn = nullptr;
             if (!dense.attn_router(l, mids.data(), mw.data(), &fn)) { ferr = dense.last_error(); return false; }
             g_routes.add(l, mids.data(), m);
+            // STRATA_SERVE_PASS_BATCH=1 (opt-in): the pass's tokens go to the tier as the verify pass's do - one
+            // run_multi_to_dev per kMaxMulti tokens, the union of their experts served once (a miss is read / DMA'd /
+            // computed once for every token routing it) - instead of one run_to_dev per token
+            static const bool pass_batch = std::getenv("STRATA_SERVE_PASS_BATCH") && std::getenv("STRATA_SERVE_PASS_BATCH")[0] == '1';
+            if (pass_batch && rdev1) {
+                constexpr int kMM = Ds41MoeTier::kMaxMulti;
+                for (int off = 0; off < m; off += kMM) {
+                    const int nn = std::min(kMM, m - off);
+                    if (!tier.run_multi_to_dev(l, nn, mids.data() + (size_t) off * top_k, mw.data() + (size_t) off * top_k,
+                                               fn + (size_t) off * n_embd, rdev1 + (size_t) off * n_embd)) {
+                        ferr = "tier.run_multi_to_dev failed"; return false;
+                    }
+                }
+                if (!dense.finish(l, nullptr)) { ferr = dense.last_error(); return false; }
+                continue;
+            }
             for (int t = 0; t < m; ++t) {
                 const bool ok = rdev1 ? tier.run_to_dev(l, mids.data() + (size_t) t * top_k, mw.data() + (size_t) t * top_k,
                                                         fn + (size_t) t * n_embd, rdev1 + (size_t) t * n_embd)
@@ -1650,6 +1696,10 @@ int main(int argc, char ** argv) {
             std::printf("DONE %d %d %.1f %.1f %s 0 0 %d %lld %lld 0 %lld 0 %d\n", gen, total, prompt_ms, dec_ms, finish, reused,
                         (long long) st.hits, (long long) st.lookups(), (long long) st.file_tier, total - reused);
             std::fflush(stdout);
+            if (g_routes.on()) {   // after DONE: the client already has its answer
+                std::string rerr;
+                if (!g_routes.write(rerr)) std::fprintf(stderr, "routes: %s\n", rerr.c_str());
+            }
         }
         tier.close();
         // the stdin reader thread (detached) sits in getline holding cin's lock: a normal exit's stream teardown waits
