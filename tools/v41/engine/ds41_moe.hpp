@@ -503,9 +503,11 @@ public:
     void release_chunk();
     /// The conversation-adaptive arena (on by default; STRATA_ARENA_REBAL=0 turns it off) - routed-token counts per expert, a swap
     /// plan after each prompt (frequent file-tier experts in, rarely used arena experts out), executed by a reader thread
-    /// in the idle NVMe time.  begin_prompt: before a prompt (pauses the reads, publishes finished ones); plan: after it
-    /// (plans, resumes); tick: every decode pass, and with request_end at the end of a request (a larger batch, so the
-    /// gap until the next request is used).  The prompt's logits do not depend on it (routing is exact).
+    /// in the idle NVMe time.  begin_prompt: before a prompt (pauses the reads, takes back every retired swap the reader
+    /// has not started - the victim gets its slot back - and publishes finished ones); plan: after it (plans, resumes);
+    /// tick with request_end at the end of a request (a large batch, so the gap until the next request is used), and
+    /// every decode pass only with STRATA_ARENA_REBAL_DECODE=1 (s6: reads during decode cost it 5-19 %).  The prompt's
+    /// logits do not depend on it (routing is exact).
     void rebalance_begin_prompt();
     void rebalance_plan();
     void rebalance_tick(bool request_end = false);

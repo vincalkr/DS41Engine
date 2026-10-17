@@ -5493,7 +5493,8 @@ bool ds41_moe_cpu_expert(const cpu::NativeFmt& f, int64_t n_embd, int64_t n_ff, 
 // file-tier experts earlier turns read, but the conversation's union is ~67 GB, so no cache holds it; what DOES help is
 // FREQUENCY - replaying the s14 route trace, an arena holding the conversation's most-used experts (decayed routed-token
 // counts) cuts a small turn's file-tier experts by ~35-45%.  LRU admission made it worse (the long first turn evicts
-// the ranked arena).  So: count, plan after each prompt, and swap in the idle NVMe time (decode, and between requests).
+// the ranked arena).  So: count, plan after each prompt, and swap in the idle NVMe time between requests (s6: reads
+// during decode too cost decode 5-19 %, STRATA_ARENA_REBAL_DECODE=1).
 //
 // Safety - only the ENGINE thread ever reads or writes arena.slot_of:
 //   retire (engine, after cudaDeviceSynchronize: no copy or kernel in flight): the victim's slot_of = -1, so nothing
@@ -5509,7 +5510,7 @@ struct Rebal {
     struct Pair { int32_t layer, cand, victim; float gain; };
     std::vector<Pair> queue;
     size_t qpos = 0;
-    struct Job { int32_t layer, e, slot; std::atomic<int> done{0}; };
+    struct Job { int32_t layer, e, slot, victim = -1; std::atomic<int> done{0}; };   ///< victim -1 = a free slot
     std::vector<std::unique_ptr<Job>> inflight;   ///< engine thread's list (retired, not yet published)
     std::deque<Job*> todo;                        ///< the reader's queue (under mu)
     std::vector<int32_t> free_slots;              ///< slots nobody maps (see publish)
@@ -5517,10 +5518,11 @@ struct Rebal {
     std::condition_variable cv;
     bool pause = false, stop = false;
     std::thread th;
-    int64_t passes = 0, retired = 0, published = 0, wasted = 0;
+    int64_t passes = 0, retired = 0, published = 0, wasted = 0, cancelled = 0;
     int64_t skip[5] = {};   ///< retire rejections: cand already in, victim gone, victim VRAM-resident, victim recently used, slot too small
     float decay = 0.9f, margin = 1.0f, min_score = 2.0f;
     int per_tick = 64, every = 4, max_plan = 6000, max_inflight = 4096, end_batch = 2048;
+    bool decode_reads = false;  ///< reads only between requests (s6: reads during decode cost it 5-19 %); STRATA_ARENA_REBAL_DECODE=1 = also during decode
 };
 
 void rebal_count(Ds41MoeImpl& im, int64_t layer, const int32_t* ids, int64_t n) {
@@ -5571,7 +5573,7 @@ static void rebal_retire(Ds41MoeImpl& im, int max_n) {
         int32_t& sc = gp.arena.slot_of[(size_t) (p.layer * NX + p.cand)];
         if (sc >= 0) { ++r.skip[0]; continue; }                           // already in (arena_adapt)
         const uint64_t need = (uint64_t) im.bl[(size_t) im.g.cls(p.layer, p.cand)];
-        int32_t slot = -1;
+        int32_t slot = -1, victim = -1;
         for (size_t f = 0; f < r.free_slots.size(); ++f)                  // a slot nobody maps first
             if (gp.arena.off[(size_t) r.free_slots[f] + 1] - gp.arena.off[(size_t) r.free_slots[f]] >= need) {
                 slot = r.free_slots[f];
@@ -5586,10 +5588,11 @@ static void rebal_retire(Ds41MoeImpl& im, int max_n) {
                 { ++r.skip[3]; continue; }                                // decode used it in the last few tokens
             if (gp.arena.off[(size_t) sv + 1] - gp.arena.off[(size_t) sv] < need) { ++r.skip[4]; continue; }
             slot = sv;
+            victim = p.victim;
             sv = -1;                                                      // retired: nothing maps to `slot` now
         }
         auto j = std::make_unique<Rebal::Job>();
-        j->layer = p.layer; j->e = p.cand; j->slot = slot;
+        j->layer = p.layer; j->e = p.cand; j->slot = slot; j->victim = victim;
         add.push_back(j.get());
         r.inflight.push_back(std::move(j));
         ++r.retired;
@@ -5602,6 +5605,58 @@ static void rebal_retire(Ds41MoeImpl& im, int max_n) {
     }
     r.cv.notify_all();
 }
+
+/// A prompt is starting: take back every retired swap the reader has not started, so the prompt finds no holes in the
+/// arena (s6: with back-to-back requests, request_end's batch of retired-but-unread slots stayed empty through the whole
+/// next prompt - neither the victim nor the candidate in the arena - and a 16.5K prompt read 42 % more blobs from NVMe,
+/// decode after it ran 30 % slower).  A queued job's slot still holds its victim's bytes (nothing writes a retired slot
+/// but the reader), so the victim simply gets its slot back; a free-slot job returns its slot to free_slots.  The one
+/// read that may be in progress is waited for, then published.  Called with r.pause already set (no new pops).
+static void rebal_cancel(Ds41MoeImpl& im) {
+    Rebal& r = *im.rebal;
+    Gpu& gp = *im.gpu;
+    const int64_t NX = im.g.n_experts;
+    std::deque<Rebal::Job*> undo;
+    {
+        std::lock_guard<std::mutex> lk(r.mu);
+        undo.swap(r.todo);
+    }
+    if (!undo.empty()) {
+        for (Rebal::Job* j : undo) {
+            if (j->victim >= 0) {
+                int32_t& sv = gp.arena.slot_of[(size_t) (j->layer * NX + j->victim)];
+                if (sv < 0) sv = j->slot;                      // the victim is back, bytes untouched
+                else r.free_slots.push_back(j->slot);          // arena_adapt re-admitted it elsewhere meanwhile
+                static const bool check = std::getenv("DS41_CHECK_ARENA") != nullptr;
+                if (check && sv == j->slot) {                  // the restored slot against the victim's file blob
+                    static int64_t n_chk = 0, n_bad = 0;
+                    const size_t len = (size_t) im.bl[(size_t) im.g.cls(j->layer, j->victim)];
+                    std::vector<uint8_t> ref((size_t) im.blob);
+                    im.blobs->read(j->layer, j->victim, ref.data());
+                    const bool good = std::memcmp((const uint8_t*) gp.arena.base + gp.arena.off[(size_t) j->slot], ref.data(), len) == 0;
+                    ++n_chk; n_bad += !good;
+                    if (!good) std::fprintf(stderr, "[rebal-chk] restore L%d e%d slot %d BAD\n", j->layer, j->victim, j->slot);
+                    if (n_chk % 500 == 0) std::fprintf(stderr, "[rebal-chk] %lld restored victims checked, %lld bad\n", (long long) n_chk, (long long) n_bad);
+                }
+            } else {
+                r.free_slots.push_back(j->slot);
+            }
+            j->done.store(2, std::memory_order_relaxed);       // 2 = cancelled: dropped from inflight below
+        }
+        size_t k = 0;
+        for (size_t i = 0; i < r.inflight.size(); ++i)
+            if (r.inflight[i]->done.load(std::memory_order_relaxed) != 2) r.inflight[k++] = std::move(r.inflight[i]);
+        r.inflight.resize(k);
+        r.retired -= (int64_t) undo.size();
+        r.cancelled += (int64_t) undo.size();
+    }
+    for (int spin = 0; spin < 20000; ++spin) {   // the reader holds at most one job: wait for it (one blob read)
+        bool busy = false;
+        for (const auto& j : r.inflight) busy |= j->done.load(std::memory_order_acquire) == 0;
+        if (!busy) break;
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+}
 #endif
 
 void Ds41MoeTier::rebalance_begin_prompt() {
@@ -5613,6 +5668,7 @@ void Ds41MoeTier::rebalance_begin_prompt() {
         im_->rebal = std::make_unique<Rebal>();
         Rebal& r0 = *im_->rebal;
         r0.score.assign((size_t) (im_->g.n_layers * im_->g.n_experts), 0.0f);
+        if (const char* d = std::getenv("STRATA_ARENA_REBAL_DECODE")) r0.decode_reads = d[0] == '1';
         Ds41MoeImpl* imp = im_.get();
         r0.th = std::thread([imp] {   // the reader: retired slots <- the candidate's blob, outside stream order
             Rebal& r = *imp->rebal;
@@ -5637,6 +5693,7 @@ void Ds41MoeTier::rebalance_begin_prompt() {
         std::lock_guard<std::mutex> lk(r.mu);
         r.pause = true;
     }
+    rebal_cancel(*im_);
     rebal_publish(*im_);
 #endif
 }
@@ -5687,9 +5744,10 @@ void Ds41MoeTier::rebalance_plan() {
     std::sort(r.queue.begin(), r.queue.end(), [](const Rebal::Pair& a, const Rebal::Pair& b) { return a.gain > b.gain; });
     if ((int) r.queue.size() > r.max_plan) r.queue.resize((size_t) r.max_plan);
     for (float& v : r.score) v *= r.decay;
-    std::fprintf(stderr, "arena rebalance: %zu swaps planned (so far %lld retired, %lld published, %lld slots re-used; "
-                 "skipped: cand in %lld, victim gone %lld, victim in VRAM %lld, victim recent %lld, slot small %lld)\n",
-                 r.queue.size(), (long long) r.retired, (long long) r.published, (long long) r.wasted, (long long) r.skip[0],
+    std::fprintf(stderr, "arena rebalance: %zu swaps planned (so far %lld retired, %lld published, %lld slots re-used, "
+                 "%lld cancelled; skipped: cand in %lld, victim gone %lld, victim in VRAM %lld, victim recent %lld, slot small %lld)\n",
+                 r.queue.size(), (long long) r.retired, (long long) r.published, (long long) r.wasted, (long long) r.cancelled,
+                 (long long) r.skip[0],
                  (long long) r.skip[1], (long long) r.skip[2], (long long) r.skip[3], (long long) r.skip[4]);
     {
         std::lock_guard<std::mutex> lk(r.mu);
@@ -5705,7 +5763,7 @@ void Ds41MoeTier::rebalance_tick(bool request_end) {
     Rebal& r = *im_->rebal;
     rebal_publish(*im_);
     if (r.qpos >= r.queue.size()) return;
-    if (!request_end && (++r.passes % r.every) != 0) return;
+    if (!request_end && (!r.decode_reads || (++r.passes % r.every) != 0)) return;
     if ((int) r.inflight.size() >= r.max_inflight) return;
     cudaDeviceSynchronize();   // no copy or kernel may still touch a slot we retire
     rebal_retire(*im_, request_end ? r.end_batch : r.per_tick);
