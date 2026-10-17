@@ -69,3 +69,5 @@ pfb0                         divina-breve   diff=4    decode: 300 tokens in 22.8
 pfb0-dspark                  code-en        diff=0    decode: 215 tokens in 15.56 s = 13.75 tok/s; experts 12208 hit / 43863 cpu / 1758 pcie / 1513 file (21.1% VRAM hits), cpu 5975 ms, file 3556 ms; spec reads 0 issued / 0 u
 pfb0-dspark                  sposi          diff=0    decode: 285 tokens in 29.58 s = 9.60 tok/s; experts 81951 hit / 71461 cpu / 1968 pcie / 1744 file (52.7% VRAM hits), cpu 10303 ms, file 4574 ms; spec reads 0 issued / 0 u
 DONE13
+pfb0-nographs                sposi          diff=3    decode: 300 tokens in 24.61 s = 12.15 tok/s; experts 44674 hit / 4267 cpu / 9981 pcie / 940 file (75.8% VRAM hits), cpu 1042 ms, file 3347 ms; spec reads 0 issued / 0 use
+ceil-nographs                sposi          diff=123  decode: 300 tokens in 16.01 s = 18.68 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0

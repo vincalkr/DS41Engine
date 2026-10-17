@@ -82,6 +82,26 @@ the gaps between ~4,600 launches (~3.5 us each on HIP), which the host cannot hi
 kernel at a time either way. Removing them needs ggml's HIP graphs to replay instead of re-capturing every token
 (`AMD_HIP_NOTES.md`, "ggml's HIP graph capture costs more than it saves here").
 
+## ggml's HIP graphs pay now (`GGML_CUDA_DISABLE_GRAPHS` removed from the chat config)
+
+`AMD_HIP_NOTES.md` measured the graphs as a loss (biased routing, an older state: 20 captures per token). In this
+configuration they replay: `rocprofv3 --hip-runtime-trace` on the all-VRAM decode counts **69 `hipGraphLaunch` and
+1.3 captures per token** (613 direct launches are the tier's). Measured with and without
+`GGML_CUDA_DISABLE_GRAPHS=1`, same binary:
+
+| | graphs off | graphs on |
+|---|---:|---:|
+| one-shot Promessi Sposi (`--pf-b 0`) | 12.15 | **12.98** |
+| one-shot all-VRAM ceiling | 18.68 | **20.54** |
+| server, 7,491-token prompt: TTFT / decode after it | 37.5 s / 10.41 | **30.5 s / 12.02** |
+| server, Divina Commedia cold / repeated | 12.10 / 14.51 | 11.71 / **15.18** |
+| server, nine circles / Promessi Sposi / Python / thinking | 13.70 / 13.40 / 10.94 / 12.95 | **14.04 / 13.69** / 10.80 / **13.50** |
+
+So the graph replay the dense half needs already works; what is left between the kernels at the ceiling is the
+per-layer hand-off to the expert tier (the router ids to the host, the tier's plan and launches, the sum), which a
+graph cannot hold because the plan is made on the host from the ids (`V41_DECODE_OVERLAP_PLAN.md` §5: the miss service
+is host work keyed on the ids, so the layers cannot run ahead).
+
 ## Where the time goes now
 
 `STRATA_DEC_PROF=1`, 300-token Divina Commedia, the configuration above: begin 3.5, attn_router 48.7, tier 31.0,

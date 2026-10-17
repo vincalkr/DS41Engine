@@ -527,6 +527,10 @@ script was `STRATA_SERVE_PASS_BIAS=0`.
 
 ## ggml's HIP graph capture costs more than it saves here (`GGML_CUDA_DISABLE_GRAPHS=1`)
 
+> **Superseded 2026-10-17:** with exact routing, the peer miss tier and `--pf-b 0` the graphs replay (69 launches, 1.3
+> captures per token) and pay: prompt 200 -> 245 tok/s, decode +2-10%. The chat config no longer sets the variable;
+> numbers in `V41_EXACT_FAST.md`. The measurement below is the biased-routing state of 2026-10-16.
+
 `rocprofv3 --runtime-trace` on a decode: **6,986 HIP runtime calls per token** - 1,822 launches, 951 `hipMemcpyAsync`
 (508 of them host->device), 3,130 `hipGetLastError`, 652 `hipGetDevice`, 176 `hipStreamSynchronize`, and **20
 `hipStreamBeginCapture` + 20 `hipStreamEndCapture` per token**. That is the ~14 ms/token between the 69.4 ms of GPU
