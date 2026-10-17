@@ -113,6 +113,14 @@ the forced exact stream, server numbers are `./run-v41-gsq.sh` at temperature 0.
 Answers checked: the nine circles, Beatrice (dead in 1290, guide from the Earthly Paradise). Gate (default flags,
 `code_review.i32`): tokens and tier counters identical to `local/gate-before.txt`.
 
+4. **`STRATA_VRAM_BG=1`**: with `--pcie 0` card 0's cache stopped changing (its promotions rode on the PCIe misses'
+   DMA): ~99 VRAM hits per token in the chat. Now one recurring miss per call is promoted into card 0 after the call,
+   off the critical path: the copies go on the tier's stream behind the call's kernels (a later kernel reading the slot
+   is ordered after them), the mapping is published at once, and a victim without an arena copy is demoted into the
+   slot the newcomer leaves. One-shot: Sposi 14.63 -> **15.74**, Python 12.35 -> **13.53** (`=2`: 10.48 / 13.35).
+   Server: ~167 VRAM hits per token; Divina Commedia 13.48 cold / **17.40** repeated, nine circles 15.82, Promessi Sposi
+   15.76, Python 10.83, thinking 14.37, two new questions 16.01 / 16.03 tok/s.
+
 **The rank from the chat's own routing.** The chat config also runs `--dump-routes local/routes-chat`: in `--serve`
 the engine loads the counts already there at start and writes them after every request, so they accumulate across
 restarts (git-ignored: they are this user's routing). `local/rebuild-rank.sh [chat-weight]` adds them to the

@@ -3414,6 +3414,49 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
         }
     }
 
+    // ---- STRATA_VRAM_BG=n (opt-in): up to n recurring misses per call are promoted into card 0's VRAM AFTER this
+    // call's work, off the critical path - the --pcie 0 decode computes misses on the CPU, and without this card 0's
+    // cache never changes (its promotions rode on the PCIe misses' DMA).  The copies go on gp.s behind this call's
+    // kernels, so every later kernel reading the slot is ordered after them, and the mapping is published now; the
+    // next call's sum sync makes them home before the host touches the slots again.  A victim without an arena copy
+    // is demoted into the arena slot the newcomer leaves (stage -> D2H -> D2D, all on gp.s, as the PCIe path does).
+    static const int vbg = std::getenv("STRATA_VRAM_BG") ? std::atoi(std::getenv("STRATA_VRAM_BG")) : 0;
+    if (vbg > 0 && lru && gp.d_stage && gp.arena.base) {
+        static const int64_t vbg_win = std::getenv("STRATA_VRAM_BG_WIN") ? std::atoll(std::getenv("STRATA_VRAM_BG_WIN")) : 4;
+        int nbg = 0;
+        for (int64_t k = 0; k < K && nbg < vbg; ++k) {
+            const int32_t e = ids6[k];
+            if (slot_i[k] >= 0 || pf_ptr[k]) continue;
+            if (gp.cache->slot_of(layer, e) >= 0) continue;
+            const int64_t m = k < kMaxParts ? pa_m[k] : -1;
+            if (!(m >= 0 && pa_lc - m <= vbg_win)) continue;
+            const int32_t src = arena_slot(e);
+            if (src < 0) continue;   // the newcomer must be in the arena (the copy's source)
+            const int32_t v = lru_victim(e);
+            if (v < 0) continue;
+            const int32_t vs = gp.cache->slot_of(layer, v);
+            const int64_t bl = BLX(e);
+            const uint8_t* from = gp.arena.ptr(layer, e);
+            if (arena_slot(v) < 0) {
+                uint8_t* stage = (uint8_t*) gp.d_stage;
+                ck(cudaMemcpyAsync(stage, from, (size_t) bl, cudaMemcpyHostToDevice, gp.s), "vram bg stage");
+                demote(vs, src, BLX(v), gp.s);
+                ck(cudaMemcpyAsync(gp.cache->device_slot(vs), stage, (size_t) bl, cudaMemcpyDeviceToDevice, gp.s), "vram bg slot");
+                gp.arena.slot_of[(size_t) (layer * NXL + e)] = -1;
+                gp.arena.slot_of[(size_t) (layer * NXL + v)] = src;
+                if (!im.last_use.empty()) im.last_use[(size_t) (layer * NXL + v)] = im.tick;
+                ++im.st.vram_demotes;
+            } else {
+                ck(cudaMemcpyAsync(gp.cache->device_slot(vs), from, (size_t) bl, cudaMemcpyHostToDevice, gp.s), "vram bg dma");
+            }
+            gp.cache->replace(layer, v, e);
+            im.vlast[(size_t) (layer * NXL + v)] = im.tick;
+            im.vlast[(size_t) (layer * NXL + e)] = im.tick;
+            ++im.st.vram_swaps;
+            ++nbg;
+        }
+    }
+
     // ---- STRATA_PEER_ADAPT: recurring misses that stayed off card 0 start their copy to the peer (background) ----
     if (peer_adapt_on() && gp.peer && gp.peer->built && !gp.peer->slot_key.empty()) {
         static const int pa_max = std::getenv("STRATA_PEER_ADAPT_INFLIGHT") ? std::atoi(std::getenv("STRATA_PEER_ADAPT_INFLIGHT")) : 4;
