@@ -3713,6 +3713,10 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
         if (u < 0) { u = nu; ue[nu++] = ids[j]; }
         ent_u[j] = u;
     }
+    // STRATA_VRAM_BG: the admission filter's state before this call updates it, per distinct expert
+    const int64_t xbg_lc = im.lcalls.empty() ? 0 : im.lcalls[(size_t) layer] + 1;
+    int64_t xbg_m[kMaxEnt];
+    for (int u = 0; u < nu; ++u) xbg_m[u] = im.vmiss.empty() ? -1 : im.vmiss[(size_t) (layer * im.g.n_experts + ue[u])];
     // ---- classify: resident slot / prefetch staging / miss ----
     enum { HIT = 0, PCIE = 1, CPU = 2, FILEG = 3, PEERC = 4 };   // FILEG: a file-tier miss read to pinned staging, run on the card
     // PEERC (MISS-mode peer, as gpu_run): a miss whose expert the second card's store holds - computed there for every
@@ -4218,6 +4222,45 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
                                                   lru_new[i], ok_v ? "ok" : "BAD", lru_old[i], ok_a ? "ok" : "BAD");
                 if (n_chk % 200 == 0) std::fprintf(stderr, "[d3-lru-chk] %lld swaps checked, %lld bad\n", (long long) n_chk, (long long) n_bad);
             }
+        }
+    }
+    // ---- STRATA_VRAM_BG_PASS (as gpu_run's STRATA_VRAM_BG): up to n recurring misses of the pass promoted into card 0 ----
+    // Its own opt-in, STRATA_VRAM_BG_PASS=n: measured with DSpark (code 16.60 vs 18.58 tok/s at depth 4, prose
+    // 10.70-13.73 vs 10.55-12.78) it shows no clear gain inside the run-to-run spread.
+    static const int xvbg_n = std::getenv("STRATA_VRAM_BG_PASS") ? std::atoi(std::getenv("STRATA_VRAM_BG_PASS")) : 0;
+    if (xvbg_n > 0 && lru && gp.d_stage && gp.arena.base) {
+        static const int64_t xvbg_win = std::getenv("STRATA_VRAM_BG_WIN") ? std::atoll(std::getenv("STRATA_VRAM_BG_WIN")) : 4;
+        int nbg = 0;
+        for (int u = 0; u < nu && nbg < xvbg_n; ++u) {
+            if (cls[u] == HIT) continue;
+            const int32_t e = ue[u];
+            if (gp.cache->slot_of(layer, e) >= 0) continue;   // admitted by this pass's PCIe site
+            if (!(xbg_m[u] >= 0 && xbg_lc - xbg_m[u] <= xvbg_win)) continue;
+            const int32_t src = arena_slot(e);
+            if (src < 0) continue;
+            const int32_t v = lru_victim(e);
+            if (v < 0) continue;
+            const int32_t vs = gp.cache->slot_of(layer, v);
+            const int64_t bl = BLX(e);
+            const uint8_t* from = gp.arena.ptr(layer, e);
+            if (arena_slot(v) < 0) {
+                uint8_t* stage = (uint8_t*) gp.d_stage;
+                ck(cudaMemcpyAsync(stage, from, (size_t) bl, cudaMemcpyHostToDevice, gp.s), "vram bg stage");
+                ck(cudaMemcpyAsync((uint8_t*) gp.arena.base + (size_t) gp.arena.off[(size_t) src], gp.cache->device_slot(vs),
+                                   (size_t) BLX(v), cudaMemcpyDeviceToHost, gp.s), "vram bg demote");
+                ck(cudaMemcpyAsync(gp.cache->device_slot(vs), stage, (size_t) bl, cudaMemcpyDeviceToDevice, gp.s), "vram bg slot");
+                gp.arena.slot_of[(size_t) (layer * NXL + e)] = -1;
+                gp.arena.slot_of[(size_t) (layer * NXL + v)] = src;
+                if (!im.last_use.empty()) im.last_use[(size_t) (layer * NXL + v)] = im.tick;
+                ++st.vram_demotes;
+            } else {
+                ck(cudaMemcpyAsync(gp.cache->device_slot(vs), from, (size_t) bl, cudaMemcpyHostToDevice, gp.s), "vram bg dma");
+            }
+            gp.cache->replace(layer, v, e);
+            im.vlast[(size_t) (layer * NXL + v)] = im.tick;
+            im.vlast[(size_t) (layer * NXL + e)] = im.tick;
+            ++st.vram_swaps;
+            ++nbg;
         }
     }
     // ---- admission of the distinct misses (the pre-LRU rule; uniform blob sizes only) ----

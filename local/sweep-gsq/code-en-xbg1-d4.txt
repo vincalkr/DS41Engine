@@ -1,0 +1,27 @@
+```python
+from datetime import datetime
+
+def weekday_from_iso8601(date_str: str) -> str:
+    """Return the weekday name for an ISO 8601 date string.
+
+    Args:
+        date_str: An ISO 8601 date string, e.g. "2024-05-17" or
+                  "2024-05-17T12:30:00".
+
+    Returns:
+        The weekday name, e.g. "Friday".
+
+    Raises:
+        ValueError: If the string is not a valid ISO 8601 date.
+    """
+    dt = datetime.fromisoformat(date_str)
+    return dt.strftime("%A")
+```
+
+Example:
+
+```python
+weekday_from_iso8601("2024-05-17")  # -> "Friday"
+```
+
+Note: `datetime.fromisoformat` accepts most ISO 8601 forms (dates, datetimes, and offsets) in Python 3.11+. For older versions, it handles the common `YYYY-MM-DD` and `YYYY-MM-DDTHH:MM:SS` shapes but not all variants (e.g station `Z` suffix).<｜end▁of▁sentence｜>
