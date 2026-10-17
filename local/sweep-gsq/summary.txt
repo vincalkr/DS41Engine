@@ -57,3 +57,15 @@ dspark-peer-bp0              sposi          diff=0    decode: 272 tokens in 24.5
 dspark-peer-bp0.25           code-en        diff=0    decode: 226 tokens in 24.31 s = 9.26 tok/s; experts 39262 hit / 19331 cpu / 8181 pcie / 1620 file (58.8% VRAM hits), cpu 4326 ms, file 3355 ms; spec reads 0 issued / 0 us
 dspark-peer-bp0.25           sposi          diff=0    decode: 287 tokens in 25.87 s = 11.06 tok/s; experts 119730 hit / 33553 cpu / 12951 pcie / 1728 file (72.0% VRAM hits), cpu 7150 ms, file 4090 ms; spec reads 0 issued / 0
 DONE11
+async                        sposi          diff=5    decode: 300 tokens in 22.92 s = 13.05 tok/s; experts 51545 hit / 2573 cpu / 4818 pcie / 966 file (87.5% VRAM hits), cpu 609 ms, file 2988 ms; spec reads 0 issued / 0 used
+async-pfb0                   sposi          diff=4    decode: 300 tokens in 23.23 s = 12.87 tok/s; experts 44619 hit / 4283 cpu / 10018 pcie / 943 file (75.7% VRAM hits), cpu 1058 ms, file 3151 ms; spec reads 0 issued / 0 us
+sync-pfb0                    sposi          diff=4    decode: 300 tokens in 23.03 s = 12.98 tok/s; experts 44619 hit / 4283 cpu / 10018 pcie / 943 file (75.7% VRAM hits), cpu 1055 ms, file 2907 ms; spec reads 0 issued / 0 us
+ceil-sync-t12                sposi          diff=124  decode: 300 tokens in 14.56 s = 20.54 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0
+ceil-async-t12               sposi          diff=123  decode: 300 tokens in 15.18 s = 19.69 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0
+ceil-async-pfb0              sposi          diff=124  decode: 300 tokens in 18.39 s = 16.26 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0
+DONE12
+pfb0                         code-en        diff=4    decode: 212 tokens in 20.44 s = 10.32 tok/s; experts 24944 hit / 4440 cpu / 10383 pcie / 978 file (62.7% VRAM hits), cpu 1123 ms, file 3167 ms; spec reads 0 issued / 0 us
+pfb0                         divina-breve   diff=4    decode: 300 tokens in 22.88 s = 13.07 tok/s; experts 44559 hit / 4031 cpu / 9912 pcie / 726 file (76.2% VRAM hits), cpu 1002 ms, file 2618 ms; spec reads 0 issued / 0 use
+pfb0-dspark                  code-en        diff=0    decode: 215 tokens in 15.56 s = 13.75 tok/s; experts 12208 hit / 43863 cpu / 1758 pcie / 1513 file (21.1% VRAM hits), cpu 5975 ms, file 3556 ms; spec reads 0 issued / 0 u
+pfb0-dspark                  sposi          diff=0    decode: 285 tokens in 29.58 s = 9.60 tok/s; experts 81951 hit / 71461 cpu / 1968 pcie / 1744 file (52.7% VRAM hits), cpu 10303 ms, file 4574 ms; spec reads 0 issued / 0 u
+DONE13

@@ -31,7 +31,9 @@
   "--vram-margin",
   "0.5",
   "--peer-device",
-  "1"
+  "1",
+  "--pf-b",
+  "0"
  ],
  "env": {
   "STRATA_NO_LARGEPAGES": "1",

@@ -17,9 +17,11 @@ Every number below was measured on this box; one-shot runs are greedy, 300 token
 | + `--threads 12` | - | 10.39 | - |
 | + `--vram-margin 0.5` (= `local/ds41-local-fast-exact.json`) | 10.05 / **11.16** free | 10.68 | **9.85** |
 | + DSpark, peer in the verify path, `STRATA_TIER_BATCH_PCIE=0` | - | 11.06 | **14.03** |
+| `--vram-margin 0.5` config + `--pf-b 0`, no DSpark (= `local/ds41-local.json` now) | **13.07** | **12.98** | 10.32 |
 
-Through the server (`./run-v41-gsq.sh`, ctx 262144, arena 75 GiB, temperature 0): **11.8-14.1 tok/s** (Divina
-Commedia 11.84 cold, 14.05 repeated; the nine circles 13.64, TTFT 1.3 s). The chat with exact routing ran at ~2.7 tok/s
+Through the server (`./run-v41-gsq.sh`, ctx 262144, arena 75 GiB, temperature 0), with `--pf-b 0`: Divina Commedia
+12.10 cold / 14.51 repeated, the nine circles 13.70 (TTFT 1.2 s), Promessi Sposi 13.40, the Python prompt 10.94, and
+with thinking on (temperature 0.8) 12.95 tok/s; before `--pf-b 0`: 11.84 / 14.05 / 13.64, thinking 11.27. The chat with exact routing ran at ~2.7 tok/s
 before. Answers checked by hand: correct dates, structure, the nine circles.
 
 Token agreement against the exact reference (the same stream forced with `STRATA_FORCE_IDS`, `STRATA_DEC_MARGIN=1`
@@ -52,6 +54,9 @@ row differently, and which computes it depends on the cache state). The route bi
 5. **`--threads 12`**: the 12 physical cores. With 24 SMT threads the pool's threads contend with the thread that
    drives the cards: 7.29 -> 10.39 tok/s, and the prompt 189.8 -> 246.4 tok/s (5,783 tokens).
 6. **`--vram-margin 0.5`**: 0.5 GiB more expert slots on card 0.
+7. **`--pf-b 0`** (no predicted prefetch): with the peer and 12 threads the prefetch's DMAs cost more than its hits
+   save - Promessi Sposi 10.68 -> 12.98, Divina Commedia 10.05 -> 13.07, Python 9.85 -> 10.32. Not with DSpark: there
+   the prefetch is what admits experts into VRAM in the verify pass (hits 74% -> 21-53% without it; Sposi 11.06 -> 9.60).
 
 ## What does not work
 
@@ -63,6 +68,19 @@ row differently, and which computes it depends on the cache state). The route bi
   changed, no faster.
 - **DSpark on Italian prose**: the drafter accepts ~1.0 draft per pass (code: 2.5-2.9), so the verify width is mostly
   wasted; 11.06 vs 10.68 tok/s single-step.
+
+## The dense half is GPU-bound, not sync-bound (measured)
+
+An opt-in asynchronous dense path (`STRATA_DENSE_ASYNC=1`: `graph_compute_async`, the readbacks queued behind the
+graphs with one synchronize, and the tier handing over with an event that ggml's stream waits on instead of a
+stream sync) changed nothing: Sposi 12.98 sync vs 12.87 async at `--pf-b 0`, and the all-VRAM ceiling 20.54 vs 19.69.
+It was removed; the code is `local/dense-async-attempt.patch`. `rocprofv3 --kernel-trace` on the all-VRAM ceiling
+(64 tokens) says why: **32.4 ms of kernels per token in 4,596 launches** - `mul_mat_vec_q` 12.1 ms (335 launches, the
+~7.3 GB of Q8_0 dense weights at ~600 GB/s), the expert kernels 5.6 ms, `mul_mat_vec_f` 3.2 ms (197), copies 1.5 ms
+(815), rms_norm 1.6 ms (306), argsort 1.2 ms, the rest ~7 ms. Against the 48.7 ms an unprofiled token takes, ~16 ms is
+the gaps between ~4,600 launches (~3.5 us each on HIP), which the host cannot hide by running ahead: it launches one
+kernel at a time either way. Removing them needs ggml's HIP graphs to replay instead of re-capturing every token
+(`AMD_HIP_NOTES.md`, "ggml's HIP graph capture costs more than it saves here").
 
 ## Where the time goes now
 
@@ -100,8 +118,8 @@ Default flags (no `--peer-device`), greedy 96 tokens on `local/prompts/code_revi
 
 ## Next levers, by expected value
 
-1. **The dense half's host synchronizations** (`AMD_HIP_NOTES.md`: 215 stream syncs a token, 76% of the token's wall):
-   it caps every path, single-token and verify.
+1. **The dense half's launch count** (4,596 kernels a token, ~16 ms of gaps at the ceiling): ggml graph replay
+   instead of re-capture, or fewer, fused ops. Removing host syncs alone was measured and does not pay (above).
 2. **An adaptive peer store**: card 1's store is static; admitting card 1's own misses over the x2 link (async, ~3 ms
    per blob) would let both cards follow the conversation's working set (one answer uses < 64 GiB of experts).
 3. **The verify pass's tier** (105-195 ms for 5.5 tokens): union hit rate 60-74% against 88% single-step.
