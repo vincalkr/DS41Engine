@@ -33,7 +33,8 @@
   "STRATA_PRESTAGE_GIB": "1.5",
   "GGML_CUDA_DISABLE_GRAPHS": "1",
   "STRATA_SERVE_PASS_BIAS": "0",
-  "STRATA_TEXT_LOG": "local/v41-text.log"
+  "STRATA_TEXT_LOG": "local/v41-text.log",
+  "STRATA_RB_MARGIN": "1"
  },
  "cwd": ".",
  "tokenizer": "models/V41-GSQ/tokenizer",
@@ -43,10 +44,12 @@
  "backend": "hip",
  "gpu": 0,
  "sampling": {
-  "temperature": 1.0,
-  "top_p": 0.95
+  "temperature": 0.8,
+  "top_p": 0.95,
+  "repetition_penalty": 1.1,
+  "penalty_last_n": 256
  },
  "reasoning_loop_recovery": "recover",
- "reasoning_budget_tokens": 2048,
+ "reasoning_budget_tokens": 192,
  "reasoning_close_retry": true
 }

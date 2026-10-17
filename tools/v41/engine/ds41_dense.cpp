@@ -251,7 +251,8 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
         return t;
     };
     // routed experts never reach ggml (PTQ1_0 = 143 is past GGML_TYPE_COUNT); the I32 maps are read by the geometry
-    auto skip = [&](const std::string & n) { return is_routed(n) || n == "token_embd.weight"; };
+    auto skip = [&](const std::string & n) { return is_routed(n) || n == "token_embd.weight" ||
+                                                 n.find(".engram_embd.") != std::string::npos; };   // ds4 packs the Engram in the GGUF; we read it from --engram
     if (im.cpu) {
         for (size_t s = 0; s < model.size(); ++s) {
             const GgufFile & sh = model.shard(s);

@@ -140,3 +140,135 @@ is reported instead of being joined over.  Every parameter:
 - [docs/ds4/V41_AMD_PEER_TIER.md](docs/ds4/V41_AMD_PEER_TIER.md) - the second-card design that was measured and dropped.
 - [docs/upstream/README.md](docs/upstream/README.md) - the upstream README (NVIDIA, 512K, V4-Flash), verbatim.
 - [local/ds41-local.json](local/ds41-local.json) - the configuration these numbers were measured with.
+
+## The routing bias, and why the answers were wrong
+
+The engine's expert selection adds up to +1.0 / -0.6 to each expert's score depending on where that expert's bytes
+live (VRAM, RAM arena or the file tier), and it does so on every generated token - not during the prompt. It is not
+part of the model: it trades fidelity for speed by keeping hot experts resident. Measured here on 2026-10-17, same
+prompt, greedy, 600 tokens:
+
+| route bias | what it answered | decode |
+|---|---|---|
+| default (+1.0 / -0.6) | "the Inferno is divided into nine circles (stage)", "the Purgatorio into seven stage" - the nine circles never named | 13.17 tok/s |
+| 0 / 0 (the model's routing bit for bit) | the nine circles named, Limbo first | 2.97 tok/s |
+| **`STRATA_RB_MARGIN=1`** (the bias only among near-ties) | the same correct answer | **11.12 tok/s** |
+
+So `local/ds41-local.json` sets `STRATA_RB_MARGIN=1`: the bias can only reorder experts whose exact scores are within
+one point of the cutoff, which cannot change the selection in practice, and it costs about 16% of the decode speed
+instead of 77%. The engine's own comments describe the unrestricted bias as "-14 pt API top-1, repetition loops", KL
+0.10-0.15, and this is exactly what the facts-and-loops symptom was: the model reads the question exactly, then every
+answer token routes on a set that depends on the machine's memory layout. No other change was needed - not the
+weights, not the quantisation, not the sampler.
+
+Re-measured on 2026-10-17 while bringing up the ds4 Q2 weights (next section but one): `STRATA_RB_MARGIN=1` did not
+reproduce that answer in either the one-shot greedy run or the server run - both returned invented circles - while
+`--route-bias 0 --route-bias-file 0` named all nine. The margin run was fast (11.99 tok/s, 95.7% VRAM hits), so the
+margin is not a routing no-op in this build; check an answer with `--route-bias 0`, not with the margin, until that
+is explained.
+
+## Making the thinking work (2026-10-17)
+
+With the thinking on, this quant answered nothing: it reasoned for 94-270 words, never emitted the close token and
+`content` came back empty (and in the web chat it span in loops like "Aspetta, penso... Conclusione finale
+definitiva"). The cause was not a bug: `reasoning_budget_tokens` was **2048**, so the platform's wrap-up never fired
+before the request hit `max_tokens`. The budget is the mechanism that closes the thinking, and it has to be **below
+the model's typical reasoning length**:
+
+| budget | result |
+|---|---|
+| 2048 (before) | thinking 94-270 words, **content empty**, `finish=length`/`cancel` |
+| 384 | content arrives; sometimes the deliberation still leaks into the answer ("Wait, let's be precise") |
+| **192** (now) | `finish=stop`, thinking 114 words, **content clean, no leakage**, and the nine circles named correctly: Limbo, Lussuriosi, Golosi, Avari/Prodighi, Irascibili, Eretici, Violenti, Malebolge, Nono |
+
+`render()` decides the mode: `mode = "chat" if kw.get("enable_thinking") is False else "thinking"`, so the thinking is
+on unless a client asks for it off; the budget is what makes it finish. The sampler was never the problem: the
+penalties are in the config (`repetition_penalty 1.1`, `penalty_last_n 256`) and the repeated-target loops are 0% in
+both acceptance tests (the `local/prompts/divina.i32` prompt, `max_tokens` 700, no `reasoning_effort` sent).
+
+Two notes: the "raccontami la Divina Commedia" answer needs more than 700 tokens (`finish=length`), so raise
+`max_tokens` for long prose; and the dates it gives are approximations (1305-1321, 1300-1310) - that is the 2.25 bpw
+quant, not the serving path.
+
+## The ds4 Q2 weights
+
+This branch also runs antirez/ds4's `DeepSeek-V4.1-Flash-Q2.gguf` (365,713,686,528 B, architecture `deepseek41`,
+1046 tensors) on the same `tools/v41` engine. Its experts are IQ2_XXS (gate and up) and Q2_K (down); the two 101.4 GB
+Engram tables travel inside the gguf as `blk.1.engram_embd` and `blk.14.engram_embd` and are skipped by the dense
+loader - the engine reads the same `F8_E4M3` weight / `F8_E8M0` scale rows from `models/engram/`, exactly as the GSQ
+run does. Same command as the GSQ, only `-m` changes:
+
+```
+./build-hip-fused/ds41_generate -m "/run/media/vincenzo/SSD NVME SAMSUNG/ds4/gguf/DeepSeek-V4.1-Flash-Q2.gguf" \
+  --ids-file local/prompts/divina.i32 -n 200 --backend cuda --experts gpu --arena-gib 75 --ctx 262144 --kv-q8 \
+  --temp 0 --threads 24 --rank models/V41-GSQ/rank.bin --engram models/engram/layers14:models/engram/layers1
+```
+
+### What had to be fixed
+
+The expert tier sized the blob correctly from the start - 9,953,280 B = gate 1320 B/row x 2304 rows (IQ2_XXS at
+5120 = 20 blocks of 66 B) x 2 + down 756 B/row x 5120 rows (Q2_K at 2304 = 9 blocks of 84 B) - and still refused to
+start:
+
+```
+tier init: ExpertCache: 152882380800 slots x 1 B = 142.38 GiB, but only 14.94 GiB of VRAM is free
+```
+
+The `1 B` is `ExpertCache::open_sized`'s uniform-path parameter, not the blob. 152,882,380,800 B is 15,360 slots
+(40 layers x 384 experts) x 9.49 MiB: with an automatic `--slots`, the cache had been asked for the WHOLE expert set
+because the free-VRAM budget (`slot_gib`) was only honoured for a per-layer/per-class geometry. Two fixes in
+`tools/v41/engine/`:
+
+1. **`ds41_moe.cpp`, `uniform_slots`**: an automatic slot budget now caps the slot COUNT of a uniform geometry too.
+   The Q2 opens 1,481-1,518 slots out of the 14.08 GiB free after the dense half instead of asking for 142 GiB. An
+   explicit `--slots N` is unchanged (`slot_gib` is 0 then).
+2. **`ds41_generate.cpp`, `mc.defer_cache = defer_vram`** (the ds4 engine's `defer_seed`, which the v41 fork never
+   set): the uniform cache opens at the seed, after the prompt. Opened at init it holds ~14 GiB, so the first serve
+   request measures 0.87 GiB free, declares "no room", releases it - and a uniform geometry has no other seed path
+   that opens it again, so the decode ran with no VRAM slots (the server decode ran at 6.2 tok/s; the one-shot
+   before the fix was 7.89).
+
+### Measured
+
+Same machine as the rest of this README (RX 7900 XTX 24 GiB, 122 GiB RAM), `--kv-q8`, `--ctx 262144`, arena 75 GiB,
+24 threads, the GSQ's `rank.bin` (no Q2 profile exists), the GSQ Engram tables, `local/prompts/divina.i32`, 200 new
+tokens, greedy:
+
+| | Q2 | GSQ (same binary, same settings) |
+|---|---|---|
+| decode | **9.01 tok/s** (22.07 s) | **10.81 tok/s** (18.41 s) |
+| prompt (29 tokens) | 12.67 s | 5.17 s |
+| VRAM slots / hits | 1,481 / 97.0% | 1,640 / 95.2% |
+| expert blob | 9,953,280 B | 6.7-9.5 MB, 9 classes |
+
+So the Q2 is about 17% slower than the GSQ at the same settings. Its first run, before the deferred seed, was 7.89
+tok/s. The arena seed took 122-142 s (75 GiB of expert blobs read from the external SSD, page cache cold).
+
+**The nine circles.** The acceptance prompt is the chat-encoded `elenca i nove cerchi dell'Inferno, solo i nomi`
+(`local/prompts/circles.i32`). With route bias 0 (the model's own routing) the Q2 names all nine - Limbo, Lussuria,
+Gola, Avidità, Ira, Eresia, Violenza, Frode, Tradimento - in 47 tokens at **0.97 tok/s**; through the server (thinking
+budget 192, `temp 0.8` / `top_p 0.95` / `rep 1.1`) it is `finish=stop`, 263 tokens, the same nine names, at 1.1 tok/s.
+With the default route bias (+1.0/-0.6, the speed lever) it invents circles ("Cerchio della Terra", "Cerchio del
+Cielo") and the GSQ does the same in the same harness ("Vestibolo" x8) - not a Q2 problem. `STRATA_RB_MARGIN=1`, which
+the section above records as restoring the GSQ's answer, did not do so in these runs: with it the GSQ was fast
+(11.99 tok/s, 95.7% VRAM hits) and wrong ("Inferno, Antinferno, Centro, Dis..."), while only route bias 0 named all
+nine (3.19 tok/s, 45.5% hits). The Q2 one-shot was not run with the margin; its server run has it, and there too
+the nine were not named.
+
+Exact routing costs the Q2 9x its biased speed (9.01 -> 0.97 tok/s) and the GSQ 3.4x (10.81 -> 3.19), because with
+the GSQ's rank the Q2's own routing hits the VRAM cache 45.7% of the time and reads ~86 experts per token from the
+file tier (9.49 MiB each, about 1 GB/s of SSD). A `rank.bin` measured on the Q2 (`v41_rank.py` from its routing
+counts) is the missing piece; there is no Q2-matched DSpark drafter either. The GSQ's MTP sidecar does load and draft
+for the Q2 (1.47 accepted drafts/pass, 2.47 tokens/pass) but exact-routing decode got slower, 0.82 against 0.97
+tok/s: the verify pass reads every token's experts, so a drafter cannot help an I/O-bound decode.
+
+**Prose.** At exact routing both models are coherent and close: 300 greedy tokens of `raccontami la divina
+commedia` give the three cantiche, Virgilio and Beatrice, Lucifero at the centre, the seven cornici, the nine heavens
+and the Empireo; the Q2 says 1307-1321, the GSQ 1304-1321, and both are cut mid-sentence at 300 tokens. With the
+default route bias both degrade - the Q2 dates the poem 1300-1307, writes "immaginato non morto" and repeats "È un
+viaggio che parte da un Inferno" - so in these samples the prose quality follows the routing much more than the
+2.06 bpw.
+
+The new pieces are `local/ds41-local-q2.json` (the chat config with the Q2 and no drafter),
+`local/ds41-local-q2-exact.json` (the same with `--route-bias 0 --route-bias-file 0`) and
+`local/ds41-local-gsq-nodspark.json` (the GSQ reference without DSpark).

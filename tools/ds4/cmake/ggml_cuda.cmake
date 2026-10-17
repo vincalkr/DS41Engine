@@ -9,3 +9,10 @@ if(STRATA_GGML_CUDA)
   # kernels per token run at launch-overhead speed (measured: 97 ms/token of attention, 2.1M cudaLaunchKernel)
   set(GGML_CUDA_GRAPHS ON CACHE BOOL "" FORCE)
 endif()
+
+# AMD: ggml's HIP backend, same sources as ggml-cuda compiled with hipcc (the DS4 dense half on a ROCm card).
+option(STRATA_GGML_HIP "Build ggml's HIP backend too (for the DS4 dense half on an AMD GPU)" OFF)
+if(STRATA_GGML_HIP)
+  set(GGML_HIP ON CACHE BOOL "" FORCE)
+  set(GGML_CUDA_GRAPHS ON CACHE BOOL "" FORCE)
+endif()

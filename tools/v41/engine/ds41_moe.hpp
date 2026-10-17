@@ -290,9 +290,11 @@ struct Ds41MoeConfig {
     bool defer_cache = false;
     double mem_floor_gib = 3.0;   ///< refuse an arena that would leave less than this much MemAvailable
     double max_arena_gib = 60.0;  ///< hard ceiling on the arena, whatever `arena_gib` says
-    /// VRAM budget for the expert cache in GiB, for geometries whose blob size varies per layer (MiMo): the seed
-    /// takes the ranked profile's head until `slots` experts OR this many bytes, sizing each slot to its expert.
-    /// 0 = `slots` x the largest blob.  Ignored for uniform geometries (DS4: `slots` alone, as before).
+    /// VRAM budget for the expert cache in GiB: the seed takes the ranked profile's head until `slots` experts OR
+    /// this many bytes, sizing each slot to its expert (a per-layer/per-class geometry) or to the one blob size
+    /// (a uniform one, where it caps the slot COUNT: 15360 DS4 experts x 9.5 MiB is 142 GiB).  0 = `slots` x the
+    /// largest blob, i.e. what ds41_generate passes with an explicit `--slots N`; an automatic size passes the free
+    /// VRAM after the dense half, so a uniform geometry must honour it too.
     double slot_gib = 0.0;
     /// Leave the experts the VRAM seed takes OUT of the host arena: a cache that never evicts never reads their arena
     /// copies again, so the bytes go to the next-ranked experts (fewer file-tier reads); with `vram_lru` an evicted

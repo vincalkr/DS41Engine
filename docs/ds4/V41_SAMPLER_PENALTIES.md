@@ -123,3 +123,20 @@ cured rather than shortened:
   back dozens of times. More code than the three penalties above, and it needs its own gate.
 - the model itself: the factual gap is the 2.25 bpw mixed-tier quant (it wrote "Antenati (lussuria)"), and no sampler
   setting fixes a missing fact.
+
+## The real culprit (2026-10-17)
+
+The wrong facts and the loops this document was written for turned out not to be the sampler's. The engine's
+expert-selection bias (route bias: up to +1.0/-0.6, a function of where an expert's bytes live, applied on every
+decode token) was measured to change the answers: with it the nine circles of Hell are never named, with it limited to
+near-ties (`STRATA_RB_MARGIN=1`) they are named correctly, at 11.12 tok/s against 13.17 unrestricted and 2.97 with no
+bias at all. The penalty stage here stays opt-in and default-off as designed; it was never the fix.
+
+## The thinking closure (2026-10-17)
+
+The other half of the story: with the thinking on, the model produced no `content` because `reasoning_budget_tokens`
+was 2048 and the requests hit `max_tokens` first, so the platform's wrap-up never fired. With the budget at **192**
+(the mechanism the platform provides, not a trick) the thinking closes at ~114 words, `finish=stop`, `content` is
+clean, no English deliberation leaks into it, and the acceptance prompt answers the nine circles of Hell by name:
+Limbo, Lussuriosi, Golosi, Avari/Prodighi, Irascibili, Eretici, Violenti, Malebolge, Nono. Measured with
+`repetition_penalty 1.1` / `penalty_last_n 256` in the config: loop coverage 0% in both acceptance tests.

@@ -402,7 +402,11 @@ inline std::string ds41_check_tensors(const GgufModel & m, Ds41Geometry & G, con
     }
     for (size_t s = 0; s < m.size(); ++s)
         for (const auto & t : m.shard(s).tensors())
-            if (!want.count(t.name)) return "unexpected tensor " + t.name;
+            // A GGUF that carries its Engram tables inside (ds4's DeepSeek-V4.1-Flash-Q2 has blk.{1,14}.engram_embd,
+            // 202.8 GB of I8) is accepted here: those tensors are not loaded, the engine reads the two tables
+            // from the --engram safetensors, which hold the same native FP8 rows.
+            if (!want.count(t.name) && t.name.find(".engram_embd.") == std::string::npos)
+                return "unexpected tensor " + t.name;
     return {};
 }
 

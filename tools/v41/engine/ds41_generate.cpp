@@ -428,6 +428,15 @@ int main(int argc, char ** argv) {
     Ds41MoeTier tier;
     Ds41MoeConfig mc;
     mc.cpu_only = a.experts == "cpu" || ggml_backend_is_cpu(be);
+    // defer the VRAM cache: the prompt's chunk + graph buffers (~4 GiB) use that VRAM first, then the cache opens into
+    // it (measured) - the old fixed --vram-margin had to cover prefill and starved decode of slots.  --serve does this
+    // per request: a multi-token prompt closes the cache (release_cache), the decode after it re-seeds (~0.6 s).
+    // This is the ds4 engine's `defer_seed`, and for a UNIFORM geometry (DS4/DS4.1: every expert one format, one blob
+    // size) it is what makes the reopen happen at all: opened at init the cache holds ~14 GiB, the serve path then
+    // measures 0.87 GiB free, releases it - and a uniform geometry has no other seed that opens it again, so the
+    // decode ran with no VRAM slots (measured on the Q2 model, 2026-10-17: 6.2 tok/s instead of ~7.9).
+    const bool defer_vram = !mc.cpu_only && (a.prefill_chunk > 1 || a.prompt_batch > 1);
+    mc.defer_cache = defer_vram;
     mc.slots = a.slots > 0 ? a.slots : TG.n_layers * TG.n_experts;
     mc.slot_gib = a.slots > 0 ? 0.0 : slot_gib;
     mc.pcie_frac = a.pcie;
@@ -464,10 +473,6 @@ int main(int argc, char ** argv) {
     }
     if (!tier.init(TG, &src, mc, err)) { std::fprintf(stderr, "ds41_generate: tier init: %s\n", err.c_str()); return 1; }
     dense.set_oom_hook([&]() { return tier.release_prestage(); });   // a prompt pass that does not fit: prestage gives way
-    // defer the VRAM cache: the prompt's chunk + graph buffers (~4 GiB) use that VRAM first, then the cache opens into
-    // it (measured) - the old fixed --vram-margin had to cover prefill and starved decode of slots.  --serve does this
-    // per request: a multi-token prompt closes the cache (release_cache), the decode after it re-seeds (~0.6 s)
-    const bool defer_vram = !mc.cpu_only && (a.prefill_chunk > 1 || a.prompt_batch > 1);
     std::vector<std::pair<int32_t, int32_t>> ranked;
     if (!mc.cpu_only) {
         if (!a.rank.empty()) {
