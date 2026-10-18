@@ -1959,48 +1959,6 @@ class PeerDevice(unittest.TestCase):
         self.assertEqual(env["CUDA_VISIBLE_DEVICES"], "0,1")
 
 
-class LearnedProfile(unittest.TestCase):
-    """#477: "expert_profile_save" in the config: the engine saves its learned profile there, and the next start
-    begins from it when it is a profile of the same model; without the key the arguments are unchanged."""
-
-    def write(self, path, nl=48, ne=512, n=4):
-        sys.path.insert(0, str(ROOT / "tools"))
-        import make_profile
-        old = make_profile.N_LAYER
-        make_profile.N_LAYER = nl
-        try:
-            make_profile.write_profile(path, [(i % nl, i // nl) for i in range(n)], n_expert=ne)
-        finally:
-            make_profile.N_LAYER = old
-
-    def test_without_the_key_nothing_changes(self):
-        args = ["--native", "x", "--expert-profile", "data/expert-profile.bin", "--adapt-every", "4"]
-        self.assertEqual(engine_args({"args": list(args)}), args)
-        self.assertEqual(engine_args({"args": list(args), "expert_profile_save": ""}), args)
-
-    def test_save_and_start_from_it(self):
-        d = Path(tempfile.mkdtemp())
-        self.write(d / "base.bin")
-        cfg = {"args": ["--expert-profile", "base.bin"], "cwd": str(d), "expert_profile_save": "learned.bin",
-               "expert_profile_save_every": 5}
-        # nothing saved yet: the config's profile, and the engine is told where to save
-        self.assertEqual(engine_args(cfg), ["--expert-profile", "base.bin", "--expert-profile-save", "learned.bin",
-                                            "--expert-profile-save-every", "5"])
-        self.write(d / "learned.bin")
-        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "learned.bin"])
-        self.write(d / "learned.bin", ne=256)                    # another model's: not used
-        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "base.bin"])
-        (d / "learned.bin").write_bytes(b"STRP" + bytes(20))     # not a whole profile
-        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "base.bin"])
-        self.write(d / "learned.bin")
-        (d / "learned.bin").write_bytes((d / "learned.bin").read_bytes()[:30])   # truncated
-        self.assertEqual(engine_args(cfg)[:2], ["--expert-profile", "base.bin"])
-
-    def test_no_profile_in_the_args(self):
-        cfg = {"args": ["--native", "x"], "expert_profile_save": "learned.bin"}
-        self.assertEqual(engine_args(cfg), ["--native", "x", "--expert-profile-save", "learned.bin"])
-
-
 class RepeatStop(unittest.TestCase):
     """#606: one token repeated repeat_stop_tokens times in a row ends the reply as "length"; 0 turns it off."""
 

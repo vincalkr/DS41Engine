@@ -1,7 +1,7 @@
 # Strata-DSV4.1 — full handover: what was done, what was measured, what is blocking
 
 Written 2026-10-17, end of a long session, for a stronger model to continue from. Repository:
-`/run/media/vincenzo/Dati/projects/other/Strata-DSV4.1`, branch `ds4-q2` (last commit `c583b2da`; everything after it is
+`/run/media/vincenzo/Dati/projects/other/ds41e` (until 2026-10-18 `Strata-DSV4.1`), branch `ds4-q2` (last commit `c583b2da`; everything after it is
 **uncommitted**). Nothing here is speculation unless marked; every number was measured on this machine.
 
 > **Update 2026-10-17 (evening):** exact routing now runs at 10-14 tok/s through the chat (was ~2.7) with the same
@@ -183,7 +183,7 @@ V4.1 runtimes are CUDA/2-device only, and the Metal engine is Apple-only).
 
 The chat (GSQ, exact routing, correct; ~2.7 tok/s):
 ```
-cd /run/media/vincenzo/Dati/projects/other/Strata-DSV4.1 && ./run-v41-gsq.sh    # http://127.0.0.1:8150
+cd /run/media/vincenzo/Dati/projects/other/ds41e && ./run-v41-gsq.sh    # http://127.0.0.1:8150
 ```
 `local/ds41-local.json` today: model = GSQ, `--rank models/V41-GSQ/rank.bin`, `--route-bias 0 --route-bias-file 0`,
 arena 75 GiB, ctx 262144, kv-q8, budget 192, sampling temp 0.8 / top_p 0.95 / repetition_penalty 1.1 / penalty_last_n
@@ -191,7 +191,7 @@ arena 75 GiB, ctx 262144, kv-q8, budget 192, sampling temp 0.8 / top_p 0.95 / re
 
 The Q2 one-shot, fastest correct (4.53 tok/s):
 ```
-cd /run/media/vincenzo/Dati/projects/other/Strata-DSV4.1
+cd /run/media/vincenzo/Dati/projects/other/ds41e
 mkdir -p ~/.quetza-data/conductor
 fuser -k 8150/tcp
 bash tools/ds4/memguard.sh 110 82 -- ./build-hip-fused/ds41_generate \

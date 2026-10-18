@@ -1,22 +1,55 @@
-<h1 align="center">Strata-DSV4.1 - AMD (gfx1100) branch</h1>
+<h1 align="center">ds41e - DeepSeek-V4.1-Flash on one RX 7900 XTX</h1>
 
 <p align="center"><b>DeepSeek-V4.1-Flash (40 layers x 384 experts) on ONE RX 7900 XTX - 152 GiB of experts across VRAM, pinned RAM and NVMe, plus 189 GiB of Engram on disk</b><br>
 The AMD port and tuning of <a href="https://github.com/Indras-Mirror/Strata-DSV4.1">Strata-DSV4.1</a>, itself built on <a href="https://github.com/Niko1221/Strata">Strata</a> - Linux - ROCm/HIP - MIT</p>
 
-<p align="center"><b>RX 7900 XTX (gfx1100, ROCm 7.14) + 128 GiB RAM:&nbsp; prefill 240-363 tok/s &nbsp;·&nbsp; DSpark decode 24.3 tok/s &nbsp;·&nbsp; 256K context, 8-bit KV</b></p>
+## What this repository is
 
-## What this branch is
+The DeepSeek-V4.1-Flash engine (`tools/v41/engine`), its OpenAI- and Anthropic-compatible server (`serve/`,
+`tools/v41/serve/serve_ds41.py`) and the tools, configurations and measurements for running it on **one** RX 7900 XTX.
+Nothing else: on 2026-10-18 everything that belonged to other models was removed - Strata's Qwen engine, the Intel
+(SYCL) port, the Qwen installer (`setup.py`), its benchmarks, tests and documents.  Of Strata's own C++ sources only
+the files the DeepSeek engine links are left (61 files in `src/` and `include/`: the VRAM expert cache, pinned host
+memory, the CPU expert kernels, the HIP MMVQ / IQ kernels and the prompt path's MMQ), found by tracing the linker.
+The engine built from this tree behaves as the one built from the full tree (same prompt, perplexity 12.16-12.20
+against 12.15-12.22 over 4-5 runs each; the engine is not bit-reproducible run to run, see
+[docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md)).
 
-This is the **AMD (gfx1100)** branch of the fork `vincalkr/Strata-DSV4.1`: the same engine and serve as upstream, ported
-and tuned to run DeepSeek-V4.1-Flash on **one** RX 7900 XTX.  Every number on this page was measured on that machine;
-the engine runs on a single card (`"gpu": 0` in [local/ds41-local.json](local/ds41-local.json)).
+The folder is called `ds41e`, not `Strata-*`, on purpose: another Strata install's setup moves the `models/` folder
+of every sibling folder whose name starts with "Strata" into its shared `Strata-data` folder.  Keep the name.
 
 The platform is not ours.  The engine, the serve and the earlier DeepSeek-V4-Flash (0731) path come from
 [Indras-Mirror/Strata-DSV4.1](https://github.com/Indras-Mirror/Strata-DSV4.1), which builds on
 [Niko1221/Strata](https://github.com/Niko1221/Strata) (MIT; `LICENSE` is kept as it is).  Their README - the NVIDIA
-measurements, the 512K-context settings, the API and the V4-Flash engine - is kept verbatim in
-**[docs/upstream/README.md](docs/upstream/README.md)**, with the localized copies next to it; read it for anything that
-is not AMD-specific.  Our contribution is the AMD path: the port, the tuning, the measurements and these notes.
+measurements, the 512K-context settings and the API - is kept verbatim in
+**[docs/upstream/README.md](docs/upstream/README.md)**.  Our contribution is the AMD path: the port, the tuning, the
+measurements and these notes.
+
+## Build
+
+ROCm (7.14 here) and ggml, built once from `third_party/llama.cpp` (a llama.cpp checkout, not tracked here, patched
+with `tools/v41/ggml/*.patch`; see [docs/ds4/AMD_HIP_NOTES.md](docs/ds4/AMD_HIP_NOTES.md)).  Its build here was
+configured with:
+
+```sh
+cmake -S third_party/llama.cpp -B third_party/llama.cpp/build-hip -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON \
+  -DGGML_HIP_GRAPHS=ON -DGGML_CUDA_FA=ON -DGGML_NATIVE=ON -DGGML_OPENMP=ON -DBUILD_SHARED_LIBS=OFF \
+  -DGPU_TARGETS=gfx1100
+cmake --build third_party/llama.cpp/build-hip --target ggml -j
+```
+
+Then the engine:
+
+```sh
+cmake -S . -B build-hip-fused -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_HIP_ARCHITECTURES=gfx1100 -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
+  -DSTRATA_GGML_DIR=$PWD/third_party/llama.cpp -DSTRATA_GGML_PREBUILT=$PWD/third_party/llama.cpp/build-hip \
+  -DSTRATA_DSV41_HC_MIX=ON -DSTRATA_DSV41_FQ_OP=ON
+cmake --build build-hip-fused -j      # ds41_generate, the engine's tests (test_ds41_*), v41_sidecar_requant
+```
+
+HIP only: the CUDA and CPU-only build paths left with the Strata tree.  The server's own tests:
+`.venv/bin/python -m unittest discover -s serve -p "test_*.py" -t .` (590 tests, no GPU or model needed).
 
 ## The machine, and what is on disk
 
@@ -135,10 +168,12 @@ is reported instead of being joined over.  Every parameter:
 
 ## Documents
 
+- [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md) - exact routing made fast: the current configuration and every measurement behind it.
 - [docs/ds4/AMD_HIP_NOTES.md](docs/ds4/AMD_HIP_NOTES.md) - every measurement and every setting on this machine.
 - [docs/ds4/V41_PIPELINE_OVERLAP.md](docs/ds4/V41_PIPELINE_OVERLAP.md) - the per-layer host handshake, measured and closed.
 - [docs/ds4/V41_AMD_PEER_TIER.md](docs/ds4/V41_AMD_PEER_TIER.md) - the second-card design that was measured and dropped.
 - [docs/upstream/README.md](docs/upstream/README.md) - the upstream README (NVIDIA, 512K, V4-Flash), verbatim.
+- [HANDOVER.md](HANDOVER.md) - the state of the work and how it got here.
 - [local/ds41-local.json](local/ds41-local.json) - the configuration these numbers were measured with.
 
 ## The routing bias, and why the answers were wrong
