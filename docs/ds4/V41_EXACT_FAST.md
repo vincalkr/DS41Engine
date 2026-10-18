@@ -155,6 +155,19 @@ Answers checked: the nine circles, Beatrice (dead in 1290, guide from the Earthl
    cold / 18.32 repeated, nine circles **18.63**, Promessi Sposi **18.45**, Python 12.63, thinking **16.35**, two new
    questions 18.19 / 18.45 tok/s; 7,491-token prompt TTFT 30.5 -> **26.75 s** (280 tok/s), decode after it 12.02 -> 14.14.
 
+**Thinking budget: 192 -> 1024** (2026-10-18). The 192 came from the biased-routing state (`HANDOVER.md`: 384 leaked
+the deliberation into the answer, 2048 gave no answer). With exact routing, `local/bench-v41/think-budget.py` ran four
+prompts at budgets 192 / 512 / 1024 / 2048 (thinking on, temperature 0.8): all 16 `finish=stop`, no think tags or
+loops in the answers. Checked by hand: the ordering puzzle right at every budget; Manzoni and the 1840-1842 edition
+right at every budget, but at **192** (thinking cut by the budget) the first part is placed "mainly in Milan" - wrong;
+from 512 up it is Lecco and the lake of Como, right; the four Divina Commedia answers right (34/33/33 cantos, the
+guides, 9 circles / 7 terraces / 9 heavens + Empyrean); the interval-merge code passes 6/6 tests at every budget, but
+the 2048 answer had one corrupted token (`return risultato talents`, a SyntaxError; 6/6 with it removed). Eight more
+runs of the code prompt at budget 1024 (`code-corrupt.py`, repetition_penalty 1.1 and 1.0 alternated) passed 5/5
+tests each, so that corruption is rare (1 in 12 code answers) and not tied to the penalty in this sample. Cost: the
+facts question thought 2,167 tokens (133 s) at 2048, 1,156 (76 s) at 1024. The chat configs now set
+`reasoning_budget_tokens` 1024; a request can still set its own.
+
 **Why upstream Xolotl reports 26.8 tok/s with the same model** (read 2026-10-18 from its README and serve config):
 `--route-bias 0.5 --route-bias-file 0.3` (the lossy routing above), an RTX 4090 (CUDA; this repo's notes put the 4090's
 dense half at 17.8 ms against 51.7 here at the time), decode measured during HumanEval / tool / agentic tasks with

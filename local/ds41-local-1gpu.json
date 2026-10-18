@@ -66,6 +66,6 @@
   "penalty_last_n": 256
  },
  "reasoning_loop_recovery": "recover",
- "reasoning_budget_tokens": 192,
+ "reasoning_budget_tokens": 1024,
  "reasoning_close_retry": true
 }
