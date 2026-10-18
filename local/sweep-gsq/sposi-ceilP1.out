@@ -1,0 +1,450 @@
+memguard: scope ds4-guard-3402859 MemoryMax=110G swap=0 floor=4 GiB (avail 107 GiB)
+ggml_cuda_init: found 3 ROCm devices (Total VRAM: 111819 MiB):
+  Device 0: AMD Radeon RX 7900 XTX, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 24560 MiB
+  Device 1: AMD Radeon RX 7900 XTX, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 24560 MiB
+  Device 2: AMD Radeon Graphics, gfx1036 (0x1036), VMM: no, Wave Size: 32, VRAM: 62699 MiB
+kv: compressed KV + indexer keys as q8_0 (--kv-q8/--kv-type)
+enc-skip: cut at layer 20 (last kv source), replay window 2560 (reach 2560)
+VRAM: 15.48 GiB free after the dense half -> 14.98 GiB of expert slots (margin 0.50)
+arena: pinned (cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 46078 2 MiB pages, vm.nr_hugepages=0); transparent huge pages requested (MADV_HUGEPAGE))
+tier: 0 experts in VRAM, 9514 in the RAM arena (90.0 GiB), 4120 file tier; seeded in 21.4 s
+loaded in 22.4 s: 40 layers, ctx 8192, prefill chunk 0, experts gpu, 9 classes
+enc-skip: first batch B=19, cut=0 (phase A 0 cols, phase B 19)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 11/11/42)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 143/143/11)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 11/11/11)
+chunk prestage: 3.00 GiB device region
+ds4_moe: run_chunk: layer 2 stays on MMVQ (types 42/42/11)
+ds4_moe: run_chunk: layer 31 stays on MMVQ (types 11/11/143)
+prompt 19/19
+VRAM after the prompt: 15.14 GiB free -> 14.64 GiB of expert slots: 1688 experts in VRAM (4.9 s)
+prompt: 19 tokens in 9.26 s = 2.1 tok/s (experts 0 hit / 0 cpu / 4560 pcie / 2328 file)
+prompt split: dense 1.1 s, experts 8.0 s (file wait 7.3 s), logits 0.0 s
+STRATA_FORCE_IDS: 300 forced tokens from local/sweep-gsq/ref-sposi.ids
+666
+43
+13887
+60096
+327
+1589
+75
+666
+margin: step 8 argmax 343 (33.4514) forced 1298 (31.6735) gap 1.7779
+1298
+105033
+3062
+92
+13102
+7269
+612
+34361
+7660
+127074
+26918
+3693
+margin: step 20 argmax 13946 (37.4587) forced 23056 (33.4326) gap 4.0262
+23056
+59975
+73747
+1543
+71863
+78871
+margin: step 26 argmax 16 (31.9316) forced 339 (31.2953) gap 0.6364
+339
+margin: step 27 argmax 666 (33.5243) forced 7529 (31.9079) gap 1.6165
+7529
+margin: step 28 argmax 259 (40.2714) forced 55086 (36.3748) gap 3.8966
+55086
+margin: step 29 argmax 87329 (32.2845) forced 28261 (27.4115) gap 4.8730
+28261
+337
+532
+28384
+7905
+1298
+margin: step 35 argmax 3504 (36.5849) forced 2619 (35.1129) gap 1.4719
+2619
+50653
+7660
+margin: step 38 argmax 312 (30.6158) forced 92497 (27.4517) gap 3.1641
+92497
+69540
+3873
+666
+312
+2619
+86643
+601
+50947
+4537
+13510
+3504
+111282
+margin: step 51 argmax 712 (28.3057) forced 3044 (26.8244) gap 1.4813
+3044
+60096
+878
+21339
+1639
+margin: step 56 argmax 23867 (26.2128) forced 124409 (23.5460) gap 2.6668
+124409
+margin: step 57 argmax 46852 (32.5711) forced 32820 (19.4311) gap 13.1400
+32820
+458
+591
+3493
+93912
+47587
+260
+decode step ms/token: begin 0.99 predict 0.00 attn_router 44.61 tier 7.16 finish 1.16 spec 0.00 (64 steps)
+40248
+12986
+margin: step 66 argmax 35072 (32.5736) forced 9 (32.4847) gap 0.0889
+9
+margin: step 67 argmax 4702 (29.8821) forced 13590 (27.2910) gap 2.5911
+13590
+margin: step 68 argmax 272 (24.2994) forced 376 (17.1450) gap 7.1544
+376
+30131
+margin: step 70 argmax 1298 (26.7526) forced 1543 (26.6995) gap 0.0531
+1543
+margin: step 71 argmax 72399 (22.8725) forced 5897 (19.4934) gap 3.3791
+5897
+margin: step 72 argmax 25987 (25.1360) forced 347 (17.9119) gap 7.2241
+347
+6846
+2619
+13222
+margin: step 76 argmax 7660 (25.6619) forced 110128 (14.7716) gap 10.8903
+110128
+margin: step 77 argmax 13510 (26.1026) forced 77460 (26.0244) gap 0.0782
+77460
+margin: step 78 argmax 8032 (27.0093) forced 17498 (19.1234) gap 7.8859
+17498
+margin: step 79 argmax 1008 (25.8463) forced 17724 (24.9988) gap 0.8475
+17724
+34190
+439
+11898
+114735
+margin: step 84 argmax 14 (25.2376) forced 1137 (24.6064) gap 0.6313
+1137
+15
+margin: step 86 argmax 2619 (25.3233) forced 7740 (22.8018) gap 2.5216
+7740
+110128
+27920
+48431
+margin: step 90 argmax 3493 (28.2241) forced 532 (26.8090) gap 1.4151
+532
+1119
+92
+2317
+margin: step 94 argmax 201 (27.1462) forced 399 (22.0562) gap 5.0900
+399
+margin: step 95 argmax 3919 (22.1699) forced 314 (18.9858) gap 3.1841
+314
+margin: step 96 argmax 9 (28.4826) forced 58728 (27.1532) gap 1.3293
+58728
+10621
+1543
+margin: step 99 argmax 2619 (27.7012) forced 35298 (19.9426) gap 7.7586
+35298
+margin: step 100 argmax 4222 (22.3617) forced 8625 (15.3492) gap 7.0125
+8625
+margin: step 101 argmax 97820 (30.0292) forced 6589 (25.4586) gap 4.5706
+6589
+2619
+margin: step 103 argmax 29171 (25.0505) forced 41 (20.3712) gap 4.6793
+41
+margin: step 104 argmax 28387 (20.9891) forced 997 (16.1856) gap 4.8034
+997
+margin: step 105 argmax 15612 (22.3371) forced 82932 (19.7963) gap 2.5408
+82932
+666
+margin: step 107 argmax 343 (22.8778) forced 312 (22.7813) gap 0.0965
+312
+margin: step 108 argmax 2619 (23.1848) forced 1543 (23.1434) gap 0.0413
+1543
+margin: step 109 argmax 2619 (23.3143) forced 3423 (20.2681) gap 3.0461
+3423
+margin: step 110 argmax 26903 (21.9715) forced 434 (13.4778) gap 8.4937
+434
+2619
+97257
+margin: step 113 argmax 7660 (20.6311) forced 31571 (19.6796) gap 0.9515
+31571
+2154
+13935
+margin: step 116 argmax 666 (27.1821) forced 5866 (26.2573) gap 0.9248
+5866
+15
+margin: step 118 argmax 14619 (24.4768) forced 85166 (20.0519) gap 4.4249
+85166
+margin: step 119 argmax 50947 (27.9643) forced 14 (18.9491) gap 9.0152
+14
+margin: step 120 argmax 48016 (23.6704) forced 498 (18.3920) gap 5.2784
+498
+1120
+101233
+1298
+margin: step 124 argmax 2619 (25.2801) forced 21991 (24.0044) gap 1.2757
+21991
+31571
+2154
+13935
+decode step ms/token: begin 0.98 predict 0.00 attn_router 36.07 tier 7.08 finish 1.17 spec 0.00 (128 steps)
+14
+3152
+margin: step 130 argmax 9415 (24.8600) forced 29588 (21.7456) gap 3.1144
+29588
+margin: step 131 argmax 5287 (25.8881) forced 1269 (25.5292) gap 0.3589
+1269
+601
+margin: step 133 argmax 13946 (27.9112) forced 295 (26.6338) gap 1.2774
+295
+margin: step 134 argmax 399 (28.3289) forced 612 (27.8298) gap 0.4991
+612
+margin: step 135 argmax 399 (30.5897) forced 49207 (27.0798) gap 3.5099
+49207
+81
+margin: step 137 argmax 1298 (23.8186) forced 260 (18.5093) gap 5.3093
+260
+margin: step 138 argmax 2619 (25.2257) forced 4649 (24.9364) gap 0.2893
+4649
+3373
+margin: step 140 argmax 14 (24.0768) forced 201 (22.9250) gap 1.1518
+201
+15
+14619
+7660
+margin: step 144 argmax 14 (26.3276) forced 58041 (23.2250) gap 3.1025
+58041
+margin: step 145 argmax 3693 (27.5437) forced 705 (24.1842) gap 3.3595
+705
+margin: step 146 argmax 2945 (27.3654) forced 260 (24.8322) gap 2.5332
+260
+margin: step 147 argmax 380 (24.6265) forced 71829 (22.4349) gap 2.1917
+71829
+margin: step 148 argmax 312 (24.9900) forced 14 (24.4697) gap 0.5203
+14
+margin: step 149 argmax 50647 (25.9560) forced 39123 (24.0644) gap 1.8916
+39123
+margin: step 150 argmax 106842 (23.5042) forced 41512 (19.5094) gap 3.9948
+41512
+margin: step 151 argmax 95466 (28.1077) forced 25963 (20.1503) gap 7.9574
+25963
+6593
+1495
+margin: step 154 argmax 37604 (25.5689) forced 43459 (21.4426) gap 4.1263
+43459
+margin: step 155 argmax 28384 (25.6159) forced 105005 (23.2543) gap 2.3616
+105005
+592
+margin: step 157 argmax 716 (26.2841) forced 1543 (23.7893) gap 2.4949
+1543
+70106
+312
+margin: step 160 argmax 1543 (27.5948) forced 13686 (12.4542) gap 15.1407
+13686
+3693
+margin: step 162 argmax 49128 (27.8719) forced 201 (25.5513) gap 2.3207
+201
+15
+margin: step 164 argmax 14619 (23.5076) forced 342 (22.1054) gap 1.4022
+342
+3504
+margin: step 166 argmax 47433 (25.0834) forced 3152 (22.9358) gap 2.1476
+3152
+margin: step 167 argmax 46852 (26.2001) forced 4769 (22.5752) gap 3.6248
+4769
+4728
+margin: step 169 argmax 312 (24.8499) forced 716 (23.9914) gap 0.8586
+716
+margin: step 170 argmax 3493 (21.9954) forced 82957 (16.5160) gap 5.4794
+82957
+21901
+margin: step 172 argmax 58022 (26.6516) forced 14 (25.9490) gap 0.7026
+14
+margin: step 173 argmax 399 (24.3823) forced 88889 (20.5041) gap 3.8783
+88889
+margin: step 174 argmax 4728 (26.5578) forced 5007 (26.2852) gap 0.2726
+5007
+margin: step 175 argmax 37171 (26.4654) forced 35724 (24.8807) gap 1.5847
+35724
+margin: step 176 argmax 574 (24.9497) forced 321 (11.8014) gap 13.1483
+321
+13593
+margin: step 178 argmax 11429 (28.4201) forced 14 (25.8250) gap 2.5950
+14
+margin: step 179 argmax 101628 (28.7030) forced 2312 (28.4646) gap 0.2384
+2312
+318
+601
+margin: step 182 argmax 14 (28.3658) forced 312 (27.8591) gap 0.5067
+312
+margin: step 183 argmax 101628 (25.0375) forced 45393 (24.1221) gap 0.9154
+45393
+271
+margin: step 185 argmax 29305 (29.2285) forced 17057 (28.9405) gap 0.2880
+17057
+margin: step 186 argmax 57050 (25.4312) forced 34361 (24.1061) gap 1.3251
+34361
+7660
+margin: step 188 argmax 3152 (27.5552) forced 41259 (23.7940) gap 3.7611
+41259
+67
+399
+margin: step 191 argmax 3493 (26.1325) forced 847 (25.7283) gap 0.4041
+847
+decode step ms/token: begin 0.99 predict 0.00 attn_router 38.51 tier 7.09 finish 1.17 spec 0.00 (192 steps)
+4664
+4178
+margin: step 194 argmax 12950 (26.8468) forced 312 (25.8984) gap 0.9483
+312
+margin: step 195 argmax 3493 (29.0078) forced 64065 (22.1610) gap 6.8469
+64065
+1298
+margin: step 197 argmax 85166 (32.5250) forced 7740 (21.2916) gap 11.2334
+7740
+110128
+margin: step 199 argmax 14 (25.8596) forced 22320 (17.2625) gap 8.5972
+22320
+847
+margin: step 201 argmax 35724 (28.8058) forced 2619 (24.2327) gap 4.5732
+2619
+82
+margin: step 203 argmax 67809 (25.9403) forced 15036 (23.1841) gap 2.7562
+15036
+margin: step 204 argmax 666 (29.3672) forced 1543 (24.3626) gap 5.0046
+1543
+223
+9265
+18
+13510
+margin: step 209 argmax 17492 (23.1371) forced 312 (21.2256) gap 1.9115
+312
+margin: step 210 argmax 3493 (22.4517) forced 2472 (19.8776) gap 2.5741
+2472
+560
+margin: step 212 argmax 3493 (24.9227) forced 14619 (21.2537) gap 3.6690
+14619
+7660
+312
+85166
+margin: step 216 argmax 3152 (27.4182) forced 46054 (21.6154) gap 5.8028
+46054
+52434
+margin: step 218 argmax 260 (28.2109) forced 117896 (25.8640) gap 2.3470
+117896
+260
+46852
+37764
+margin: step 222 argmax 339 (24.6004) forced 14 (23.4886) gap 1.1118
+14
+margin: step 223 argmax 399 (24.3910) forced 95568 (21.4498) gap 2.9413
+95568
+margin: step 224 argmax 423 (27.3610) forced 18923 (25.7431) gap 1.6178
+18923
+margin: step 225 argmax 423 (26.8669) forced 710 (25.9964) gap 0.8705
+710
+58728
+10621
+1298
+2619
+margin: step 230 argmax 97257 (29.5771) forced 26821 (23.1698) gap 6.4073
+26821
+margin: step 231 argmax 46239 (24.5063) forced 266 (18.9397) gap 5.5666
+266
+margin: step 232 argmax 2866 (24.4152) forced 31571 (20.2455) gap 4.1697
+31571
+2154
+13935
+666
+312
+margin: step 237 argmax 1298 (23.2556) forced 1543 (21.4973) gap 1.7582
+1543
+45330
+71
+2619
+40
+margin: step 242 argmax 346 (22.6109) forced 9505 (17.1041) gap 5.5069
+9505
+15612
+margin: step 244 argmax 666 (25.9839) forced 22780 (24.3315) gap 1.6525
+22780
+8278
+81
+77460
+margin: step 248 argmax 17057 (22.8265) forced 54 (21.2225) gap 1.6041
+54
+22485
+margin: step 250 argmax 114735 (28.6210) forced 6672 (24.1344) gap 4.4866
+6672
+75
+28
+margin: step 253 argmax 2619 (25.1686) forced 847 (24.1799) gap 0.9886
+847
+margin: step 254 argmax 2619 (26.6614) forced 9516 (24.6140) gap 2.0474
+9516
+margin: step 255 argmax 439 (21.2059) forced 88 (17.7286) gap 3.4773
+88
+decode step ms/token: begin 0.97 predict 0.00 attn_router 35.80 tier 7.08 finish 1.17 spec 0.00 (256 steps)
+8632
+3373
+margin: step 258 argmax 14 (26.8111) forced 2646 (26.0107) gap 0.8004
+2646
+2091
+14
+847
+margin: step 262 argmax 53848 (25.2076) forced 7487 (22.6164) gap 2.5912
+7487
+583
+59156
+46995
+margin: step 266 argmax 312 (25.3662) forced 14 (25.0985) gap 0.2677
+14
+margin: step 267 argmax 3493 (26.1864) forced 847 (26.1210) gap 0.0654
+847
+285
+margin: step 269 argmax 22098 (21.0759) forced 14010 (17.6240) gap 3.4520
+14010
+14
+margin: step 271 argmax 3493 (25.7277) forced 314 (23.7961) gap 1.9316
+314
+9
+395
+margin: step 274 argmax 3393 (31.4141) forced 4370 (26.7162) gap 4.6979
+4370
+3221
+312
+847
+margin: step 278 argmax 57415 (24.8361) forced 3468 (24.2726) gap 0.5635
+3468
+3309
+margin: step 280 argmax 423 (25.7026) forced 11036 (21.7307) gap 3.9719
+11036
+6866
+75
+583
+571
+500
+1543
+margin: step 287 argmax 71863 (25.1838) forced 123832 (24.7236) gap 0.4602
+123832
+16
+margin: step 289 argmax 1 (24.8330) forced 66978 (15.0208) gap 9.8122
+66978
+margin: step 290 argmax 612 (24.6887) forced 2255 (21.4506) gap 3.2381
+2255
+3693
+3493
+2342
+331
+4612
+81
+8340
+margin: step 298 argmax 91342 (32.6296) forced 7010 (31.3426) gap 1.2870
+7010
+19133
+decode: 300 tokens in 13.40 s = 22.32 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0 issued / 0 outside the arena / 0 used

@@ -130,6 +130,22 @@ Answers checked: the nine circles, Beatrice (dead in 1290, guide from the Earthl
    inter-kernel gaps of ~3.6 us = 13.5 ms** (the dispatch cost of ~3,500 kernels a token, inside the graphs too) and
    ~120 host round trips of ~40 us = ~7 ms. The next large lever is the kernel COUNT of the dense layer (~88 per layer).
 
+7. **Fewer kernels in the dense layer + a stable machine** (2026-10-18). With the CPU at `performance` and the cards'
+   clocks raised (the user's LACT settings), the all-VRAM ceiling stopped swinging (17.97-22.58 -> 22.3-22.5 tok/s).
+   `STRATA_DENSE_NOCONT=1` skips 21 `ggml_cont` calls whose input is already contiguous (a pure copy each; tokens
+   identical): ceiling 22.3-24.2 -> 24.2-24.6. `STRATA_DENSE_ALIAS=1` computes five layer outputs (hap, comb_f,
+   shexp, o_fn, o_wts) straight into the persistent state - the op becomes a view of its destination, as ggml's
+   in-place ops are - instead of copying them at the end: prose steady state 16.61/17.18 -> 17.26/17.39, Python
+   12.73/13.31 -> 13.30/13.53, the prose argmax-change positions identical. Measured along the way: ggml's own
+   fusion off (`GGML_CUDA_DISABLE_FUSION=1`) is not faster (ceiling 20.31/22.29 vs 22.19/22.58 on), pinning the
+   engine to cores is much slower (5.8-9.0 vs 11-16 tok/s), and the pool's spin time (`STRATA_POOL_SPIN_US`) changes
+   nothing measurable. **The second card is worth it**: same configuration without `--peer-device 1`, prose
+   14.08/14.16 vs 15.83/16.24 tok/s (+13%), Python 11.97/12.18 vs 12.73/13.31 (+8%); `local/ds41-local-1gpu.json`
+   is the one-card config. A fresh process pays a warm-up (the first ~64 tokens at up to 116 ms of attn_router), so
+   one-shot numbers understate a running server; `local/bench-v41/steady.py` prints the steady state.
+   Server now: Divina Commedia 15.37 cold / **18.95** repeated, nine circles 16.02, Promessi Sposi 16.35, Python 12.27,
+   thinking 14.75, two new questions 17.08 / 17.19 tok/s.
+
 **The rank from the chat's own routing.** The chat config also runs `--dump-routes local/routes-chat`: in `--serve`
 the engine loads the counts already there at start and writes them after every request, so they accumulate across
 restarts (git-ignored: they are this user's routing). `local/rebuild-rank.sh [chat-weight]` adds them to the

@@ -53,7 +53,9 @@
   "STRATA_PEER_ADAPT_INFLIGHT": "8",
   "STRATA_PEER_ADAPT_WIN": "16",
   "STRATA_SERVE_PASS_BATCH": "1",
-  "STRATA_VRAM_BG": "1"
+  "STRATA_VRAM_BG": "1",
+  "STRATA_DENSE_NOCONT": "1",
+  "STRATA_DENSE_ALIAS": "1"
  },
  "cwd": ".",
  "tokenizer": "models/V41-GSQ/tokenizer",
