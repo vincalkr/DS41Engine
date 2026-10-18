@@ -168,6 +168,11 @@ tests each, so that corruption is rare (1 in 12 code answers) and not tied to th
 facts question thought 2,167 tokens (133 s) at 2048, 1,156 (76 s) at 1024. The chat configs now set
 `reasoning_budget_tokens` 1024; a request can still set its own.
 
+**One card by default** (2026-10-18). On an agent-like session at 25-27K context the second card measured 14.31 /
+15.16 tok/s against 15.51 / 13.47 on card 0 alone - no difference inside the spread - so `local/ds41-local.json` now
+runs on card 0 only (`HIP_VISIBLE_DEVICES=0`, no `--peer-device`, no `STRATA_PEER_*`) and card 1 stays free. The
+two-card chat is `./run-v41-gsq.sh --config local/ds41-local-2gpu.json`.
+
 **Why upstream Xolotl reports 26.8 tok/s with the same model** (read 2026-10-18 from its README and serve config):
 `--route-bias 0.5 --route-bias-file 0.3` (the lossy routing above), an RTX 4090 (CUDA; this repo's notes put the 4090's
 dense half at 17.8 ms against 51.7 here at the time), decode measured during HumanEval / tool / agentic tasks with
