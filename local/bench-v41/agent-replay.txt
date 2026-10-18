@@ -1,0 +1,43 @@
+peer-step768 turn 0: TTFT  73.1s | prompt 25563 tokens (0 reused, batch) in 70.55 s = 362.4 tok | 400 tokens in 26.49 s = 15.06 tok/s (length);
+peer-step768 turn 1: TTFT   1.4s | prompt 25981 tokens (25962 reused, exact passes) in 1.25 s = | 400 tokens in 26.47 s = 15.07 tok/s (length);
+peer-step768 turn 2: TTFT   2.1s | prompt 26408 tokens (26380 reused, exact passes) in 1.98 s = | 400 tokens in 29.78 s = 13.40 tok/s (length);
+peer-step768 turn 3: TTFT   9.3s | prompt 27111 tokens (26807 reused, exact passes) in 9.13 s = | 400 tokens in 26.74 s = 14.92 tok/s (length);
+peer-step768 turn 4: TTFT   1.2s | prompt 27526 tokens (27510 reused, exact passes) in 1.04 s = | 143 tokens in 10.84 s = 13.11 tok/s (stop); e
+1gpu-step768 turn 0: TTFT  72.5s | prompt 25563 tokens (0 reused, batch) in 68.60 s = 372.7 tok | 400 tokens in 25.28 s = 15.78 tok/s (length);
+1gpu-step768 turn 1: TTFT   3.5s | prompt 25981 tokens (25962 reused, exact passes) in 3.42 s = | 400 tokens in 25.58 s = 15.60 tok/s (length);
+1gpu-step768 turn 2: TTFT   1.9s | prompt 26408 tokens (26380 reused, exact passes) in 1.80 s = | 400 tokens in 26.77 s = 14.90 tok/s (length);
+1gpu-step768 turn 3: TTFT  10.8s | prompt 27111 tokens (26807 reused, exact passes) in 10.68 s  | 400 tokens in 24.96 s = 15.98 tok/s (length);
+1gpu-step768 turn 4: TTFT   1.2s | prompt 27526 tokens (27510 reused, exact passes) in 1.06 s = | 114 tokens in 7.39 s = 15.29 tok/s (stop); ex
+peer-step768-r2 turn 0: TTFT  83.5s | prompt 25563 tokens (0 reused, batch) in 71.45 s = 357.8 tok | 400 tokens in 24.90 s = 16.02 tok/s (length);
+peer-step768-r2 turn 1: TTFT   2.4s | prompt 25981 tokens (25962 reused, exact passes) in 2.25 s = | 400 tokens in 24.97 s = 15.98 tok/s (length);
+peer-step768-r2 turn 2: TTFT   2.0s | prompt 26408 tokens (26380 reused, exact passes) in 1.84 s = | 400 tokens in 30.00 s = 13.30 tok/s (length);
+peer-step768-r2 turn 3: TTFT   9.4s | prompt 27111 tokens (26807 reused, exact passes) in 9.29 s = | 400 tokens in 25.97 s = 15.37 tok/s (length);
+peer-step768-r2 turn 4: TTFT   1.3s | prompt 27526 tokens (27510 reused, exact passes) in 1.14 s = | 202 tokens in 13.31 s = 15.11 tok/s (stop); e
+1gpu-step768-r2 turn 0: TTFT  72.3s | prompt 25563 tokens (0 reused, batch) in 68.66 s = 372.3 tok | 400 tokens in 28.68 s = 13.91 tok/s (length);
+1gpu-step768-r2 turn 1: TTFT   2.8s | prompt 25981 tokens (25962 reused, exact passes) in 2.69 s = | 400 tokens in 27.88 s = 14.31 tok/s (length);
+1gpu-step768-r2 turn 2: TTFT   2.3s | prompt 26408 tokens (26380 reused, exact passes) in 2.18 s = | 400 tokens in 33.35 s = 11.96 tok/s (length);
+1gpu-step768-r2 turn 3: TTFT  12.0s | prompt 27111 tokens (26807 reused, exact passes) in 11.83 s  | 400 tokens in 28.49 s = 14.00 tok/s (length);
+1gpu-step768-r2 turn 4: TTFT   1.4s | prompt 27526 tokens (27510 reused, exact passes) in 1.25 s = | 43 tokens in 3.19 s = 13.17 tok/s (stop); exp
+peer-chatrank turn 0: TTFT  81.8s | prompt 25563 tokens (0 reused, batch) in 69.35 s = 368.6 tok | 400 tokens in 26.90 s = 14.83 tok/s (length);
+peer-chatrank turn 1: TTFT   1.3s | prompt 25981 tokens (25962 reused, exact passes) in 1.20 s = | 400 tokens in 26.32 s = 15.16 tok/s (length);
+peer-chatrank turn 2: TTFT   1.7s | prompt 26408 tokens (26380 reused, exact passes) in 1.62 s = | 400 tokens in 30.01 s = 13.29 tok/s (length);
+peer-chatrank turn 3: TTFT   9.9s | prompt 27111 tokens (26807 reused, exact passes) in 9.74 s = | 400 tokens in 26.23 s = 15.21 tok/s (length);
+peer-chatrank turn 4: TTFT   1.0s | prompt 27526 tokens (27510 reused, exact passes) in 0.86 s = | 94 tokens in 6.26 s = 14.85 tok/s (stop); exp
+prof turn 0: TTFT  83.5s | prompt 25563 tokens (0 reused, batch) in 71.51 s = 357.5 tok | 400 tokens in 29.26 s = 13.64 tok/s (length);
+prof turn 1: TTFT   2.5s | prompt 25981 tokens (25962 reused, exact passes) in 2.42 s = | 400 tokens in 27.57 s = 14.47 tok/s (length);
+prof turn 2: TTFT   1.9s | prompt 26408 tokens (26380 reused, exact passes) in 1.81 s = | 400 tokens in 30.65 s = 13.02 tok/s (length);
+vbg2 turn 0: TTFT  80.3s | prompt 25563 tokens (0 reused, batch) in 69.32 s = 368.8 tok | 400 tokens in 27.68 s = 14.41 tok/s (length);
+vbg2 turn 1: TTFT   1.5s | prompt 25981 tokens (25962 reused, exact passes) in 1.34 s = | 400 tokens in 26.88 s = 14.84 tok/s (length);
+vbg2 turn 2: TTFT   2.0s | prompt 26408 tokens (26380 reused, exact passes) in 1.87 s = | 400 tokens in 28.55 s = 13.98 tok/s (length);
+vbg2 turn 3: TTFT   9.7s | prompt 27111 tokens (26807 reused, exact passes) in 9.55 s = | 400 tokens in 26.23 s = 15.21 tok/s (length);
+vbg2 turn 4: TTFT   1.3s | prompt 27526 tokens (27510 reused, exact passes) in 1.12 s = | 165 tokens in 11.67 s = 14.06 tok/s (stop); e
+pcie25 turn 0: TTFT  82.1s | prompt 25563 tokens (0 reused, batch) in 70.87 s = 360.7 tok | 400 tokens in 28.11 s = 14.19 tok/s (length);
+pcie25 turn 1: TTFT   1.4s | prompt 25981 tokens (25962 reused, exact passes) in 1.25 s = | 400 tokens in 24.81 s = 16.08 tok/s (length);
+pcie25 turn 2: TTFT   2.0s | prompt 26408 tokens (26380 reused, exact passes) in 1.87 s = | 400 tokens in 28.70 s = 13.90 tok/s (length);
+pcie25 turn 3: TTFT   9.7s | prompt 27111 tokens (26807 reused, exact passes) in 9.54 s = | 400 tokens in 25.98 s = 15.36 tok/s (length);
+pcie25 turn 4: TTFT   1.2s | prompt 27526 tokens (27510 reused, exact passes) in 1.10 s = | 155 tokens in 10.66 s = 14.44 tok/s (stop); e
+step256 turn 0: TTFT  82.5s | prompt 25563 tokens (0 reused, batch) in 71.25 s = 358.8 tok | 400 tokens in 28.24 s = 14.13 tok/s (length);
+step256 turn 1: TTFT   1.6s | prompt 25981 tokens (25962 reused, exact passes) in 1.45 s = | 400 tokens in 26.08 s = 15.30 tok/s (length);
+step256 turn 2: TTFT   2.1s | prompt 26408 tokens (26380 reused, exact passes) in 1.98 s = | 400 tokens in 29.44 s = 13.55 tok/s (length);
+step256 turn 3: TTFT   7.9s | prompt 27111 tokens (26807 reused, batch) in 6.08 s = 50.0 t | 400 tokens in 30.58 s = 13.05 tok/s (length);
+step256 turn 4: TTFT   1.5s | prompt 27526 tokens (27510 reused, exact passes) in 1.40 s = | 100 tokens in 8.49 s = 11.66 tok/s (stop); ex
