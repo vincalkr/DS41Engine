@@ -245,6 +245,24 @@ So the loading is faithful (ppl and top-1 match the author's within 0.3 %) and t
 errors come from the 2.03 bpw quant itself. The quant was deleted and the GSQ restored from the USB backup
 (`local/restore-gsq.sh`, sha256-checked); the 1017 Engram shards stay in `models/engram-1017/` for a better 1017 quant.
 
+**An agent session, and two levers from it** (2026-10-18). A Pi session against the chat (23 turns, context
+18K -> 41.5K, `local/serve-engine.log`): decode took 1,263 s of the 1,460 s and ran at 10-12 tok/s, 11.5 on average
+(8.2 on the last turn); per decoded token 60-65% of the expert lookups hit VRAM (~1,785 experts there), ~85 were
+computed on the CPU and ~10 read from NVMe - against 69-75%, 60-70 and 3-5 on short Italian chats. Prompts were 13% of
+the time: the layer-major batch costs ~4-6 s even for 372-600 new tokens, and the one 171-token turn, which the exact
+passes served (`STRATA_SERVE_STEP_MAX` 256), took 9.3 s. Two levers were measured with `local/bench-v41/ab-levers.sh`
+(fresh server per run, two runs each):
+
+- **`STRATA_SERVE_STEP_MAX` 256 -> 96**, `followup-sizes.py` (25K first turn, then +171, +256, +341, +425-token
+  follow-ups): +171 turn 9.71-9.80 s -> 3.92-4.10 s, +256 turn 12.85-14.37 s -> 4.35-6.45 s; the batch then re-opens
+  the VRAM cache (seed 1.7-2.9 s, before the first token), so time to first token 9.7-9.8 -> 6.3-6.8 s and 12.9-14.4
+  -> 6.0-9.4 s. The +341 and +425 turns run the batch either way (4.8-6.3 s). The passes read ~17.5 new tokens a
+  second, the batch has a ~4 s floor: the crossover is near 70-100 tokens. **Adopted** in `local/ds41-local*.json`.
+- **A rank from the chat's own routes** (`local/rebuild-rank.sh 1`: the calibration counts plus 48K routed chat
+  tokens, mostly this agent session; half of the VRAM head and a fifth of the arena change), agent replay: decode
+  11.85 / 12.19 tok/s against 11.81 / 11.73 with `rank-gsq-mixed.bin`, VRAM hits 63.1-63.4% against 63.9%, CPU
+  experts 83-84 against 82 a token. Inside the spread, **not adopted**.
+
 ## ggml's HIP graphs pay now (`GGML_CUDA_DISABLE_GRAPHS` removed from the chat config)
 
 `AMD_HIP_NOTES.md` measured the graphs as a loss (biased routing, an older state: 20 captures per token). In this

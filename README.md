@@ -42,6 +42,7 @@ All from [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), where every r
 | ggml's HIP graphs on (they replay now) | 7,491-token prompt 37.5 -> 30.5 s, decode after it 10.41 -> 12.02 tok/s |
 | dense half re-quantized Q8_0 -> Q6_K at load (`STRATA_DENSE_REQUANT=q6_K`) | all-VRAM ceiling 22.5 -> 25.7-26.7 tok/s, chat 16.5-18.6 tok/s; costs +0.9% ppl (measured on the 1017 quant) |
 | `STRATA_PRESTAGE_MIN=512` (upstream's lazy prestage) | +300-token turn 4.8-5.0 -> 4.1-4.4 s, long prompts unchanged |
+| `STRATA_SERVE_STEP_MAX=96` (from 256): agent turns of 97-256 new tokens go to the layer-major batch | time to first token on a +171 / +256-token turn 9.7-9.8 -> 6.3-6.8 s / 12.9-14.4 -> 6.0-9.4 s |
 | `--kv-q8`, `STRATA_PRESTAGE_GIB=1.5` | 8-bit KV: last-row top-5 identical (cosine 0.999); prestage +5.8% prompt |
 
 ## Where the time goes

@@ -113,3 +113,24 @@ p512-r6 turn 2: TTFT   2.3s | prompt 26408 tokens (26380 reused, exact passes) i
 p512-r6 turn 3: TTFT   5.9s | prompt 27111 tokens (26807 reused, batch) in 4.06 s = 74.8 t | 400 tokens in 35.15 s = 11.35 tok/s (length);
 p512-r6 turn 4: TTFT   2.0s | prompt 27526 tokens (27510 reused, exact passes) in 1.90 s = | 93 tokens in 8.36 s = 11.00 tok/s (stop); exp
 ABDONE
+rankmix-r1 turn 0: TTFT  79.1s | prompt 25563 tokens (0 reused, batch) in 75.83 s = 337.1 tok | 400 tokens in 30.44 s = 13.11 tok/s (length);
+rankmix-r1 turn 1: TTFT   3.0s | prompt 25981 tokens (25962 reused, exact passes) in 2.85 s = | 400 tokens in 29.30 s = 13.62 tok/s (length);
+rankmix-r1 turn 2: TTFT   2.3s | prompt 26408 tokens (26380 reused, exact passes) in 2.22 s = | 400 tokens in 37.26 s = 10.71 tok/s (length);
+rankmix-r1 turn 3: TTFT   6.9s | prompt 27111 tokens (26807 reused, batch) in 4.35 s = 69.9 t | 400 tokens in 37.23 s = 10.72 tok/s (length);
+rankmix-r1 turn 4: TTFT   1.9s | prompt 27526 tokens (27510 reused, exact passes) in 1.81 s = | 110 tokens in 10.58 s = 10.30 tok/s (stop); e
+rankchat-r1 turn 0: TTFT  80.5s | prompt 25563 tokens (0 reused, batch) in 75.83 s = 337.1 tok | 400 tokens in 30.56 s = 13.06 tok/s (length);
+rankchat-r1 turn 1: TTFT   1.8s | prompt 25981 tokens (25962 reused, exact passes) in 1.63 s = | 400 tokens in 33.01 s = 12.09 tok/s (length);
+rankchat-r1 turn 2: TTFT   2.4s | prompt 26408 tokens (26380 reused, exact passes) in 2.32 s = | 400 tokens in 35.21 s = 11.33 tok/s (length);
+rankchat-r1 turn 3: TTFT   6.1s | prompt 27111 tokens (26807 reused, batch) in 4.34 s = 70.1 t | 400 tokens in 35.68 s = 11.18 tok/s (length);
+rankchat-r1 turn 4: TTFT   1.5s | prompt 27526 tokens (27510 reused, exact passes) in 1.39 s = | 162 tokens in 14.20 s = 11.34 tok/s (stop); e
+rankmix-r2 turn 0: TTFT  78.1s | prompt 25563 tokens (0 reused, batch) in 74.61 s = 342.6 tok | 400 tokens in 30.66 s = 13.02 tok/s (length);
+rankmix-r2 turn 1: TTFT   2.1s | prompt 25981 tokens (25962 reused, exact passes) in 2.00 s = | 400 tokens in 30.58 s = 13.05 tok/s (length);
+rankmix-r2 turn 2: TTFT   2.1s | prompt 26408 tokens (26380 reused, exact passes) in 2.00 s = | 400 tokens in 36.05 s = 11.07 tok/s (length);
+rankmix-r2 turn 3: TTFT   7.0s | prompt 27111 tokens (26807 reused, batch) in 4.44 s = 68.5 t | 400 tokens in 38.27 s = 10.43 tok/s (length);
+rankmix-r2 turn 4: TTFT   2.0s | prompt 27526 tokens (27510 reused, exact passes) in 1.83 s = | 110 tokens in 10.16 s = 10.72 tok/s (stop); e
+rankchat-r2 turn 0: TTFT  80.7s | prompt 25563 tokens (0 reused, batch) in 76.01 s = 336.3 tok | 400 tokens in 29.74 s = 13.42 tok/s (length);
+rankchat-r2 turn 1: TTFT   1.8s | prompt 25981 tokens (25962 reused, exact passes) in 1.68 s = | 400 tokens in 30.73 s = 12.98 tok/s (length);
+rankchat-r2 turn 2: TTFT   2.1s | prompt 26408 tokens (26380 reused, exact passes) in 1.98 s = | 400 tokens in 34.06 s = 11.71 tok/s (length);
+rankchat-r2 turn 3: TTFT   6.0s | prompt 27111 tokens (26807 reused, batch) in 4.27 s = 71.2 t | 400 tokens in 36.49 s = 10.93 tok/s (length);
+rankchat-r2 turn 4: TTFT   1.9s | prompt 27526 tokens (27510 reused, exact passes) in 1.74 s = | 98 tokens in 8.27 s = 11.73 tok/s (stop); exp
+LEVERSDONE
