@@ -1483,7 +1483,10 @@ int main(int argc, char ** argv) {
                 // a column" is a mis-derivation (1424/8192) and the decomposition is really ~5.7 GiB fixed + 0.78 a
                 // column.  Same line, same fit - but it matters: a wide batch's per-column STATE is what starves the
                 // fixed graph buffer (16384 = 5.14 GiB of state, 1.03 GiB short), not the graph itself.
-                const double room = (double) frb - a.vram_margin_gib * 1073741824.0 - 4.3 * 1073741824.0;
+                // the fit above was calibrated with the default 1 GiB margin: a smaller --vram-margin (more decode
+                // slots) must not widen the batch past it (a 22K prompt at --vram-margin 0.5 took B=11914 and its
+                // 2.28 GiB graph buffer did not fit, 2026-10-18)
+                const double room = (double) frb - std::max(1.0, a.vram_margin_gib) * 1073741824.0 - 4.3 * 1073741824.0;
                 const int fit = (int) std::max<int64_t>(2, (int64_t) (room / (0.95 * 1048576.0)));
                 pb_cap = std::min(PB, std::max(SB, fit));
                 if (vram_trace) std::fprintf(stderr, "vram trace: cap free %.2f GiB room %.2f GiB fit %d -> pb_cap %d\n",

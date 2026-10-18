@@ -436,6 +436,12 @@ bool Ds41Dense::Impl::compute(ggml_cgraph * gf, bool cached) {
     bool ok_alloc = a.alloc(gf, cached && env_on("DS41_GRAPH_REUSE", true));
     if (!ok_alloc && oom_hook && oom_hook()) {   // something gave VRAM back: once more
         std::fprintf(stderr, "ds41_dense: graph buffer did not fit - freed the tier's prestage region, retrying\n");
+        // A failed reserve leaves the gallocr half-built: allocating with it again crashed (SIGSEGV in
+        // ggml_gallocr_alloc_graph, a 22K-token prompt, 2026-10-18).  Retry on a fresh allocator; every graph of this
+        // one re-allocates on its next use (the epoch bump unbinds its compute-buffer tensors).
+        ggml_gallocr_free(a.a);
+        a.a = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+        ++a.epoch;   // NOT graph_epoch.clear(): a graph must be found at an old epoch to have its stale tensors unbound
         ok_alloc = a.alloc(gf, false);
     }
     if (!ok_alloc) { err = "graph allocation failed"; return false; }
