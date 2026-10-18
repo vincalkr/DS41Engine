@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""agent-replay.py TAG - an agent-like session against 127.0.0.1:8150: a ~25K-token first turn (local/bench-v41/long22k.txt),
+"""agent-replay.py TAG [GAP] - an agent-like session against 127.0.0.1:8150: a ~25K-token first turn (local/bench-v41/long22k.txt),
 then four follow-ups of ~100-600 new tokens each.  Per turn: new prompt tokens, TTFT, decode tok/s (from the server log).
-Appends one line per turn to local/bench-v41/agent-replay.txt."""
+Appends one line per turn to local/bench-v41/agent-replay.txt and the answers to local/bench-v41/agent-replay-TAG.json.
+GAP (default 0.5) = seconds between turns - an agent's tool time, the idle time the conversation-adaptive arena reads in."""
 import json, sys, time, urllib.request, subprocess
 tag = sys.argv[1] if len(sys.argv) > 1 else "run"
+gap = float(sys.argv[2]) if len(sys.argv) > 2 else 0.5
 doc = open("local/bench-v41/long22k.txt").read()
 msgs = [{"role": "system", "content": "Sei un assistente tecnico che lavora su questo repository."},
         {"role": "user", "content": doc + "\n\nRiassumi in 5 punti il testo qui sopra."}]
@@ -32,4 +34,5 @@ for i in range(len(follow) + 1):
     line = f"{tag} turn {i}: TTFT {t1 - t0:5.1f}s | {pl.split('serve: ')[-1][:60]} | {dl.split('serve: ')[-1][:45]}"
     print(line, flush=True); open("local/bench-v41/agent-replay.txt", "a").write(line + "\n")
     msgs.append({"role": "assistant", "content": "".join(text)})
-    if i < len(follow): msgs.append({"role": "user", "content": follow[i]})
+    json.dump(msgs[2:], open(f"local/bench-v41/agent-replay-{tag}.json", "w"), ensure_ascii=False, indent=1)
+    if i < len(follow): msgs.append({"role": "user", "content": follow[i]}); time.sleep(max(0.0, gap - 0.5))

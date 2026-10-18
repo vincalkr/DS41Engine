@@ -501,7 +501,7 @@ public:
     bool build_arena_from_routes(const std::string& routes_bin, int batch_tokens, std::string& err);
     /// Frees run_chunk's device and pinned buffers (the next run_chunk allocates them again).
     void release_chunk();
-    /// The conversation-adaptive arena (on by default; STRATA_ARENA_REBAL=0 turns it off) - routed-token counts per expert, a swap
+    /// STRATA_ARENA_REBAL=1 (off by default): the conversation-adaptive arena - routed-token counts per expert, a swap
     /// plan after each prompt (frequent file-tier experts in, rarely used arena experts out), executed by a reader thread
     /// in the idle NVMe time.  begin_prompt: before a prompt (pauses the reads, takes back every retired swap the reader
     /// has not started - the victim gets its slot back - and publishes finished ones); plan: after it (plans, resumes);

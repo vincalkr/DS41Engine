@@ -185,6 +185,38 @@ the engine loads the counts already there at start and writes them after every r
 restarts (git-ignored: they are this user's routing). `local/rebuild-rank.sh [chat-weight]` adds them to the
 calibration counts and writes `local/rank-gsq-chat.bin`; point `--rank` at it and restart to use it.
 
+**Upstream's small-turn prefill and conversation-adaptive arena** (2026-10-18). Four ds41 commits from upstream
+(Indras-Mirror/Strata-DSV4.1, now Xolotl) are cherry-picked: 716cf901 (the span-index upload memo and the lazy
+prestage below `STRATA_PRESTAGE_MIN` rows), 5429b5ad / cff4bb24 / 8d43fe1b (`STRATA_ARENA_REBAL`, the
+conversation-adaptive arena, with its cancel fix). Measured with `local/bench-v41/ab-rebal.sh` on the agent replay
+(`agent-replay.py`, 25,563-token first turn, then follow-ups of +19, +28, +304 and +16 tokens, 15 s between turns,
+a fresh server per run, the chat config, one card); `rebal-summary.py` prints the table:
+
+| build / setting | runs | 25K prompt | +304 turn | file-tier experts, +19 / +304 turn |
+|---|---:|---:|---:|---:|
+| before the commits | 4 | 68.3-70.0 s | 4.8-5.0 s | 261-278 / 1,814-1,904 |
+| new, upstream defaults (lazy below 4096 rows), arena off | 4 | 69.8-72.9 s | 4.0-4.3 s | 246-288 / 1,783-1,932 |
+| new, arena on (`STRATA_ARENA_REBAL=1`) | 2 | 72.5-73.2 s | 4.0-4.9 s | 361-377 / 1,609-1,635 |
+| new, lazy prestage off (`STRATA_PRESTAGE_MIN=0`) | 2 | 68.6-69.3 s | 4.9-5.1 s | 268-279 / 1,866-1,918 |
+| **new, lazy below 512 rows** (`STRATA_PRESTAGE_MIN=512`, the chat now) | 2 | **69.5-69.6 s** | **4.1-4.4 s** | 270-271 / 1,850-1,857 |
+
+Decode (400 tokens a turn, 9-16 tok/s) and the one-token "exact passes" follow-ups (1.3-3.4 s) do not differ
+beyond the spread in any row. So:
+- The lazy prestage is the small-turn gain (the 304-row turn's experts 3.8-4.0 -> 3.2-3.5 s, its dense 0.96 -> 0.78 s), but
+  at upstream's 4,096-row threshold the 25K prompt's last 987-row batch also goes lazy and its 40 layers lose the DMA
+  overlap: +2-3 s. At 512 rows the long prompt is back to the old time and the 304-row turn keeps the gain.
+  `local/ds41-local*.json` set `STRATA_PRESTAGE_MIN=512`.
+- The adaptive arena does not pay here and stays off (opt-in again, as upstream first had it): with a 75 GiB arena the
+  file tier is small, the swaps it plans from the 25K document push out experts the short chat follow-ups route
+  (+19 turn: 361-377 file-tier experts against 246-288), and only the +304 turn reads less (-12%).
+- Temperature 0 is not reproducible across runs of the same binary (base-r1 and base-r2 part after 113 characters):
+  where an expert is served from (VRAM, prestage region, streamed) picks MMVQ or MMQ, and that placement depends on
+  timing (`--arena-adapt`, the background promotions). A quality gate here has to be read by hand, not diffed.
+
+Not taken: dee2af6c (prompt-lookup drafts up to 14 tokens, DSpark eviction during long prompts) needs DSpark, which
+loses on Italian prose here; 60f2c020 (keep-cache) never engages with `--vram-lru`; f7c561b7 (`--tier-batch-pcie`)
+is a flag for a setting the config already sets.
+
 ## ggml's HIP graphs pay now (`GGML_CUDA_DISABLE_GRAPHS` removed from the chat config)
 
 `AMD_HIP_NOTES.md` measured the graphs as a loss (biased routing, an older state: 20 captures per token). In this

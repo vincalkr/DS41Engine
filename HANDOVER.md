@@ -8,6 +8,11 @@ Written 2026-10-17, end of a long session, for a stronger model to continue from
 > answers - see [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md): the GSQ's `rank.bin` was the main defect
 > (11.5% coverage of the VRAM head), plus `--arena-adapt`, `STRATA_PF_NO_DUMMY=1`, the second card as a miss tier
 > (`--peer-device 1`), `--threads 12` and `--vram-margin 0.5`. The near-tie bias (P1) was measured and does not pay.
+>
+> **Update 2026-10-18:** the chat runs on one card with the dense half re-quantized to Q6_K (16-18.6 tok/s on short
+> prompts, ~11-14 at 25K context), and four upstream ds41 commits are in (small-turn prefill: a +304-token agent turn
+> 4.8-5.0 -> 4.1-4.4 s with `STRATA_PRESTAGE_MIN=512`; the conversation-adaptive arena measured and left off) - all in
+> [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
 
 ## 0. TL;DR
 

@@ -42,6 +42,7 @@
   "GGML_NO_BACKTRACE": "1",
   "DS41_EXE": "build-hip-fused/ds41_generate",
   "STRATA_PRESTAGE_GIB": "1.5",
+  "STRATA_PRESTAGE_MIN": "512",
   "STRATA_SERVE_PASS_BIAS": "0",
   "STRATA_TEXT_LOG": "local/v41-text.log",
   "STRATA_PF_NO_DUMMY": "1",
