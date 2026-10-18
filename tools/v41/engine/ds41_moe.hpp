@@ -462,6 +462,10 @@ public:
     const Ds41MoeConfig& config() const;
     const char* mode() const;          ///< "cpu-only" | "gpu" | "uninitialised"
     int64_t resident() const;          ///< experts admitted to the VRAM cache
+    /// The VRAM expert cache now: experts it holds and the bytes of its live slots (0 / 0 while it is shut, e.g. during
+    /// a layer-major prompt batch).  Report-only (the server's Monitor tab).
+    int64_t vram_experts() const;
+    int64_t vram_bytes() const;
     /// The peer device's tier (Ds41MoeConfig::peer_device >= 0; 0 otherwise): experts its store holds and decode
     /// rows it has computed.  Report-only.
     int64_t peer_experts() const;

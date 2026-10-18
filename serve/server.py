@@ -769,6 +769,10 @@ class StrataEngine:
                     continue
                 except (IndexError, ValueError):
                     pass
+            if line.startswith("INFO ") and self.proc is proc:   # facts that change while it runs (the V4.1 engine's
+                for kv in line.split()[1:]:                      # VRAM expert cache opens after the first prompt):
+                    k, _, v = kv.partition("=")                  # the Monitor tab reads them from self.info
+                    self.info[k] = int(v) if v.lstrip("-").isdigit() else v
             lines.put(line)
         if self.proc is proc:                           # a killed engine's pump must not mark its successor dead
             self.ended = True                           # its output closed: it is gone, even before the OS says so

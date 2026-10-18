@@ -952,6 +952,13 @@ int main(int argc, char ** argv) {
 #if defined(DS41_HAVE_DSPARK)
     std::unique_ptr<Ds41DSpark> dsp;
 #endif
+    // --serve: the VRAM expert cache's size for the server's Monitor tab ("Experts in VRAM"), each time it opens or
+    // shuts (the deferred seed opens it only after the first prompt; a layer-major batch shuts it for the prompt)
+    auto info_vram = [&]() {
+        std::printf("INFO expert_slots=%lld expert_cache_mib=%lld\n", (long long) tier.vram_experts(),
+                    (long long) (tier.vram_bytes() >> 20));
+        std::fflush(stdout);
+    };
     auto open_cache = [&]() -> bool {
         dense.release_pass();
 #if defined(DS41_HAVE_DSPARK)
@@ -999,6 +1006,7 @@ int main(int argc, char ** argv) {
         proxy_res.clear();   // the real VRAM set from here on
         bias_now = true;     // decode: route bias + file penalty on
         apply_bias();
+        if (a.serve) info_vram();
         return true;
     };
     double fd_dense = 0, fd_tier = 0, fd_logits = 0;   // prompt wall split (printed with the prompt line)
@@ -1434,6 +1442,7 @@ int main(int argc, char ** argv) {
             if (!by_step && defer_vram && cache_open && dh >= 2) {
                 tier.release_cache();
                 cache_open = false;
+                info_vram();
                 bias_now = a.bias_prompt > 0;
                 apply_bias();
             }

@@ -5822,6 +5822,20 @@ const char* Ds41MoeTier::mode() const {
 }
 
 int64_t Ds41MoeTier::resident() const { return im_->admitted; }
+int64_t Ds41MoeTier::vram_experts() const {
+#if defined(DS4_MOE_CUDA)
+    return im_ && im_->gpu && im_->gpu->cache && !im_->cfg.no_cache ? im_->gpu->cache->resident() : 0;
+#else
+    return 0;
+#endif
+}
+int64_t Ds41MoeTier::vram_bytes() const {
+#if defined(DS4_MOE_CUDA)
+    return im_ && im_->gpu && im_->gpu->cache && !im_->cfg.no_cache ? im_->gpu->cache->bytes() : 0;
+#else
+    return 0;
+#endif
+}
 int64_t Ds41MoeTier::peer_experts() const {
 #if defined(DS4_MOE_CUDA)
     return im_ && im_->gpu && im_->gpu->peer ? im_->gpu->peer->used : 0;
