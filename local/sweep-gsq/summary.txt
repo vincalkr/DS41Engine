@@ -176,3 +176,18 @@ pr4-peer                     code-en        diff=3    decode: 212 tokens in 16.5
 pr4-nopeer                   code-en        diff=5    decode: 212 tokens in 17.32 s = 12.18 tok/s; experts 29016 hit / 21624 cpu / 0 pcie / 1125 file (57.3% VRAM hits), cpu 4514 ms, file 3320 ms; spec reads 0 issued / 0 used
 pr4-peer-alias               code-en        diff=3    decode: 212 tokens in 15.86 s = 13.30 tok/s; experts 28967 hit / 12683 cpu / 0 pcie / 1077 file (69.5% VRAM hits), cpu 2706 ms, file 3328 ms; spec reads 0 issued / 0 used
 ABDONE
+cq1-q8                       sposi          diff=122  decode: 300 tokens in 13.31 s = 22.46 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0
+cq1-q6k                      sposi          diff=119  decode: 300 tokens in 11.63 s = 25.71 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0
+rq1-q8                       sposi          diff=6    decode: 300 tokens in 17.59 s = 17.00 tok/s; experts 49976 hit / 10897 cpu / 0 pcie / 960 file (82.1% VRAM hits), cpu 2332 ms, file 2330 ms; spec reads 0 issued / 0 used;
+rq1-q6k                      sposi          diff=4    decode: 300 tokens in 16.95 s = 17.64 tok/s; experts 51128 hit / 10461 cpu / 0 pcie / 897 file (83.0% VRAM hits), cpu 2280 ms, file 2624 ms; spec reads 0 issued / 0 used;
+rq1-q8                       code-en        diff=4    decode: 212 tokens in 15.21 s = 13.87 tok/s; experts 28916 hit / 12706 cpu / 0 pcie / 1094 file (69.5% VRAM hits), cpu 2771 ms, file 2909 ms; spec reads 0 issued / 0 used
+rq1-q6k                      code-en        diff=5    decode: 212 tokens in 15.61 s = 13.52 tok/s; experts 29887 hit / 12296 cpu / 0 pcie / 988 file (70.9% VRAM hits), cpu 2717 ms, file 4116 ms; spec reads 0 issued / 0 used;
+cq2-q8                       sposi          diff=122  decode: 300 tokens in 13.27 s = 22.53 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0
+cq2-q6k                      sposi          diff=119  decode: 300 tokens in 11.19 s = 26.73 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0
+rq2-q8                       sposi          diff=6    decode: 300 tokens in 19.33 s = 15.47 tok/s; experts 49989 hit / 10921 cpu / 0 pcie / 963 file (82.1% VRAM hits), cpu 2322 ms, file 2761 ms; spec reads 0 issued / 0 used;
+rq2-q6k                      sposi          diff=4    decode: 300 tokens in 19.53 s = 15.31 tok/s; experts 51128 hit / 10461 cpu / 0 pcie / 897 file (83.0% VRAM hits), cpu 2299 ms, file 2789 ms; spec reads 0 issued / 0 used;
+rq2-q8                       code-en        diff=4    decode: 212 tokens in 14.86 s = 14.20 tok/s; experts 28963 hit / 12709 cpu / 0 pcie / 1076 file (69.5% VRAM hits), cpu 2745 ms, file 2763 ms; spec reads 0 issued / 0 used
+rq2-q6k                      code-en        diff=6    decode: 212 tokens in 15.33 s = 13.76 tok/s; experts 29890 hit / 12303 cpu / 0 pcie / 963 file (70.8% VRAM hits), cpu 2693 ms, file 2821 ms; spec reads 0 issued / 0 used;
+free-q6k                     divina-breve   diff=0    decode: 300 tokens in 16.99 s = 17.59 tok/s; experts 51521 hit / 10655 cpu / 0 pcie / 631 file (82.9% VRAM hits), cpu 2337 ms, file 1596 ms; spec reads 0 issued / 0 used;
+free-q6k                     circles        diff=0    decode: 84 tokens in 4.77 s = 17.39 tok/s; experts 14053 hit / 3058 cpu / 0 pcie / 209 file (82.1% VRAM hits), cpu 668 ms, file 653 ms; spec reads 0 issued / 0 used; pref
+Q6DONE
