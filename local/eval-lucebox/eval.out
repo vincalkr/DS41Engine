@@ -1,0 +1,18 @@
+seq 0: PPL 11.4370  mean NLL 2.4369 over 1023 tokens, top-1 0.493
+seq 1: PPL 8.9083  mean NLL 2.1870 over 1023 tokens, top-1 0.542
+seq 2: PPL 9.6660  mean NLL 2.2686 over 1023 tokens, top-1 0.491
+seq 3: PPL 14.0186  mean NLL 2.6404 over 1023 tokens, top-1 0.468
+seq 4: PPL 10.4911  mean NLL 2.3505 over 1023 tokens, top-1 0.517
+seq 5: PPL 13.7046  mean NLL 2.6177 over 1023 tokens, top-1 0.468
+seq 6: PPL 11.8779  mean NLL 2.4747 over 1023 tokens, top-1 0.464
+seq 7: PPL 14.2135  mean NLL 2.6542 over 1023 tokens, top-1 0.457
+{"tokens": 8184, "ppl": 11.631826763445186, "top1_agree": 0.7149315738025416, "kl_top256": 0.47500701094832015}
+seq 0: PPL 11.5358  mean NLL 2.4455 over 1023 tokens, top-1 0.499
+seq 1: PPL 8.7590  mean NLL 2.1701 over 1023 tokens, top-1 0.552
+seq 2: PPL 9.8237  mean NLL 2.2848 over 1023 tokens, top-1 0.485
+seq 3: PPL 14.4938  mean NLL 2.6737 over 1023 tokens, top-1 0.466
+seq 4: PPL 10.5517  mean NLL 2.3563 over 1023 tokens, top-1 0.516
+seq 5: PPL 14.0624  mean NLL 2.6435 over 1023 tokens, top-1 0.458
+seq 6: PPL 11.8781  mean NLL 2.4747 over 1023 tokens, top-1 0.468
+seq 7: PPL 14.1440  mean NLL 2.6493 over 1023 tokens, top-1 0.457
+{"tokens": 8184, "ppl": 11.730945217555602, "top1_agree": 0.7086999022482894, "kl_top256": 0.4875626340591804}

@@ -217,6 +217,34 @@ Not taken: dee2af6c (prompt-lookup drafts up to 14 tokens, DSpark eviction durin
 loses on Italian prose here; 60f2c020 (keep-cache) never engages with `--vram-lru`; f7c561b7 (`--tier-batch-pcie`)
 is a flag for a setting the config already sets.
 
+**DeepSeek-V4.1-Flash-1017 tried and dropped** (2026-10-18). DeepSeek's 2026-10-17 checkpoint has the same
+config.json as V4.1-Flash (new weights, Engram tables included, same tokenizer: tokenizer.json and
+tokenizer_config.json have the same sha256). The one 1017 quant in this engine's GGUF format was
+[lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit) (148 GB, 2.03
+bpw: 11,147 of 15,360 experts' gate/up are ternary PTQ1_0, against 7,152 in the GSQ; map from
+`local/gguf-expert-map.py`). Fetched with `local/fetch-1017.sh` (pinned revisions, every file checked against its
+Hugging Face sha256; the Engram straight from the official shards 47/48 with an index, no extraction). It loads and
+runs unchanged: 15.4-19.1 tok/s in the chat (Divina Commedia 17.8, nine circles 18.9, Promessi Sposi 19.1, Python
+15.4, thinking 16.3), with a rank from its own routing (`local/calib-1017/stats-corpus`; that routing correlates 0.99
+per layer with the September model's on the same corpus). But its answers had facts wrong in 3 of 5 prompts
+(`local/bench-v41/v1017-chat.txt`): the 6th circle given as the envious, Don Rodrigo "converting", Perpetua as Fra
+Cristoforo's servant, a Python test whose expected values fail (`[(1, 11)]` for `[(1, 4), (4, 8), (8, 12)]`).
+
+To rule out this engine's loading, Lucebox's held-out set (8 x 1024 tokens with the FP8 1017 teacher's top-256
+log-probs, `local/eval-lucebox/`, `run-eval.sh` + `score.py`) was run through it:
+
+| | ppl | top-1 vs teacher | KL top-256 |
+|---|---:|---:|---:|
+| FP8 1017 teacher (published) | 8.56 | 100 % | 0 |
+| lxe's quant on his engine (published) | 11.66 | 71.51 % | 0.462 |
+| lxe's quant on this engine, dense Q8_0 | **11.63** | **71.49 %** | 0.475 |
+| lxe's quant on this engine, dense Q6_K (`STRATA_DENSE_REQUANT=q6_K`) | 11.73 | 70.87 % | 0.488 |
+| Lucebox ROCMFP 2.5 bpw (published, another engine) | 9.78 | 78.7 % | 0.253 |
+
+So the loading is faithful (ppl and top-1 match the author's within 0.3 %) and the Q6_K dense costs +0.9 % ppl; the
+errors come from the 2.03 bpw quant itself. The quant was deleted and the GSQ restored from the USB backup
+(`local/restore-gsq.sh`, sha256-checked); the 1017 Engram shards stay in `models/engram-1017/` for a better 1017 quant.
+
 ## ggml's HIP graphs pay now (`GGML_CUDA_DISABLE_GRAPHS` removed from the chat config)
 
 `AMD_HIP_NOTES.md` measured the graphs as a loss (biased routing, an older state: 20 captures per token). In this

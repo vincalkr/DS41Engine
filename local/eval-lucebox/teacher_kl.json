@@ -1,0 +1,13 @@
+{
+ "label": "teacher-1017",
+ "tokens": 8184,
+ "nll": 2.147273237987231,
+ "ppl": 8.561481417629807,
+ "expert_read_gib": 254.37744140625,
+ "wall_s": 173.15676307678223,
+ "experts_gguf": null,
+ "side_map": null,
+ "experts_gguf2": null,
+ "tables": null,
+ "table_shrink": null
+}
