@@ -146,6 +146,22 @@ Answers checked: the nine circles, Beatrice (dead in 1290, guide from the Earthl
    Server now: Divina Commedia 15.37 cold / **18.95** repeated, nine circles 16.02, Promessi Sposi 16.35, Python 12.27,
    thinking 14.75, two new questions 17.08 / 17.19 tok/s.
 
+8. **The dense half in Q6_K at load** (`STRATA_DENSE_REQUANT=q6_K`, the existing switch; upstream Xolotl's served
+   default, where it measured KL vs FP8 0.2281 -> 0.2306 and API top-1 85.87 -> 85.76 % with a 1,200-token greedy edit
+   text identical to Q8_0). The file is untouched; 321 Q8_0 matrices are re-quantized in memory, 7.59 -> 5.86 GB, and
+   card 0's expert slots grow 14.58 -> 16.19 GiB. This is a weight-precision change, not a routing one. One-shot:
+   ceiling 22.46/22.53 -> **25.71/26.73** tok/s; on the forced exact stream 4 of 300 positions differ (Q8_0 itself: 6);
+   the free Divina Commedia and nine-circles answers are correct. Server (now the chat default): Divina Commedia 16.52
+   cold / 18.32 repeated, nine circles **18.63**, Promessi Sposi **18.45**, Python 12.63, thinking **16.35**, two new
+   questions 18.19 / 18.45 tok/s; 7,491-token prompt TTFT 30.5 -> **26.75 s** (280 tok/s), decode after it 12.02 -> 14.14.
+
+**Why upstream Xolotl reports 26.8 tok/s with the same model** (read 2026-10-18 from its README and serve config):
+`--route-bias 0.5 --route-bias-file 0.3` (the lossy routing above), an RTX 4090 (CUDA; this repo's notes put the 4090's
+dense half at 17.8 ms against 51.7 here at the time), decode measured during HumanEval / tool / agentic tasks with
+DSpark on (code drafts are accepted 3.5-3.9 tokens a pass here, Italian prose ~2), the DSpark confidence trim
+(`STRATA_DSPARK_CONF=0.6`, found unsafe on this box in `AMD_HIP_NOTES.md`), prompt-lookup drafts
+(`STRATA_SERVE_LOOKUP=14`, not in this fork) and the dense Q6_K above. Only the last one is adopted here.
+
 **The rank from the chat's own routing.** The chat config also runs `--dump-routes local/routes-chat`: in `--serve`
 the engine loads the counts already there at start and writes them after every request, so they accumulate across
 restarts (git-ignored: they are this user's routing). `local/rebuild-rank.sh [chat-weight]` adds them to the

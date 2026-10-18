@@ -55,7 +55,8 @@
   "STRATA_SERVE_PASS_BATCH": "1",
   "STRATA_VRAM_BG": "1",
   "STRATA_DENSE_NOCONT": "1",
-  "STRATA_DENSE_ALIAS": "1"
+  "STRATA_DENSE_ALIAS": "1",
+  "STRATA_DENSE_REQUANT": "q6_K"
  },
  "cwd": ".",
  "tokenizer": "models/V41-GSQ/tokenizer",
