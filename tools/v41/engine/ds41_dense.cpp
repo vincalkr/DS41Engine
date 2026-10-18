@@ -435,16 +435,20 @@ bool Ds41Dense::Impl::compute(ggml_cgraph * gf, bool cached) {
     Allo & a = cached ? allo_dec : allo_pass;
     bool ok_alloc = a.alloc(gf, cached && env_on("DS41_GRAPH_REUSE", true));
     if (!ok_alloc && oom_hook && oom_hook()) {   // something gave VRAM back: once more
-        std::fprintf(stderr, "ds41_dense: graph buffer did not fit - freed the tier's prestage region, retrying\n");
         // A failed reserve leaves the gallocr half-built: allocating with it again crashed (SIGSEGV in
-        // ggml_gallocr_alloc_graph, a 22K-token prompt, 2026-10-18).  Retry on a fresh allocator; every graph of this
-        // one re-allocates on its next use (the epoch bump unbinds its compute-buffer tensors).
-        ggml_gallocr_free(a.a);
-        a.a = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
-        ++a.epoch;   // NOT graph_epoch.clear(): a graph must be found at an old epoch to have its stale tensors unbound
-        ok_alloc = a.alloc(gf, false);
+        // ggml_gallocr_alloc_graph, a 22K-token prompt, 2026-10-18), and a fresh allocator in the middle of a batch
+        // faulted on the card ("unspecified launch failure": graphs of one batch read each other's intermediates).
+        // So the request fails cleanly instead; the server keeps running.  STRATA_OOM_RETRY=1 = the old retry.
+        static const bool oom_retry = std::getenv("STRATA_OOM_RETRY") && std::getenv("STRATA_OOM_RETRY")[0] == '1';
+        if (oom_retry) {
+            std::fprintf(stderr, "ds41_dense: graph buffer did not fit - freed the tier's prestage region, retrying\n");
+            ok_alloc = a.alloc(gf, false);
+        } else {
+            std::fprintf(stderr, "ds41_dense: graph buffer did not fit (freed the tier's prestage region; no retry on the "
+                                 "failed allocator) - lower --prompt-batch or free VRAM\n");
+        }
     }
-    if (!ok_alloc) { err = "graph allocation failed"; return false; }
+    if (!ok_alloc) { err = "graph allocation failed (out of VRAM: lower --prompt-batch)"; return false; }
     if (ggml_backend_graph_compute(backend, gf) != GGML_STATUS_SUCCESS) { err = "graph compute failed"; return false; }
     return true;
 }

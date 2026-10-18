@@ -1,0 +1,1285 @@
+# The routed-expert tier (`Ds4MoeTier`)
+
+Slice `ds4-moe` of the Phase-4b decode engine. `tools/ds4/ds4_moe.{hpp,cpp}` turn the machinery that
+`tools/ds4/moe_replay.cpp` proved (FINDINGS s10-s12) into one object the engine holds per model and calls once per
+layer: a VRAM expert cache seeded from a routing profile, a pinned host arena, a CPU expert pool for the misses, a
+PCIe share of the misses computed on the GPU, and predicted prefetch on a second stream. The harness stays as it
+is - it is the measurement, and this library is what the engine gets.
+
+```
+tier.init(gguf, cfg, err);                  // once, at startup
+tier.seed_from_routes(routes_bin, err);     // the static profile, once
+for each layer l of each token:
+    tier.prefetch(l, top16);                // right after predict(l), before attention(l) - async
+    tier.run(l, ids6, w6, x, out);          // after router(l) - synchronous: out = sum_k w_k * expert_k(x)
+```
+
+`run` is synchronous because the engine needs `out` before the next layer; `prefetch` is not, so its DMAs overlap
+the dense work the caller does between the two calls. `run_dev` is the same with `x` already in device memory.
+
+## The invariant
+
+For any `(layer, ids, weights, x)` the tier's output equals the weighted sum of the dequantised experts computed in
+F32; the only permitted difference is the expert kernels' own 8-bit activation rounding. `test_ds4_moe` measures
+both numbers separately - the kernel arithmetic against a `to_float` reference on the ENGINE's own quantized
+activation (rel ~2.5e-07, the invariant proper) and the pure-float rounding beside it (~1.9e-02). Measured, not
+argued.
+
+## Three decisions worth knowing
+
+**The SwiGLU clamp is NOT applied, on evidence.** DeepSeek-V4's graph clamps the expert gate/up pre-activations to
+`swiglu_clamp_exp` = 10.0 before the SwiGLU (`tools/ds4/ds4_ref.cpp:933`, mirroring llama.cpp's DEEPSEEK4 branch);
+the native kernels this tier is built on do not (`include/strata/kernels/cpu/native_expert.hpp:49`,
+`src/kernels/cuda/iq_kernels.cu:1190`), and both existing parity gates pass with unclamped references
+(Phase-2 `ds4_expert_parity` 3.0e-5, `moe_replay --correctness` 3.18e-7). So the tier reproduces the kernels
+exactly, and the gate PRINTS the largest pre-activation it saw. On the real model's slices that is |gate| 5.06,
+|up| 4.03 against a limit of 10.0 - the clamp is inactive there, so unclamped equals clamped and the tier's output
+is the model's. Moving the limit into the tier would need a second, unfused gate/up path on both backends; if a
+future activation ever exceeds 10.0 the printed probe is the trigger to build it.
+
+**The arena is a budget, not a promise.** `arena_gib` (72.6 GiB - every expert of the real model) is a ceiling, and
+`max_arena_gib`/`mem_floor_gib` cap it further so the tier can never be the process that swaps the box. The arena
+fills in ROUTING-PROFILE order, so the bytes most likely to be asked for are the ones kept; everything past the
+budget is the file tier - read from the blob source on demand and counted separately (`stats().file_tier`). It is
+built once, by the first `seed_*` call; a re-seed refills the cache and never re-reads the file.
+
+**CPU-only is a real mode, not a debug flag.** `cfg.cpu_only` runs every expert on the pool: no ExpertCache, no
+PCIe share, no CUDA call, and - because `ds4_moe.cpp` is compiled without `DS4_MOE_CUDA` for the `ds4_moe_cpu`
+target - no CUDA symbol on the link line either. That property is what makes the gate safe to run while another
+process owns the GPU, and it is what serves machines with no GPU. The CUDA flavour is the SAME source with
+`DS4_MOE_CUDA=1`; the gate's GPU arm is a separate binary so the CPU gate's safety property is never weakened.
+
+Blob sources are pluggable (`Ds4BlobSource`): `Ds4GgufBlobs` mmaps the three per-role tensors of a `deepseek4`
+GGUF and assembles one 6.75 MiB blob with three memcpys, so reading N experts touches N x 6.75 MiB of the file -
+a slice of a tensor, not a model load. `Ds4MemoryBlobs` is the gate's synthetic arm.
+
+## Gate
+
+`test_ds4_moe` (CPU-only flavour) vs the dequant+F32 reference, limit 1e-3, several layers and expert sets:
+
+```
+nice -n 10 systemd-run --user --scope -q -p MemoryMax=4G -p MemorySwapMax=0 build-ds4/test_ds4_moe
+```
+
+Measured 2026-10-06 (round 3, this tree): 10 checks, 0 failures, 0 arm errors, exit 0. Weighted sum rel
+2.27e-07 - 2.63e-07 and single expert 2.45e-07 - 2.91e-07 on synthetic L0/L1/L7 and real L0/L20 slices; the 8-bit
+activation rounding printed beside them is 1.8e-02 - 2.1e-02. Clamp probe 5.06 / 4.03 (inactive).
+
+The real arm reads <= 12 expert slices of the 0731 GGUF through its mmap (81 MiB touched). `make_mini_gguf.py` is
+NOT used: it writes its routed experts as zero blocks on purpose, so a numeric gate against it would be vacuous.
+
+The CUDA half COMPILES in `build-ds4-cuda` (`ds4_moe_cuda`, `test_ds4_moe_gpu`); `ds4_moe_replay` still builds
+unchanged. The GPU arms are not run in this round - the machine's GPU is busy.
+
+## READY TO RUN (GPU - blocked only by the GPU being busy)
+
+Arm 3, the four sources a routed expert can come from (resident slot / prefetch staging / PCIe DMA out of the
+pinned arena / the file tier) each against the dequant+F32 reference on 24 real expert slices (~162 MiB of the
+GGUF through its mmap; the reference quantizes with the card's q8_1 for the card's experts and Q8_K for the pool's,
+because the tier really uses both), split counted as well as the value:
+
+```
+nice -n 10 systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=0 build-ds4-cuda/test_ds4_moe_gpu --gpu
+```
+
+Arm 4, the tier's own `run` on the real model, the real routes and the real prediction file - the replay's
+measured arm through the library. FULL MODEL, so it must go through the memory guard (cap 64 GiB, needs 62 GiB
+available) and it must not start while ComfyUI is up:
+
+```
+bash tools/ds4/memguard.sh 64 62 -- build-ds4-cuda/test_ds4_moe_gpu --timing \
+  --routes bench/ds4-2026-10-06/hidden-probe/routes.bin \
+  --pred   bench/ds4-2026-10-06/hidden-probe/pred.bin \
+  --profile bench/ds4-2026-10-05/route-probe/ds4routes.bin
+```
+
+`--gap-ms` (default 0.41) stands in for the layer's dense work between `prefetch` and `run`, as the replay's
+`--gap-wall` did, so the wall has s12's shape and the comparable number is the replay's implied full-token
+(20.57 tok/s at 2150 slots, pf-b 1.43, pcie 0.25 dithered - FINDINGS s12). Expect the tier to land near it;
+that comparison is the point of arm 4.
+
+## Residuals
+
+- The clamp question above is left to its measured probe rather than to a second gate/up path on both backends.
+- `prefetch` currently stages into `kMaxPf` (6) slots per layer; a deeper DMA window would need the replay's
+  queueing, which s12 showed does not pay at this pf_b.
+- `run_dev` has no CPU-only counterpart: with `x` on the device there is nothing to test on the CPU arm.
+# Ds4Dense - the DS4 dense (non-expert) half, one token at a time
+
+`tools/ds4/ds4_dense.{hpp,cpp}` implements the Phase-4b decode engine for the non-expert part of
+DeepSeek-V4-Flash: the hyper-connection streams, attention (raw sliding window + CSA/HCA compressed
+keys + the lightning indexer), the MoE router, the shared expert and the head.  One instance decodes
+one sequence, one new token per call, against persistent state - the same way a KV-cache decode works
+in llama.cpp.  The routed experts live in a *separate* tier (slice `ds4-moe`); this class hands out the
+`ffn_norm` activation they consume and takes their weighted sum back.
+
+The math is `tools/ds4/ds4_ref.cpp` (the Phase-3-verified CPU reference forward, which matches
+llama.cpp's logits - `FINDINGS.md` s9) with the reference's whole-sequence tensors narrowed to the
+*visible* keys at the current position.  The backend is a `ggml_backend_t` chosen at `init` (CPU or
+CUDA, identical code path); every per-layer graph kind is built once and reused, which is what lets
+ggml-cuda capture the decode graphs as CUDA graphs.
+
+## API (`ds4_dense.hpp`)
+
+| call | what it does |
+| --- | --- |
+| `init(model_path, cfg, err)` | open the GGUF, bind the weights zero-copy on CPU (upload off-CPU), allocate the persistent state, build the graphs |
+| `begin_token(tid)` | `hc_init` = `embd[tid]` repeated over the `hc` streams, into the layer-0 input state |
+| `predict(il, top_ids, n_top)` | prefetch hint "A": the layer router applied to `rms_norm(hc_attn_pre_l) * ffn_norm.weight_l`, `sqrt(softplus(.)) + exp_probs_b`, ranked top-`n_top`; hash layers return their exact `tid2eid[tid]` |
+| `attn_router(il, pos, tid, ids, wts, &fn_host, &fn_dev)` | attention + hc_post(attn) + hc_pre(ffn) + ffn_norm + router (`n_expert_used` ids and final weights) + the shared expert |
+| `finish_layer(il, routed_sum)` | `ffn_out = shexp + routed_sum`, then `hc_post` -> the next layer state |
+| `logits(&out, &n_vocab)` | `hc_head` -> `output_norm` -> `output` |
+| `tap_attn_raw/attn_out/l_last(il)` | host copies for the gate (pre output-LoRA attention, post-LoRA attention, `l_last`) |
+| `begin_tokens / attn_router_n / finish_layer_n / logits_n` | the same steps for a **pass of n <= `max_tokens()` (4) consecutive positions** (speculative verify); arrays are token-major, the single-token calls are these with n = 1 |
+
+`predict` is a hint only: it does not change the decode result.  `attn_router`'s `routed_w` is already
+normalised, `x weights_scale`, the way llama.cpp and `ds4_ref` use it.
+
+## Persistent state (`ggml_context` `sctx`, one backend buffer, zeroed, then seeded)
+
+Per layer `l`, ratio `r = compress_ratios[l]`, `csa = (r == 4)`:
+
+* **raw sliding window** `raw [d_head, n_swa]` - post-RoPE K (= V).  Token `p` writes slot `p % n_swa`;
+  the gather list is the window oldest -> newest, so the visible keys keep `ds4_ref`'s order; tokens
+  `< 0` land on unwritten slots and are masked `-inf`.
+* **compressed block cache** `comp [d_head, comp_max]` - slot `p / r`.  The row is rewritten on every
+  position of the block and only becomes *visible* once the block is complete
+  (`(p + 1) / r` blocks visible), so a partial row is never attended to.
+* **compressor state ring** `st_kv/st_sc [sdim, ring]`, `ring = 2*r` (CSA, overlap: half the state is
+  the "prev half" of the block, half the "cur half") or `r` (HCA); `sdim = 2*d_head` / `d_head`.
+  Token `p` writes slot **`p % ring`** (llama-kv-cache-dsv4: `stream_off + pos%state_size`), and the
+  gather list `i_idx_state` lists the last `ring` slots oldest -> newest, which is exactly the
+  `2*r` states of block `b-1` followed by block `b` when block `b` completes.  `st_sc` starts at
+  `SENTINEL = -1e30` so rows never written get softmax weight 0 - the same as the zero/`-inf` row the
+  reference appends for the first block's missing prev half.
+* **lightning indexer** (CSA only) `icomp [idx_k, comp_max]` (compressed keys, post-Walsh-Hadamard),
+  `ist_kv/ist_sc [2*idx_k, 2*r]`.  The indexer queries `cap` block rows, `relu`s and weights by
+  `indexer.proj`, and `top_k` the visible ones; `min(cap, top_k)` rows are unmasked, always `&`-ed with
+  the visibility mask so a top-k hit on an invisible block stays hidden.
+* **hand-offs to `finish_layer`** `hap`, `post_f`, `comb_f`, `shexp`, `fn`, and the gate taps
+  `t_attn_raw`/`t_attn`/`t_llast`.  `x_state [D, hc]` carries the hc stream between layers and between
+  tokens; `routed_sum [D]` is the expert tier's input.
+
+`comp_max = context_length / r` (or the `comp_cap_max` override).
+
+## Multi-token passes (verify)
+
+A pass of n tokens at positions `pos0 .. pos0+n-1` runs the same per-layer steps as one token, in one graph per step.
+Every per-token tensor (`x_state`, `routed_sum`, `hap`, `post_f`, `comb_f`, `shexp`, the taps, the input leaves) has a
+`kNtMax = 4` axis; the graphs for n view its first n columns, so the n = 1 graphs compute exactly what they did before
+(the single-token logits are byte-identical to the pre-change build on both mini fixtures).
+
+* **raw window**: one gather of the union window (`SWA + n - 1` keys, oldest -> newest) and a per-query mask
+  `[n_kv, n]` (query t sees `[pos_t - SWA + 1, pos_t]`); one flash-attn for all n queries.
+* **compressor rings**: every token's state is written (one `set_rows`) before any token gathers its own `ring` slots
+  (`i_idx_state` is `[ring, n]`, flattened: ggml's `get_rows` does not broadcast a 2-D index).  The rings are
+  `kNtMax - 1` slots longer than the gather window, so a later token never overwrites a slot an earlier one reads.
+* **compressed caches**: each token writes its block's row; a block completed by token t is visible (per-query
+  visibility `[cap, n]`) to tokens > t, never to earlier ones.  Two tokens of a pass in the same block would both
+  write that row and `set_rows` does not order duplicate indices, so the earlier one writes to a spare row
+  (`comp_max`, never visible) - only the block-completing write is ever attended.
+* **indexer**: scores, top-k and the mask are per query (`set_rows` broadcasts the `[ntk, n]` top-k indices over
+  the query axis).
+* router, shared expert, hyper-connections and head take n columns; router outputs are per-token blocks
+  `[fn | ids | wts]`, one readback per layer per pass.
+
+Rollback after a rejected draft is free: all of this state is position-indexed and rewritten when the position is
+decoded again.
+
+## MTP head (`Ds4DenseConfig::mtp_path`)
+
+The DeepSeek-V4 MTP (nextn) head ships as its own GGUF; its block `blk.<n_layer>` loads as one extra ratio-0
+sliding-window layer (`mtp_layer()`; `n_layer()` stays the trunk's).  `ds4_attach_mtp` extends the per-block clamp /
+ratio arrays from the MTP file.  Drafting at position p (llama.cpp `deepseek4.cpp` graph_mtp):
+`mtp_begin(tok[p+1])` replaces the state (the trunk's final hc streams, after its logits) with
+`eh_proj(concat(enorm(embd) x hc, hnorm(h)))`; the block runs through the usual `attn_router(_n)` / routed experts /
+`finish_layer(_n)` at position p with its own raw-window KV; `mtp_logits_n` = the MTP file's OWN `hc_head`
+(`output_hc_fn/base/scale`, bound as `mtp.output_hc_*` via `ds4_mtp_head_alias()`) -> `nextn.shared_head_norm` ->
+the trunk's `output`, predicting token p+2.  The MTP file's hc_head differs substantially from the trunk's (real
+file: scale 1.65 vs 0.79); llama.cpp loads the MTP file as its own model, so its graph_mtp uses the file's.  Until
+2026-10-07 we used the trunk's (59.8% real acceptance with it); `DS4_MTP_TRUNK_HC=1` restores that for A/B.
+`ds4_attach_mtp` refuses an MTP file without its own `output_hc_*`.  The MTP head keeps the trunk's (0731)
+`token_embd`/`output`: the file's copies are BF16 copies of the original V4's - an A/B for later. Works for n-token passes like every layer.
+
+Gate: `ds4_ref --mtp` runs the same block over the whole sequence (the oracle); `tools/ds4/make_mini_mtp.py` writes a
+mini MTP file (real random MXFP4 experts - the mini trunk's experts are all zeros).  The trunk's final state differs
+from ds4_ref's by ~1 ulp (rel 1.6e-7) at every position - invisible in the trunk gate because its experts are zero,
+but the MTP block's MXFP4 experts round activations to Q8_0 and amplify it to cos ~0.99996 on the MTP logits (top-1
+still identical).  To gate the block itself, feed the oracle the decoder's own trunk state:
+`DS4_DBG_MTP_H=h.f32 test_ds4_dense ... --mtp m.gguf` then `DS4_REF_MTP_H=h.f32 ds4_ref ... --mtp m.gguf --out R`
+and `test_ds4_dense ... --ref-dir R --mtp m.gguf`: **MTP logits cos 1.00000000 at all 62 positions, block taps 1.0,
+top-1 62/62; multi-token MTP passes bit-identical to one-token** (tame fixture).
+
+## Graphs
+
+`init`, `head`, `predict` and `finish` are one graph each per layer; attention is built **per capacity**
+`cap = min(comp_max, next_pow2(p/r + 1))` and the matching variant is picked per position (cap 0 for
+non-compressed layers).  Larger caps are built on demand and cached in `Layer::vars`.
+
+**Every graph owns its own `ggml_gallocr`.**  `ggml-alloc` binds a tensor's data pointer once and skips
+re-binding it later, while a reserve triggered by a *different* graph frees and reallocates the chunks
+it had bound - one shared allocator therefore leaves every other graph's tensors dangling into freed
+memory as soon as one graph grows.  Per-graph arenas also give each decode graph the stable, dedicated
+buffer CUDA graph capture needs.
+
+Attention variants are keyed by `(cap, n)`; init/head/finish are built per n on first use (`reserve_graphs(n_max)`
+allocates all of them up front).  Per-step values arrive through input leaves (`i_pos`, `i_tid`, `i_slot_raw`, `i_idx_raw`, `i_mask_raw`,
+`i_slot_state`, `i_slot_comp`, `i_comp_pos`, `i_state_pos`, `i_idx_state`, the per-variant `vis`), so the
+graphs themselves never change shape.
+
+## Verification status
+
+`test_ds4_dense <mini.gguf> [--tokens N] [--work DIR] [--ref-dir DIR] [--ref-bin PATH]` (CPU only) runs
+`ds4_ref --all-pos` on the same tokens, decodes them one at a time, and compares per-layer
+`attn_raw`/`attn_out`/`ffn_norm`/`l_last` at the last position plus the logits at every position.
+
+Measured against `ds4_ref` on the packet's mini fixture (`bench/ds4-2026-10-06/dense/mini-ds4.gguf`):
+
+* **`--tokens 63` -> PASS, every cosine exactly 1.00000000** (all 63 positions' logits, both layers'
+  taps).  The dense's op sequence *is* the reference's: CSA blocks 0..14, the lightning-indexer top-k
+  (`8 of 15`), the raw window, the hyper-connections, the shared expert and the head are all bit-equal.
+* **`DS4_SWA=16` variant, `--tokens 40` -> PASS, every cosine exactly 1.00000000** - the same gate,
+  but `sliding_window = 16` (metadata only, no tensor shape depends on it), so the raw-window *wrap*
+  happens from position 16 instead of 129 and the whole run stays inside the reference's stable token
+  range.  This is the run that gates the ring wrap, the negative-position masking, 10 CSA blocks and
+  the indexer top-k bit-exactly.
+* `--tokens >= 64` fails - **because the reference itself moves**: with `q`, `kv` and the query-0 mask row
+  dumped and compared (`DS4_PROBE=1`), they are *bit-identical* between a 63 and a 64 token run, while
+  the flash-attn output for query 0 changes by 1.8e-4 relative.  ggml-cpu's `flash_attn_ext` is not
+  invariant to the query count (`ne01 >= 64` takes a different kernel path); a batch-1 decoder cannot
+  reproduce that, and `-t 1` vs `-t 8` gives byte-identical reference dumps, so it is not threading.
+  The stock fixture's unit-scale random weights give the net a ~1e3-1e4 gain (sigmoid/softmax
+  saturation, then the sinkhorn `hc_eps` dominating), which turns that 1.8e-4 into 1.6e-2 at the head -
+  cos 0.9999 at position 0 and 0.75 by position 61.
+* `bench/ds4-2026-10-06/dense/make_mini_tame.py` writes the same geometry/tensor set with the real
+  model's `1/sqrt(fan_in)` weight convention.  On it the amplification is gone (`attn_raw`,
+  `ffn_norm`, `l_last` >= 0.99999 at the last position, all logits cos 0.99987..0.99995, top-1
+  identical, predictor recall@16 1.000): the residual is the reference-side query-count artifact
+  propagated, uniform over positions, and still ~3x above the gate's 0.99999 on `attn_out`/logits.
+
+Residuals: the same gate cannot be met for `--tokens >= 129` (which the packet requires, for the raw
+wrap, the HCA block and the indexer top-k) on *any* token-by-token decoder, because the raw-window wrap
+and the ratio-128 HCA block only become reachable at `>= 128` tokens, i.e. inside the unstable regime.
+The ratio-128 HCA *visible* block is the one path left un-gated: it only becomes visible at position
+127, so its value (compressed-key rope/norm, softmax over the 128 state rows) is exercised with
+`cap = 1` but output-masked, and is validated by construction (shared code with the CSA path) only.
+
+Multi-token gate (`--multi 2,3,1,4`: a second instance decodes the same tokens in passes cycling through those sizes,
+compared with the one-token decode at every position): **bit-identical at all 40 / 63 positions on swa16 / tame**,
+passes of 1, 2, 3 and 4 tokens.  The gate was mutation-tested: leaking a later token's block visibility, dropping the
+raw window's per-query upper bound, or removing the spare compressed row each fail it.
+
+The `--cuda` variant was run 2026-10-08 (FINDINGS s25).  It does **not** pass this gate and should not: the
+per-tensor 0.99999 threshold was calibrated on the CPU, and CUDA-vs-CPU arithmetic on these amplifying fixtures
+already costs swa16 layer 0 `attn_raw` cos 0.9389 / `attn_out` 0.9299 and tame worst logits cos 0.99912 (top-1 still
+identical to `ds4_ref`); the same numbers come out of `DS4_VIS_DEV=0 DS4_SPARSE=0`, i.e. the pre-sparse attention
+path, so the gap is arithmetic, not a regression.  The CUDA multi-token arm is not bit-exact either (0/63 positions,
+top-1 differs at 3 of them - n > 1 kernels, as above).  A CUDA arm needs its own measured threshold; until then the
+CUDA checks with power are the real model's ppl/tokens and `DS4_CHECK_GPU` (`DS4_CHECK_LRU` for the tier).  What the
+CUDA arm *is* good for is a bit-exactness A/B of two code paths: `DS4_VIS_DEV=1` and `=0` give byte-identical output
+on both fixtures (FINDINGS s25).
+
+## Backend / CUDA tree
+
+`Ds4DenseConfig::backend` takes any `ggml_backend_t`; the graph builders are backend agnostic and take
+no CPU-specific path (weights upload instead of binding onto the mmap when the backend is not CPU).
+`build-ds4-cuda` compiles and links `libds4_dense.a` + `test_ds4_dense` - but note `GGML_CUDA=OFF`
+there (that tree builds Strata's own `strata_kernels`/`strata_core` `.cu` files, not ggml's CUDA
+backend), so the CUDA tree currently links no `ggml-cuda` and the test, by construction, only ever
+creates a CPU backend.  To actually *run* the dense on the GPU the GPU round needs: a ggml tree
+configured with `-DGGML_CUDA=ON` (and `libggml-cuda` linked, which `tools/ds4/cmake/ds4_dense.cmake`
+already does when a `ggml-cuda` target exists), plus a backend selector in `test_ds4_dense` (today it
+hardcodes CPU on purpose - the safety rules for this machine forbid GPU runs).
+# Something went wrong?
+
+The common problems and what to do. Back to the [README](../README.md#something-went-wrong). The full table of
+error messages, with the older engine fixes, is in the [details](DETAILS.md#troubleshooting).
+
+## While installing or starting
+
+**My PC froze, or got very slow, the first time Strata started.**
+That's normal while it starts, most of all the first time. Strata loads 35-55 GB into your RAM, locks part of it for
+the graphics card, and works out how much of the model fits on your GPU. The mouse can freeze for a few minutes.
+**Wait, and don't close the window.** The next starts are much faster. Still frozen after 10 minutes? Restart the
+PC, close other programs (browsers use a lot of RAM) and try again. If it keeps happening, pick a smaller size (Q2_0
+or IQ2_XS).
+
+**It stopped while downloading or installing.**
+Run `START-HERE.bat` (Linux: `./setup.sh`) again. It continues where it stopped.
+
+**It says the NVIDIA driver is too old.**
+Update it (NVIDIA App or [nvidia.com/drivers](https://www.nvidia.com/drivers)), restart the PC, and run
+`START-HERE.bat` again.
+
+**It says port 8080 is already in use.**
+Strata is already running. Look for its window. Or another program uses the port: `START-HERE.bat --port 8081`.
+Only an address that is really taken says "already in use". Any other reason (Windows keeps the port reserved, or
+the config's `"host"` is not an address of this PC) is printed as what the OS said, with what to change (#769).
+
+**"Windows blocked the Strata engine (or the image encoder) ... Smart App Control".**
+On a clean Windows 11, Smart App Control refuses programs that are not signed, and Strata's `strata.exe` and
+`strata-vision.exe` are not (#735). Turn it off (Windows Security > App & browser control > Smart App Control
+settings; it cannot be turned back on without a reset of Windows), or, if only the image encoder is blocked, run
+`START-HERE.bat --setup --vision no`.
+
+**A new engine misbehaves after an update.**
+An update keeps the engine it replaced in `engine\.previous` (one generation, about 210 MiB).
+`python setup.py --rollback-engine` puts it back (and keeps the newer one there: run it again to go forward) (#670).
+
+**UPDATE.bat / update.sh say "git pull did not succeed", or "has no commit in common" (#1276).**
+The repository's history was cleaned up on 2026-10-06, so a clone made before that cannot be updated with `git pull`.
+The 0.1.40.2 scripts handle it: when no tracked file is edited they keep your old commits in the branch
+`pre-cleanup-backup` and move the clone to the new history; otherwise they print the two commands for you. Your models,
+settings and engine are untracked files and are never touched. An older UPDATE.bat / update.sh (before 0.1.40.2) cannot
+do this itself: run these once in the Strata folder, then use UPDATE.bat as usual (add `git stash` first if `git status`
+lists edited files):
+
+    git fetch origin
+    git branch pre-cleanup-backup
+    git checkout -B main origin/main
+
+**Python or the build tools could not be installed.**
+Install what it names (links are printed), then run it again. Everything already done is kept.
+
+**Linux: the engine does not compile (`unsupported GNU version`, or `exception specification is incompatible` for
+`cospi`/`sinpi`/`rsqrt`).** Two known mismatches between the CUDA toolkit and a new Linux (#601):
+- gcc newer than 14 (Ubuntu 26.04's default 15): CUDA 12.x and 13.0 refuse it. Install g++-14 and run
+  `CXX=g++-14 CUDAHOSTCXX=g++-14 ./setup.sh`.
+- glibc 2.43 with CUDA 12.9: the toolkit's math headers clash with glibc's, already in CMake's first test compile.
+  Use CUDA 12.8 or 13.x instead. Setup takes the newest toolkit it finds; `STRATA_NVCC=/usr/local/cuda-12.8/bin/nvcc
+  ./setup.sh` makes it use that one (only that one).
+
+**The first start takes minutes.**
+It is reading 34-55 GB into RAM; the second start is faster while the files are in the OS cache. Started from Task
+Scheduler, it can be 24x slower: see [Running it at startup](DETAILS.md#running-it-at-startup-task-scheduler).
+On Linux the engine now asks the kernel to read the model files ahead (a cold start went from ~920 s to 70 s on one
+PC); `STRATA_READ_AHEAD=0` turns that off. On Linux with transparent huge pages on `always`, the arena no longer asks
+for `MADV_HUGEPAGE` on top (a fragmented machine spent minutes compacting memory, #771); `STRATA_NO_ARENA_THP=1` skips
+that request on any setting.
+
+**Setup says the engine does not match GitHub's checksum.**
+Setup checks the downloaded ready-made engine against the SHA-256 GitHub publishes. On a mismatch the file is corrupt or was changed on the way, so setup deletes it and stops; run setup again to download it afresh. If GitHub gives no checksum (offline, rate limited, your own mirror), setup warns and installs anyway. `STRATA_SKIP_SHA256=1` skips the check, only if you insist.
+
+## While it answers
+
+**It's very slow and the disk light keeps blinking.**
+Your PC is out of free RAM. Close other programs, or pick a smaller size (Q2_0 or IQ2_XS).
+
+**An answer stopped with "the engine stopped unexpectedly".**
+Usually not enough RAM (on Linux the system then stops the engine). Just send your message again: Strata starts the
+engine by itself. If it keeps happening, close other programs or pick a smaller size.
+
+**It says the prompt exceeds the context.**
+The conversation is longer than the context you chose. Start a new chat, or run `SETUP.bat` and pick more
+context.
+
+**It is slower than the tables.**
+The monitor plugged into the graphics card and other GPU programs take VRAM from the expert cache; RAM running below
+its rated speed (enable EXPO/XMP in the BIOS) slows the CPU half.
+
+**An earlier reply that came back empty is gone from the chat history (0.1.40, #843).**
+The server leaves out finished assistant turns that have no text, so the next reply does not copy the empty ones.
+`STRATA_KEEP_EMPTY_TURNS=1` in the server's environment renders them as before.
+
+**A Turing card (RTX 20) reads prompts above ~90K tokens differently (0.1.40, #743).**
+The prompt's top-k selection takes a wider kernel there, with the same ids. `STRATA_TOPK_STREAM=0` restores the old one.
+
+**Decode is several times slower with `--expert-cache N` than with `auto` (#781, #831).**
+An explicit N is a byte budget that is not checked against the free VRAM once the slots are written. On a card it
+fills (the log says `0 MiB of VRAM free with everything loaded - LOW`), Windows pages the GPU's memory and decode drops
+from 100 to 14 tok/s with only a few hundred slots too many. Use `--expert-cache auto`, or a smaller N.
+
+**A low-RAM PC (about 32 GB) stalls with `--resident-budget-gib N` (#649).**
+The budget is pinned (locked) in RAM, which leaves the OS and the CPU workers little room. `STRATA_RESIDENT_PIN=0` keeps
+it pageable; a smaller budget works too.
+
+**Decode got slower in 0.1.40 on a 32 GB PC with `--resident-budget-gib N`, and the drive is read hard (#1194, #1116, #1085).**
+The start line "the file tier reads unbuffered" means the experts outside the RAM copy are read straight from the drive.
+0.1.40 chose that whenever the free RAM could not hold all of them; but the same few come back token after token, and
+a cache a twentieth of their size serves most of the repeats. 0.1.40.2 asks for that much (at least 1.5 GiB beside the
+4 GiB headroom) and reads through the cache otherwise, which measured 7% to 118% faster decode with a third to a sixth of
+the drive traffic on a 20 to 32 GB box. On 0.1.40 / 0.1.40.1: `STRATA_UNBUFFERED_LOAD=0` does the same, `=1` forces the
+unbuffered reads.
+
+**Linux: the start is OOM-killed while the engine allocates the page-locked expert copy (#1250).**
+Page-locked pages come from the driver in one go and cannot wait for the kernel to give back file cache, so with the
+model files' cache in the way (little really free RAM, much "available") the host could run out. 0.1.40.2 gives back the
+cached pages of the model files it mapped before it page-locks the copy; when the really free RAM still does not cover it,
+it takes the pages in 1 GiB steps while the RAM available (cgroup limits included) stays above the headroom, page-locks
+what it has, and keeps the rest resident but pageable with a warning ("only N of M GiB could be page-locked"): the answers
+are the same, only the copies of the pageable part to the GPU go through the CPU. `STRATA_PIN_GUARD=0` turns this off,
+`STRATA_PIN_RESERVE_GIB=N` sets the RAM that must stay free (default: `STRATA_RESIDENT_HEADROOM_GIB`, 4 GiB).
+
+**The Windows display driver resets, then the PC blue-screens (0x141, then 0x116 in `nvlddmkm`) during an answer (#961).**
+This is the NVIDIA driver, not Strata: the report shows the same wedge with other CUDA programs on that driver (610.88,
+RTX 4080 SUPER). Try another driver (a Studio one, or an older one) and a lower power limit; if it only happens with
+`--spec 4`, `--spec 0` avoids the verify window while you wait for a driver fix.
+
+**An RTX 50 card (a source build with CUDA 13.2) answers with nonsense, or reads prompts wrongly (#892, #968).**
+CUDA 13.2.0 and 13.2.1's compiler (nvcc 13.2.51) miscompile some of the engine's kernels for sm_120: on our RTX 5070 the IQ2_S and IQ3_S
+products are wrong (relative error 0.5 to 1.0 in the tests) with 13.2 and right with 13.0. The ready-made engine is built
+with 13.0. If you compile it yourself, use CUDA 13.0, 13.1 or 13.2.2 (13.2.2, nvcc build 13.2.86, fixes it; an older one can sit next to a newer: `STRATA_NVCC=<path to its nvcc>`);
+setup warns when it finds 13.2.0 or 13.2.1 for such a card, and takes an older 13.x when one is installed.
+
+**Pictures are refused, or slow.**
+"this server was started without the vision encoder": the model was set up for text only - run setup again with
+`--vision gpu` (or `--vision cpu`). Pictures that take several seconds (about 3 s at 300 image tokens on 8 cores, more with more tokens) are read by the encoder on the CPU; `--vision gpu`
+(NVIDIA, ~1.4 GB of VRAM) makes it 0.1-0.5 s.
+
+## AMD cards
+
+**"No AMD GPU found (the amdgpu driver's KFD topology is empty)" on Linux.**
+The kernel's amdgpu driver is not loaded for the card. Integrated Radeon GPUs are listed as not supported; setup
+lists every card it found and whether Strata can use it.
+
+**The engine stops at start with the card's name, its architecture and the build's list.**
+The engine was compiled for another card (for example after moving the Strata folder to another PC). Run
+`./setup.sh --setup --backend hip`: it compiles the engine for this card's architecture.
+
+**On Windows the engine exits with `0xC0000005` in `amdhip64_7.dll` before it prints anything (#654).**
+Two things in your environment can cause it, and the server now repairs both before it starts the engine (it says so in
+the log): `HIP_PATH`, `HIP_DEVICE_LIB_PATH` or `LLVM_PATH` naming a ROCm folder that no longer exists (a deleted build),
+and a `TEMP`/`TMP` folder the engine cannot create files in (AMD's runtime compiles its first kernels through temporary
+files). If you start `strata.exe` by hand, fix them yourself: `set HIP_PATH=`, and point `TEMP` and `TMP` at a normal
+folder such as `C:\Temp`.
+
+**Windows AMD: the driver resets (VIDEO_ENGINE_TIMEOUT_DETECTED / screen flicker / the engine dies mid-answer).**
+Windows gives a GPU about 2 seconds to answer; when a graphics card does not, it resets the driver (a TDR): the screen
+flickers, the engine dies, and the Event Viewer shows `VIDEO_ENGINE_TIMEOUT_DETECTED` (#613, with #579 and #541 on
+Linux). Strata 0.1.39 and newer say "the GPU stopped responding" in the log. It was seen with KV streaming on
+(`--kv-resident 32768`, which setup turns on from 64K context) while reading a long prompt on a gfx1201 card. Try these
+in order, one at a time, and tell us what changed:
+1. **Send us the evidence.** The last ~80 lines of `strata-<model>.log` in the Strata folder (the server window shows
+   the same lines), your AMD driver version (AMD Software > System), your card and Windows version, the Strata
+   version, and the exact steps (context size, how long the prompt was, which app sent it). If Windows wrote a
+   dump, the newest `.dmp` in `C:\Windows\LiveKernelReports\WATCHDOG` (or `C:\Windows\Minidump`) helps; it holds no
+   chats, only the driver state.
+2. **Find the step that hangs:** add `"STRATA_PF_STEP_SYNC": "1"` to the `"env"` block of `strata-<model>.json`
+   and restart. The prompt path then waits for the GPU after each step and logs any step over 250 ms, so the log names
+   the step. It is slower; use it to diagnose, then take it out.
+3. **`"STRATA_KV_HOST_DMA": "1"`** in the same `"env"` block: no GPU kernel writes the RAM copy of the K/V during a
+   prompt, it is copied by DMA instead. Same answers.
+4. **No KV streaming:** run setup again and pick 32K context (or remove `--kv-resident` and its number from
+   `"args"` in the JSON, with a context that fits the VRAM).
+5. **A smaller prompt chunk:** change `--prefill` in `"args"` (for example `--prefill 512`): each GPU launch then does
+   less work between two checks by Windows. Prompts are read more slowly.
+6. **Optional, your decision: give Windows more time (`TdrDelay`).** The default is 2 seconds. In the registry,
+   `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\GraphicsDrivers`, a DWORD `TdrDelay` of `10` (seconds)
+   lets a long GPU job finish before Windows resets the driver; restart the PC. It hides the symptom and does not fix
+   a GPU that has really hung, and a hung GPU then freezes the screen for those 10 seconds. Strata changes no Windows
+   setting itself; to undo it, delete the value.
+7. **Driver:** use the newest AMD Software release for your card (Adrenalin, not a Windows Update driver) and restart
+   after installing. If it started after a driver update, tell us both versions; going back one version is a fair
+   test.
+
+**Large pinned host allocations fail on ROCm although RAM is free.**
+See [AMD_HIP.md](AMD_HIP.md#model-and-serving-configuration): the mapped expert mode avoids the full pinned arena.
+
+**"verify: timed out at layer N" or "no progress for 60 s" on AMD (Linux), mostly with `--mmap-experts`.**
+Two reports fixed it with `"GPU_PINNED_MIN_XFER_SIZE": "1048576"` (RX 6800) or `"HSA_USERPTR_FOR_PAGED_MEM": "0"` (two
+R9700) in the `env` block of the server JSON, then a restart. Experimental, one machine each; on a systemd unit use
+`MemoryMax`, not `MemoryHigh`. Details: [AMD_HIP.md](AMD_HIP.md#linux-verify-timeouts-while-the-kernel-reclaims-host-memory-experimental-workarounds).
+
+## Still stuck?
+
+Look in the [full troubleshooting table](DETAILS.md#troubleshooting), or open an
+[issue](https://github.com/Niko1221/Strata/issues) and attach `strata-<model>.log` from the Strata folder.
+# DeepSeek-V4.1-Flash GSQ on AMD (gfx1100, HIP) - how this checkout runs it
+
+This page records how the V4.1 engine was brought up on **2x Radeon RX 7900 XTX (gfx1100, wave32) + Ryzen 9 9900X +
+128 GiB RAM**, ROCm 7.14, NVMe (model on `/dev/nvme0n1p4`, one Engram table per drive), and what the numbers are.
+The engine (`tools/v41/engine/`) was written for CUDA; here **the whole three-tier expert path runs on HIP**: the
+dense half and the routed experts are on the GPU, the RAM arena holds the ranked experts, the file tier reads the
+rest, and the Engram tables are read from two files.
+
+## What runs where
+
+| Half | Where | Notes |
+| --- | --- | --- |
+| Dense half (attention, router, shared expert, Engram add, head) | RX 7900 XTX via `ggml-hip` | `--backend cuda` picks the GPU by type, so the HIP build keeps the same flag |
+| Routed experts (PTQ1_0 / Q2_0 / Q3_K, per-expert formats) | RX 7900 XTX, through the `DS4_MOE_CUDA` tier compiled as HIP | `--experts gpu`: VRAM cache (~2100 experts) + 60 GiB pinned RAM arena (6708) + file tier (8652) |
+| Engram tables (202.8 GB) | two files, one per NVMe, read at run time | `--engram A:B`; the raw-device fast path needs `/dev/nvme*n1` access this user does not have, so it uses filesystem preads (see Engram below) |
+| CPU expert pool | unused with `--experts gpu` | `--experts cpu` still works (disk-bound, ~1.4 tok/s) |
+
+## Build
+
+The engine's own sources and `strata_kernels` compile in minutes. ggml's HIP backend is the expensive part (the
+flash-attention template instances did not finish in >40 min at 20 jobs on this box), so the build reuses a ggml that
+the same llama.cpp checkout already built:
+
+```sh
+# 1. a llama.cpp checkout with the DSV4 hyper-connection ops (upstream has them), built once for gfx1100
+cmake -S /path/to/llama.cpp -B /path/to/llama.cpp/build -DGGML_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx1100 ...
+cmake --build /path/to/llama.cpp/build -j
+
+# 2. this engine, linking that ggml instead of recompiling it
+cmake -S . -B build-hip-pre -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release \
+      -DSTRATA_ENABLE_HIP=ON -DSTRATA_PREFILL_MMQ=ON -DCMAKE_HIP_ARCHITECTURES=gfx1100 \
+      -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ -DCMAKE_PREFIX_PATH=/opt/rocm \
+      -DSTRATA_GGML_DIR=/path/to/llama.cpp -DSTRATA_GGML_PREBUILT=/path/to/llama.cpp/build \
+      -DBUILD_SHARED_LIBS=ON -DSTRATA_BUILD_TESTS=OFF
+make -C build-hip-pre -j ds41_generate
+
+# or, without STRATA_GGML_PREBUILT, the same configure compiles ggml from STRATA_GGML_DIR itself
+```
+
+`STRATA_GGML_PREBUILT` is a dev shortcut (empty by default): headers and archives come from the same source tree, so
+nothing can drift, and the normal CUDA/CPU paths are untouched.
+
+### The port changes in this tree
+
+1. `CMakeLists.txt`: with `STRATA_ENABLE_HIP` the `BUILD_SHARED_LIBS OFF` / `GGML_STATIC ON` FORCEs are skipped
+   (ggml-hip refuses a static link and wants its own shared build). CUDA and CPU builds are unchanged.
+2. `CMakeLists.txt` + `tools/v41/cmake/ggml_prebuilt.cmake` (+ `ggml_prebuilt_stubs.cpp`): the prebuilt-ggml option
+   above. The stub answers the one backend registration the prebuilt `libggml.a` references but this engine does not
+   link (Vulkan on this box); ggml's registry ignores a NULL registration, so Vulkan stays out of the run.
+3. `tools/v41/engine/v41_engine.cmake`: `ds41_dense` links `ggml-hip` and keeps the `DS41_HAVE_CUDA` compile path
+   (ggml's HIP backend is the CUDA backend's sources compiled as HIP, so it exports `ggml_backend_cuda_*`); the expert
+   tier gets a `ds41_moe_hip` flavour - the same `DS4_MOE_CUDA` source, `strata_hip_runtime` force-including the
+   compat header - and `ds41_generate` prefers it (HIP tier, else CUDA tier, else CPU tier). With `strata_mmq` present
+   the tier also takes the MMQ prompt path (`DS4_MOE_MMQ`), and the DSpark gate takes `DS41_HAVE_CUDA`.
+4. `tools/v41/engine/ds41_moe.cpp`: `set_cache_enabled()` touched `im_->gpu->cache`, a member of the CUDA-only `Gpu`
+   struct, so the CPU-only flavour did not compile at all; the access is now behind `#if defined(DS4_MOE_CUDA)`.
+5. `include/strata/hip_compat/cuda_profiler_api.h`: the one CUDA header the tier includes that ROCm has no
+   counterpart for (`cudaProfilerStart/Stop` -> `hipProfilerStart/Stop`).
+6. `src/prefill/moe_mmq.cu` + `CMakeLists.txt` (`strata_mmq_api_version()`): the MMQ host API moved after the pinned
+   commit (`ggml_cuda_mmq_get_config`'s `prec_src1`, `mul_mat_q_case<type, prec_src1>`); the file carries both
+   spellings behind `STRATA_MMQ_PREC_SRC1`, detected from the ggml tree in use.
+7. `src/prefill/ggml_cuda_host.cu`: its host symbols are now weak. The V4.1 engine links `ggml-hip`, which defines the
+   same `ggml_cuda_error` / `ggml_cuda_info` / `ggml_backend_cuda_context::*`, and the link failed with duplicate
+   symbols; weak lets the real backend's copy win while a build without it (the HIP MMQ parity tests) still links.
+
+The tier itself needed no source change: it carries **no device code** (the kernels live in `strata_kernels`, which the
+HIP backend compiles for gfx1100), and every CUDA runtime call it makes was already in the compat shim.
+
+Local, not upstream: `local/run-one-shot.sh` (one-shot), `local/ds41-engine-local.sh` + `local/ds41-local.json` (the
+API server), `local/encode_prompt.py` / `local/detok.py` (tokenize a prompt into `--ids-file` and back),
+`local/engram_index.py` (merge the per-layer Engram indexes).
+
+## One-shot run
+
+```sh
+./local/run-one-shot.sh --ids-file local/prompts/code_review.i32 -n 96   # experts gpu by default, EXPERTS=cpu to fall back
+```
+
+Two env settings matter on this machine:
+
+- `STRATA_NO_LARGEPAGES=1` - pin the RAM arena with 4 KiB pages (~15 s for 60 GiB); with THP it takes minutes.
+- `--experts cpu` additionally needs `STRATA_ROUTED_HOST=1` (the CPU tier has no device input for the layer-major
+  prompt batch: `run_chunk_dev` returns false, "tier run refused") and reads blobs better through the page cache
+  (`STRATA_BLOB_MMAP=1` or `STRATA_BLOB_DIRECT=0`). Neither applies to the GPU tier.
+
+## The Engram tables (202.8 GB)
+
+DeepSeek-V4.1 reads an n-gram memory at run time and the GSQ repo does not host it: its two
+`model-0004{7,8}-of-00048.safetensors.NEED-TO-DOWNLOAD-ENGRAM.txt` markers name the source. What was done here, and
+what it needs:
+
+```sh
+hf download dealignai/DeepSeek-V4.1-Flash-UNCENSORED-FP8 model.safetensors.index.json config.json \
+    model-00047-of-00048.safetensors --local-dir SRCDIR     # ~101.5 GB, holds layers.1.engram.*
+hf download dealignai/DeepSeek-V4.1-Flash-UNCENSORED-FP8 model-00048-of-00048.safetensors --local-dir SRCDIR
+# layers.1 -> shard 47, layers.14 -> shard 48 (the index says which)
+python3 tools/v41/extract_engram.py SRCDIR --to layers.1=/home/vincenzo/v41-engram/layers1 \
+                                         --to layers.14=/run/media/vincenzo/Dati/v41-engram/layers14
+python3 local/engram_index.py  <both dirs>      # one index naming all four tensors; the engine reads the first it finds
+```
+
+Notes from doing it here: the extraction needs ~101 GB of free space per layer and checks every tensor's size plus
+2000 random rows; the source shards can be deleted right after their layer is extracted. `extract_engram.py` insists
+on a `--to` for every engram layer it finds in the index, so one shard at a time is easiest with a two-tensor
+index.json in a scratch directory (that is what was done; `local/engram-src*`).
+
+At run time `Ds41Engram::open()` reads the first `model.safetensors.index.json` among the `--engram` directories and
+resolves each tensor's filename against all of them, which is why the merged index (distinct filenames per layer) is
+what makes the two-drive split work. The engine prefers raw block-device reads when a file has ≥1024 extents and the
+device node is readable; `/dev/nvme0n1p1` is `root:disk` here, so it prints
+`1973 extents, /dev/nvme0n1p1 not readable - filesystem reads` and uses preads - measured cost ~1 ms/token, which is
+why it is left alone.
+
+## Measured (2026-10-15, this box)
+
+Load with the full configuration (256K context, Engram, DSpark): **16.5 s** (arena: 6708 experts in RAM, 8652 file
+tier, seeded in 15.8 s).
+
+| Run (server, 256K ctx, Engram, DSpark) | Prompt | Decode |
+| --- | ---: | ---: |
+| Code-review prompt, 113 tokens in / 96 out | 6.6 tok/s (cold first request) | **18.0-21.5 tok/s** |
+| 1536-token prompt / 16 out | **142 tok/s** | 23.4 tok/s |
+| 3072-token prompt (one-shot, quiet box, no DSpark) | 165-172 tok/s | - |
+
+Decode A/B with everything else equal (one-shot, 96 tokens, Engram on): **10.35 / 12.68 tok/s without DSpark,
+20.98 / 20.55 tok/s with it** - DSpark is worth ~1.7x here.
+
+Where the time goes (one-shot, 96 tokens, DSpark, `pass_v` split over 41 verify passes of 7.05 tokens):
+**dense 99.9 ms, tier 365.1 ms**, taps 0.4 ms, logits 1.1 ms per pass. The expert tier - VRAM-hit expert kernels plus
+the PCIe/file misses - is ~78% of the decode; 93-97% of the expert reads are VRAM hits at ~2100 slots (14 GiB), with
+~29 PCIe misses and ~4.6 file reads per token.
+
+Quality: greedy, thinking off, the code-review prompt gets the missing error handling (and the dropped line
+separators / the unbounded `s +=` growth) in order, with the Engram tables enabled the answer points at the
+`std::ifstream` open check first. The CPU tier and the HIP tier produce **identical tokens** on the same prompt.
+
+## The KV cache here: 8-bit, not 4-bit
+
+The compressed KV and the indexer keys are the context-sized state (`L.comp` = `{d_head 512, ctx/ratio}` per
+KV-source layer, `L.idxk` = `{idx_dim, ctx/ratio}`). The engine's choices:
+
+| Setting | Type | Notes |
+| --- | --- | --- |
+| default | BF16 (or F32 with `--no-actquant`) | what the server ran before this |
+| `--kv-q8` (added here; `--kv-type N` for any ggml type) | Q8_0 | 8 bits; `ggml_set_rows` quantizes on write, `ggml_flash_attn_ext` takes Q8_0 K/V (it is in ggml's supported KV list), the window ring's `ggml_cast` dequantizes on read |
+| `--kv-fp4` | NVFP4 compressed / MXFP4 indexer | the 4-bit grids the author's 4090 used for 512K. **Not usable on this tree**: NVFP4/MXFP4 are not in `ggml_cuda_fattn_kv_type_supported()` (`fattn.cu`), so the attention would have no kernel for them - `tools/v41/ggml/kv-fp4.patch` adds the set_rows packers, not attention kernels |
+
+Measured at 256K with everything else equal (one-shot, Engram, DSpark off for the logits):
+
+| | expert slots after the dense half | logits vs BF16 | prompt 1536 tok | decode 48 tok |
+| --- | --- | --- | --- | --- |
+| BF16 (default) | 13.71 GiB | - | 115.8 / 119.3 tok/s | 15.86 tok/s |
+| `--kv-q8` | **14.08 GiB** | top-1 identical, cosine **0.998987**, mean abs diff 0.152 (logits -11.2..31.0), top-5 overlap 5/5 | 100.5 / 107.1 tok/s | 16.53 tok/s |
+
+So the 8-bit cache is effectively lossless here and buys 0.37 GiB of expert slots, but the quantized-KV attention
+kernel costs ~10% on the prompt path (the vector kernel instead of the f16 MMA one). This checkout's server runs
+`--kv-q8` (the choice for 256K and the setting that scales to 512K); BF16 is one flag away if prompt speed matters
+more than the 0.37 GiB. 4-bit is out of the question both for quality and because the attention kernels for it are not
+in this ggml tree.
+
+## Tuning on one card (measured with `local/bench_ds41.py`, medians of 3-4 runs)
+
+The bench runs configurations round robin and reports medians, because a single run on this box is worth nothing:
+decode varies with the *content* DSpark drafts (accepted drafts per pass change how many tokens one verify buys, and
+the same prompt can land on a different stream at a tie). Spreads of 25.2 / 27.2 / 24.9 and 26.3 / 23.8 / 16.0 tok/s
+were measured for **the same** configuration.
+
+| Knob | Result |
+| --- | --- |
+| `--arena-gib 60 -> 75` | **+40% decode** (16.4-17.4 -> 23.8-25.2 tok/s), file wait on the prompt 16.6 -> 11.0 s. Consistently reproduced in four batches. 80 GiB was worse (20.9-21.8) and unstable, 85 bimodal (22.4/14.3/14.3), 95-100 left the box at 5 GiB of RAM available; 75 is the adopted value |
+| `--arena-gib` sweep 60/65/70/75 | 16.4 / 21.7 / 18.6 / 24.7 - not monotonic (the arena holds a different ranked head at each size, and the page cache left for the Engram tables changes with it) |
+| `STRATA_ENGRAM_CACHE_ROWS=20000000` (in-process row cache, default 2M) | neutral: 16.7 / 23.8 vs 17.4 / 24.1 without |
+| `--pcie 1.0` (every miss to the CPU pool) | neutral (24.7 vs 25.2) |
+| `--route-bias-file 1.5` (routing avoids the file tier: the miss-free ceiling) | tier per pass 634.6 -> 604.3 ms only, decode 23.0 vs 25.2 - **the tier is not dominated by the misses** but by the resident-expert kernels; it also changes the answer |
+| `STRATA_PROM=1` (prompt-batch expert kernels) | neutral on decode (23.7 vs 23.8), worse on the prompt (43.1 vs 52.4 tok/s) |
+| `STRATA_DSPARK_DEPTH=5` | 4.364 tokens/pass but a 160.7 ms verify vs 3.692 / 128.8 at depth 4: net neutral (25.4 vs 25.2); depth 6 is refused by design (1..5) |
+| `--vram-margin 0.25`, `--pf-b 2.0`, `--pcie 0.50`, `--pcie 0.85` | inside the noise |
+| `STRATA_TIER_GRAPH=1` (tier graph capture), 1536-token prompt + DSpark, 3 runs a side | inside the noise: base median 19.68 [22.40 19.36 19.68] vs 20.21 [20.21 19.37 20.92]; the first 2-run screen suggested +13.6%, 3 runs did not hold it up (the author measured the same capture as bit-identical and neutral on CUDA) |
+| `--vram-margin 0.25` / `STRATA_DMA_OVERLAP=1` / `STRATA_D3_PF=2`, same 3-run A/B | 20.83 / ~20.1 / decode 18.8 with prompt 51.8 -> 57.8 tok/s: nothing outside the spread, `STRATA_D3_PF=2` only moves the prompt |
+| serve `--prompt-batch 2048 -> 12288` on a 5.8K-token prompt | 229.8 -> 232.8 tok/s: no measurable difference (the engine sizes the batch from free VRAM anyway) |
+
+Adopted: `--arena-gib 75`, `--kv-q8`, `--ctx 262144`, Engram tables (L1 and L14, both read from the same NVMe: / is nvme0n1p1 and Dati is nvme0n1p4), DSpark depth 4 with the 64-expert
+prune and no confidence trim, `--slots auto`.
+
+## Where a decode token goes (and why the second card cannot help)
+
+`STRATA_DEC_PROF=1` (prints every 64 steps), one-shot, no DSpark, 96-token reply, arena 75 GiB, ctx 256K:
+
+```
+decode step ms/token: begin 5.49  predict 0.38  attn_router 51.70  tier 19.44  finish 5.77   -> 82.8 ms = 12.1 tok/s
+```
+
+For comparison, the author's RTX 4090 breakdown for the same model (`V41_START_HERE.md`) is 37.5 ms/token:
+`attn_router 17.8 · tier 16.6 · finish 1.9 · begin 0.9`. So the tiers are close (19.4 vs 16.6 ms) while **our dense
+half is ~2.9x slower** (51.7 vs 17.8 ms) - the gap to CUDA on this box is the dense half, not the expert service.
+
+The context size is part of that, with identical tokens (same prompt, greedy; only `--ctx` changes):
+
+| `--ctx` | decode (no DSpark, 32 tok) |
+| --- | ---: |
+| 4096 | 12.70 tok/s |
+| 32768 | 14.10 tok/s |
+| 262144 | 9.80 tok/s |
+
+Since the generated tokens are the same, the difference is the attention path itself: the CSA/indexer work grows with
+the number of candidate blocks, so a 256K context costs ~30% of decode against 32K. That is the price of the context
+the user asked for, and it is the thing to attack next (the indexer/attention kernels, or the op count of the dense
+graphs - the fork's fused ops are the cheap experiment, `local/build-ggml-fused.sh`).
+
+A caution measured today: comparing a run **with and without `--engram`** is not a clean A/B. Removing the Engram
+changes what the model writes (it is part of the model), so the decode path differs and the numbers move for that
+reason (9.4-12.1 tok/s with, 10.4-14.1 without, on the same prompt) - not because the Engram add costs that much.
+Contexts (`--ctx`) are the clean comparison above: same tokens, different state size.
+
+The **peer expert tier** (the second card) was implemented, verified bit-identical and measured in this state: it
+took 35% of the routed rows off card 0 and still lost ~5%, because the tier it is helping is only 23% of the step.
+Design, measurements and the saved 901-line patch: `docs/ds4/V41_AMD_PEER_TIER.md`.
+
+## DSpark on this box (the draft stack runs on HIP)
+
+The Q2_K sidecar loads as a HIP graph (`2.91 GB of weights on the card` with the 64-experts-per-layer prune, 5.14 GB
+without) and the one-shot `STRATA_DSPARK=` path works. The draft stack itself is healthy on HIP: the repo's own gate,
+`test_ds41_dspark` (now built for the HIP backend too), scores **2.423 accepted drafts/pass = 3.423 tokens/pass,
+first draft 92.3%** over 26 steps of a recorded trunk stream - the same range as the CUDA number in
+`V41_PROGRESS.md` (3.27). In the server with Engram on, DSpark runs at **3.17-3.20 tokens/pass**.
+
+**The confidence trim is what is not safe here.** `STRATA_DSPARK_CONF=0.6` narrows the verify width to the leading
+drafts the confidence head is sure about, which - by the engine's own comment - only changes the verify width and is
+lossless in principle. On this model it is not: at depth 4 with the prune it produced a *different and wrong* answer
+on the code-review prompt (a `std::string` repetition loop), deterministically, while depth 4 without the trim, depth
+2 and the trim without the prune all answered correctly. The greedy stream moves with the verify width at near-ties
+(the engine's own notes say as much: "DSpark output = plain greedy output holds up to ties only"), and a narrowed
+width landed on a worse stream. So this checkout runs DSpark **without** `STRATA_DSPARK_CONF` (see
+`local/ds41-local.json`); the trim stays a knob to re-measure, not a default.
+
+## The MMQ prompt path on HIP
+
+`-DSTRATA_PREFILL_MMQ=ON` builds `strata_mmq` for HIP and the tier takes the CUDA path (`ds41_transcode.cu` compiled
+as HIP, `DS4_MOE_MMQ=1`); changes 6 and 7 above are what it took. Measured on a 3072-token prompt, quiet box,
+alternating runs (three each): **`--chunk-mmq` 172.4 / 168.8 / 155.9 tok/s (median 168.8) vs `--no-chunk-mmq`
+165.1 / 164.6 / 161.0 (median 164.6)** - +2.5%, inside the spread. The PTQ1_0 -> Q2_0 transcode plus the MoE-MMQ
+kernels are a wash on RDNA3; they are left on (the engine's default) but they are not where the prompt time is.
+
+## The fork's fused dense ops: the win that matters on this box
+
+The dense half is the majority of a decode step here, and it is launch-bound: ~3300 tiny ggml ops a token. The fork
+ships two patches that collapse the worst of them into one node each - `tools/v41/ggml/dsv41-fake-quant.patch`
+(the activation quantize-dequantize) and `dsv41-fuse.patch` (the two hyper-connection mixes) - and the engine takes
+them with `-DSTRATA_DSV41_FQ_OP=ON -DSTRATA_DSV41_HC_MIX=ON` against a ggml built from the patched tree.
+`local/build-ggml-fused.sh` does both (the ggml build must be **static**: the engine calls ggml internals that a
+shared build hides).
+
+| (same prompt, same flags, 3 runs a side) | decode tok/s |
+| --- | ---: |
+| stock ops | 12.3 [12.3 13.8 12.3] |
+| fused ops | **13.9 [13.9 13.9 13.8]** (+13%) |
+| stock ops, with DSpark | 16.6 [16.2 16.6 17.0] |
+| **fused ops, with DSpark** | **20.5 [19.1 22.4 20.5]** (+23%) |
+
+The last-token logits are the same model: top-1 identical, mean |delta| 0.156 on logits in -11..31 (the fused op is
+the same arithmetic as the composite it replaces, in one node). The server runs this build
+(`local/ds41-local.json` sets `DS41_EXE` to `build-hip-fused/ds41_generate`).
+
+With it, the serve numbers on this box are: a 5.8K-token prompt at **230 tok/s** (fused engine, batch 2048 or 12288:
+229.8 vs 232.8, i.e. no measurable difference here - the author's one-sweep win at 12288 is on a 20K prompt) and
+decode **26-30 tok/s** with DSpark.
+
+## Prompt streaming: layer prestage (the DMA overlap)
+
+`STRATA_PRESTAGE_GIB=<GiB>` keeps a device region where the NEXT routed layer's arena experts are DMA'd on a second
+stream while the current layer's dense half runs (`chunk_pstage_issue` / `Gpu::p_buf`); `run_chunk` then launches
+from there and streams only the rest. Measured through the server (`--serve`, the path it belongs to), 5787-token
+prompt, one request a side, fresh server each time, batch 12288 + `STRATA_HIP_WMMA=1`:
+
+| `STRATA_PRESTAGE_GIB` | prompt tok/s |
+| --- | ---: |
+| unset (baseline) | 231.2 |
+| 1.5 (adopted) | **244.5** |
+| 3.0 | 236.2 |
+
+It only moves data (no arithmetic), so the tokens are unchanged. One request a side, so read the +5.8% as the
+direction; 1.5 (the author's value) beats 3.0 here. With `STRATA_HIP_WMMA=1` the served prompt on this box goes from
+~220 to ~245 tok/s on a 5787-token prompt (both opt-ins are in `local/ds41-local.json`).
+
+## `STRATA_HIP_WMMA` does not apply to this engine (and a measurement that was noise)
+
+There is an int8-KV prompt-attention path on matrix cores in `src/kernels/cuda/qsa_prompt_attn.cu`
+(`STRATA_HIP_WMMA=1`, guarded for gfx11/gfx12). A one-run-a-side A/B on the 5787-token prompt first looked like
++5.4% (239.3 -> 252.1 tok/s, same 8 tokens), but that was noise: **the V4.1 engine never enters that code**. Evidence:
+0 `prompt_attn` symbols in `ds41_generate` against 752 `flash_attn*` ones (this engine's prompt attention is its own
+`native_flash_attn`/`flash_attn_tile`, not the parent engine's `qsa_prompt_attn`), no `strata: STRATA_HIP_WMMA: ...
+matrix cores` line in a whole real session's engine log, and no engine source referencing `qsa_prompt_attn`. The env
+was removed from `local/ds41-local.json`. Same shape of trap as the hipBLASLt table: an opt-in from the parent engine
+that this engine does not link. **A one-run-a-side A/B is not enough to adopt a knob - this is the concrete reason
+why.**
+
+## Prompt streaming: layer prestage (the DMA overlap)
+
+`STRATA_PRESTAGE_GIB=<GiB>` keeps a device region where the NEXT routed layer's arena experts are DMA'd on a second
+stream while the current layer's dense half runs (`chunk_pstage_issue` / `Gpu::p_buf`); `run_chunk` then launches
+from there and streams only the rest. Measured through the server (`--serve`, the path it belongs to), 5787-token
+prompt, one request a side, fresh server each time, batch 12288 + `STRATA_HIP_WMMA=1`:
+
+| `STRATA_PRESTAGE_GIB` | prompt tok/s |
+| --- | ---: |
+| unset (baseline) | 231.2 |
+| 1.5 (adopted) | **244.5** |
+| 3.0 | 236.2 |
+
+It only moves data (no arithmetic), so the tokens are unchanged. One request a side, so read the +5.8% as the
+direction; 1.5 (the author's value) beats 3.0 here. With `STRATA_HIP_WMMA=1` the served prompt on this box goes from
+~220 to ~245 tok/s on a 5787-token prompt (both opt-ins are in `local/ds41-local.json`).
+
+## Prompt attention on the matrix cores (gfx11)
+
+`STRATA_HIP_WMMA=1` switches the int8-KV prompt attention to the WMMA path (`src/kernels/cuda/qsa_prompt_attn.cu`,
+written for gfx12 but guarded for gfx11 too, which is this card). Measured on the 5787-token prompt, one run a side,
+same flags (`--kv-q8`, arena 75, 256K, Engram):
+
+| | prompt tok/s |
+| --- | ---: |
+| off | 239.3 |
+| `STRATA_HIP_WMMA=1` | **252.1** (+5.4%) |
+
+The eight generated tokens are identical with and without it. One run a side, so treat the +5.4% as the direction,
+not a settled number; it is in `local/ds41-local.json` (the server) as an opt-in. `STRATA_PA_FAST=1` halves the matrix
+work again by dropping the FP16 hi/lo split (rounding-level accuracy, not the FP32-level path) and is **not** adopted:
+it trades the model's numerics for speed, which is out of scope here.
+
+## hipBLASLt on the prompt: measured, and it cannot pay here
+
+`tools/hip/` ships hipBLASLt tuning tables per (architecture, library version) - for this card the pair is gfx1100 +
+hipBLASLt 1.4.1 = `tools/hip/gfx1100-hipblaslt-100401.txt`, and `tools/hip/tune_hipblaslt.cpp` calibrates more
+(`cmake --build build-hip-fused --target tune_hipblaslt`). The **V4.1 engine never links that code**: `ds41_generate`
+has zero `strata::prefill::Gemm` symbols (the reader of the table is the Qwen engine's prefill), so the table changes
+nothing for DeepSeek.
+
+The tuner on this card, our prompt shapes, f16 (what ggml feeds a BLAS path at a large batch), best hipBLASLt
+solution against the tuner's own rocBLAS baseline:
+
+| T | N | K | rocBLAS ms | best hipBLASLt ms | ratio |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1536 | 1280 | 5120 | 3.40 | 0.68 | 5.0x |
+| 1536 | 32768 | 1280 | 15.90 | 2.78 | 5.7x |
+| 1536 | 4608 | 5120 | 11.33 | 0.95 | 11.9x |
+| 1536 | 5120 | 2304 | 3.84 | 0.57 | 6.7x |
+| 1536 | 129280 | 5120 | 157.22 | 28.09 | 5.6x |
+| 5787 | 4608 | 5120 | 24.73 | 4.19 | 5.9x |
+
+So the table idea is real (5-12x over plain rocBLAS) - and still not worth wiring: **the prompt is not GEMM-bound**.
+`rocprofv3` on a 5787-token prompt (21.42 s of kernel time):
+
+| family | s | % |
+| --- | ---: | ---: |
+| expert tier (`native_gu` + `native_down`) | 11.34 | 53.0 |
+| flash attention (`flash_attn_tile` + `combine_results`) | 4.77 | 22.3 |
+| Q8_0 MMQ (`mul_mat_q<8,128>`) | 0.85 | 4.0 |
+| rocBLAS/Tensile GEMM (all of it) | 0.75 | 3.5 |
+| quant/dequant, transcode, copies | 0.54 | 2.5 |
+
+A perfect GEMM path would save at most those 0.75 s of 21.4 (3.5%), and the engine's dense prompt does not even use
+rocBLAS for most of its matmuls (the Q8_0 MMQ kernels above). The prompt's levers are the expert tier and flash
+attention, in that order.
+
+## The tier's ternary decode: every existing alternative measured, none adopted
+
+The tier is the single biggest kernel family (53% of a 5787-token prompt, 37% of a decode step), and its weights are
+ternary PTQ1_0 blocks (28 bytes per 128 weights, base-3 digits). Four ways to make it cheaper exist in the tree, and
+all four were measured on this card:
+
+| alternative | result |
+| --- | --- |
+| AMD expert layouts (`STRATA_EXP_MODE=2/4`, what gfx906 picks) | 10.4 / 12.0 vs **13.8** tok/s: wave64 tuning, loses on wave32 |
+| `STRATA_PTQ1_QUARTER` (quarter-block dot) | 12.0 vs 13.8 medians: no gain |
+| `STRATA_PROM=1` (row decoded once into LDS, dp4a per entry) | 154.2 vs 219.6 prompt tok/s: much worse |
+| PTQ1_0 -> Q2_0 (the lossless transcode the prompt MMQ path already uses, `STRATA_MMQ_PTQ1`) | 244.5 vs 239.7 prompt tok/s: +2%, inside the noise |
+
+The last one closes the structural idea too: the Q2_0 kernels are not 3-4x cheaper on this engine's real work (the
+per-call difference in the profile is different work per call, not a cheaper op), so transcoding the decode store
+would buy a couple of percent at best while costing ~28% more memory for those experts and a large change in
+`ds41_moe.cpp`. Not done, on this evidence. What is left is the ternary decode arithmetic itself, which is what the
+format costs.
+
+## What `attn_router` really is: the decode is host/sync-bound, not GPU-bound
+
+`rocprofv3 --runtime-trace --kernel-trace` on a decode with a **17K-token state filled** (32 tokens, one-shot, batch
+4096). Under the profiler the wall inflates to 139 ms/token (unprofiled ~75), so read the **split**, not the absolute:
+
+| | per token |
+| --- | ---: |
+| wall (profiled) | 139.0 ms |
+| **GPU kernels** | **32.2 ms (23%)** in 4,238 launches |
+| therefore outside the kernels | **106.9 ms (77%)** |
+| HIP API calls | 2,213 (their summed duration = the whole wall) |
+
+Kernel time by family: `mmvq` 11.7 ms, tier 4.8, `mmvq_f` 3.0, elementwise 2.7, copies/fill 2.2, argsort 1.2,
+quant 0.95. The API calls, per token: `hipGetLastError` **685**, `hipLaunchKernel` **520**, `hipMemcpyAsync`
+**392**, `hipStreamSynchronize` **215**, `hipGetDevice` **206**, `hipEventRecord` 97, `hipGraphLaunch` 77.
+
+So per layer (~40 a token) the engine issues ~5.4 blocking stream synchronizations and ~13 launches, and the GPU sits
+idle while the host walks that sequence. This is the same conclusion the upstream notes reached on CUDA ("removing
+ggml-stream syncs: the wait moves"), but on HIP the syncs cost more, and here they are 57-77% of the token: the
+dense half is not slow because the kernels are slow, it is slow because of how many times the host waits.
+
+**Consequence for the plan:** the levers on the decode are, in order, (1) fewer synchronizations per layer (an engine
+pipeline change, not a kernel), (2) fewer API calls per token - the 685 error queries and the 392 async copies are
+the cheapest to remove - and only then (3) kernel work. A new attention or indexer kernel cannot pay while the GPU is
+idle three quarters of the time.
+
+### Follow-up: the error checks are noise, the synchronizations are everything
+
+Same trace, cost of each HIP call summed over the decode window (per token):
+
+| call | calls/token | ms/token |
+| --- | ---: | ---: |
+| `hipStreamSynchronize` | 215 | **105.0** |
+| `hipMemcpyAsync` | 392 | 9.7 |
+| `hipGraphLaunch` | 77 | 7.2 |
+| `hipLaunchKernel` | 520 | 3.2 |
+| `hipGetLastError` | 685 | **< 0.3 (not in the top nine)** |
+
+So the "cheap win" I had queued first - making the error checks optional - is worth **nothing** (a third of a
+millisecond), and patching the vendored ggml for it would have cost a 20-minute rebuild for noise. Measuring first
+saved that. What is left is the thing the numbers point at: 215 stream synchronizations per token, each waiting
+~0.49 ms, i.e. the host spends 76% of the token's wall inside a stream sync while the GPU has only ~32 ms of kernel
+work. The decode is a per-layer handshake problem, and the fix is in the engine's pipeline (one sync point per layer
+instead of ~5.4, a deferred top-k readback), not in any kernel or in ggml.
+
+### Who causes the 215 stream synchronizations (attributed from the trace)
+
+The 6,865 syncs in the decode window, by the call immediately before them:
+
+| call before the sync | per token | what it is |
+| --- | ---: | --- |
+| `hipMemcpyAsync` | **95.3** | a device->host readback, ~2.4 per layer (routed ids, state) |
+| `hipGraphLaunch` | **76.7** | the dense graph is launched and **synchronized right after**, ~1.9 per layer |
+| `hipGetLastError` | 42.5 | the launch -> error-query -> sync pattern |
+| after the sync | -- | `hipGetDevice` **119.8** (a device query in the wrapper of every following call) |
+
+Two per-layer handshakes show up clearly: the engine launches the dense graph and blocks on it (~1.9x a layer), and
+it copies something back to the host and blocks for it (~2.4x a layer). The `layer sync` the author already skips on
+this path (`layer_synced` false, `ds41_moe.cpp:2682-2691`) is not among them. `hipGetDevice` 120 times a token is the
+cheapest of the lot and lives in the wrapper layer, not in the engine's logic.
+
+### Caching `ggml_cuda_get_device` (measured, no gain, reverted)
+
+`ggml_cuda_get_device()` (ggml-cuda.cu:135) calls `cudaGetDevice` and nearly every op calls it: 120 times per decode
+token here. It was cached per thread (invalidated in `ggml_cuda_set_device`) and measured on the same decode, 96
+tokens, two runs: `attn_router` **43.61 / 43.62 ms** against 43.35 before, decode **13.39 / 13.61 tok/s** against
+13.67. No gain: these calls cost ~0.5 us each, so 120 of them are 0.06 ms of a 75 ms token. The patch was reverted
+and ggml rebuilt. Same lesson as the error queries: on this engine the host API *call count* is not the problem, the
+*waits* are (215 stream syncs, 105 ms/token), and those wait for GPU work that the engine has serialized.
+
+## A fresh long prompt can crash the engine (found 2026-10-16) and the context penalty is smaller than I thought
+
+**The crash.** A 63,613-token prompt, one-shot, `--prompt-batch 12288 --ctx 262144 --arena-gib 75` (the tuned config):
+
+```
+chunk prestage: 2.32 GiB device region
+ggml_backend_cuda_buffer_type_alloc_buffer: allocating 2194.81 MiB on device 0: cudaMalloc failed: out of memory
+ggml_gallocr_reserve_n_impl: failed to allocate ROCm0 buffer of size 2301427712
+ds41_dense: graph buffer did not fit - freed the tier's prestage region, retrying
+Segmentation fault (core dumped)
+```
+
+The dense pass graph wants ~2.19 GiB at that batch, does not fit next to a 75 GiB arena's expert cache at 256K, the
+retry frees the prestage region and then **segfaults** instead of falling back to a smaller batch. Same prompt with
+`--prompt-batch 4096`: **works**, 63,613 tokens in 174.91 s = **363.7 tok/s** prefill. The serve path caps the batch
+from free VRAM itself ("serve: VRAM 14.87 GiB free -> prompt batch 10316"), which is why the long sessions in the
+server have not crashed, but a *fresh* 60K+ prompt on the one-shot path is a crash, not a slowdown. Upstream is
+tracking the same budget question (their run21 note: 16384 needs a speed knob, not a precision change).
+
+**The context penalty, re-measured with the phase timer** (same binary, `STRATA_DEC_PROF`, 64 decode steps):
+
+| prompt | begin | predict | attn_router | tier | finish | total | decode |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 113 token (4K state) | 4.08 | 0.46 | 43.35 | 18.68 | 5.61 | 72.2 ms | 13.67 tok/s |
+| 63,613 token (64K state) | 0.50 | 0.40 | 57.66 | 11.43 | 5.20 | 75.2 ms | **14.00 tok/s** |
+
+So from 4K to 64K the token does **not** get materially slower: `attn_router` grows by 14 ms and the tier and `begin`
+give most of it back. The earlier 12.7 / 14.1 / 9.8 tok/s at ctx 4K / 32K / 256K was confounded. What dominates at
+every context is `attn_router` (43-58 ms, 57-77% of the token), and it is **not** the indexer scaling with the
+context - which weakens the "batched indexer top-k" lead as the next step.
+
+## DSpark's adaptive bypass (DwarfStar's scheduler): implemented, measured, does NOT pay here
+
+DwarfStar's adaptive scheduler probes four speculative cycles and requires an average of four accepted tokens per
+cycle; below that it bypasses speculation, which caps the draft's overhead at 1.1% on their stack
+(`speed-bench/gfx1151-prefill-results.md:45-54`). Our low-acceptance case looked like the same problem (prose 16.3
+tok/s against 26.7 on code), so the bypass was implemented in this engine's serve loop (`STRATA_DSPARK_ADAPT`,
+threshold `STRATA_DSPARK_ADAPT_MIN`, probe after 4 passes, re-probe every 64) and measured on the same creative
+prompt, 400 tokens, fresh server a side:
+
+| | decode tok/s | accepted/pass |
+| --- | ---: | ---: |
+| adaptive off | **13.5 / 13.9** | 2.19 |
+| adaptive on (threshold 2.0) | 12.1 | bypassed (1.50 at the probe) |
+| adaptive on (threshold 1.7) | 12.8 | bypassed (1.50 at the probe) |
+
+Two reasons it cannot win here: the probe's four passes are the *least* predictable part of a generation (the
+acceptance rises to 2.19 as the text settles - so the bypass fires on bad evidence), and this engine's speculative
+pass is cheap enough that it beats the non-speculative one even at 1.5 accepted/pass (74 ms/token against 78
+bypassed). The patch was removed; the numbers are the record. Same shape as the confidence trim: a technique that
+pays on another stack (their DSpark is 1.32x, ours 1.7-2x) does not pay on this one.
+
+## The author's serve settings, measured on this box (2026-10-16)
+
+`tools/v41/serve/ds41-engine.sh` + `strata-ds41.json` are the author's production serve settings. Every one that
+differs from ours was measured here through `--serve`, same 5787-token prompt + 64-token reply, fresh server a side:
+
+| setting | author | ours | measured |
+| --- | --- | --- | --- |
+| `--route-bias` / `--route-bias-file` | 0.5 / 0.3 | 1.0 / 0.6 (engine defaults) | **12.1 vs 25.1 tok/s**: the softer bias routes 2.2x more rows to PCIe/file (4,677/511 vs 2,086/138) and the pass goes 140 -> 274 ms. The author's value is routing fidelity, not speed |
+| `--arena-adapt --arena-gib 64` | yes | `--arena-gib 75` fixed | 21.5 vs 25.1 tok/s (7,119 vs 8,229 experts in RAM); the adaptive arena did not grow past its base |
+| `STRATA_DSPARK_CONF` | 0.6 | off | changes the generated tokens on 2 of 2 prompts **even with `STRATA_SERVE_PASS_BIAS=0`** (+13% on one, -23% on the other): still not adoptable |
+| `STRATA_SERVE_PASS_BIAS` | 0 | 0 (adopted) | not a speed knob: it makes the decode-side prompt passes route exactly. Adopted for fidelity |
+| `STRATA_SERVE_STEP_MAX` | 96 | 768 (engine default) | untested; the author's own comment puts the batch/pass crossover at ~765 tokens, so the default keeps small new chunks on the fast pass path |
+| `STRATA_DSPARK_DEPTH` | 4 | 4 | 4 is right: 25.1 vs 20.3 (depth 5) vs 17.0 tok/s (depth 6) - deeper drafts add work per pass without raising acceptance |
+| `STRATA_DSPARK_KEEP` | 64 | 64 | 64 is right: 25.1 vs 17.3 (32) vs 14.2 tok/s (128): fewer experts make the draft guess worse, more make its forward slower |
+| `--ctx` / KV | 524288 / `--kv-fp4` | 262144 / `--kv-q8` | the user's call (no 4-bit KV) |
+| `--threads` | (unset) | 24 | untested |
+| `systemd-run MemoryMax=84G` | yes | no | robustness, not speed |
+
+Conclusion: on this machine the engine's own defaults beat the author's serve tuning almost everywhere - his values
+buy routing fidelity and a smaller memory footprint, not tokens per second. The only thing worth taking from his
+script was `STRATA_SERVE_PASS_BIAS=0`.
+
+## ggml's HIP graph capture costs more than it saves here (`GGML_CUDA_DISABLE_GRAPHS=1`)
+
+> **Superseded 2026-10-17:** with exact routing, the peer miss tier and `--pf-b 0` the graphs replay (69 launches, 1.3
+> captures per token) and pay: prompt 200 -> 245 tok/s, decode +2-10%. The chat config no longer sets the variable;
+> numbers in `V41_EXACT_FAST.md`. The measurement below is the biased-routing state of 2026-10-16.
+
+`rocprofv3 --runtime-trace` on a decode: **6,986 HIP runtime calls per token** - 1,822 launches, 951 `hipMemcpyAsync`
+(508 of them host->device), 3,130 `hipGetLastError`, 652 `hipGetDevice`, 176 `hipStreamSynchronize`, and **20
+`hipStreamBeginCapture` + 20 `hipStreamEndCapture` per token**. That is the ~14 ms/token between the 69.4 ms of GPU
+kernel time and the 83 ms a token really takes. ggml re-captures its dense graph instead of replaying it (its key
+includes pointers that this engine moves as the context grows), so the capture is pure cost.
+
+| (same flags, `--kv-q8`, arena 75, 256K, Engram) | prompt tok/s | decode tok/s |
+| --- | ---: | ---: |
+| graphs on (ggml default) | 232.6 | 22.8 |
+| **`GGML_CUDA_DISABLE_GRAPHS=1`** | **240.1** | **24.3** |
+
+Through `--serve`, 5787-token prompt + 96-token reply, fresh server a side (wall 29.1 -> 28.1 s); one-shot, 64
+tokens, 3 runs a side: 13.9 [13.9 15.3 13.4] -> **15.4 [15.6 15.4 15.0]**. Adopted in `local/ds41-local.json`.
+
+On the numbers it is not bit-identical, and that is worth stating: the last-token logits of a single step are equal
+to the last bit (`--dump-last`, max|delta| 0.0000, top-1 19 both ways), and in a 64-token greedy run the first **50**
+tokens match and then a near-tie flips (11 of 64 differ). Same class as every other kernel choice here: the same
+model, a different summation order - not a different model. Independent confirmation that graphs do not pay on RDNA: hipfire's experiment measured
+4.31 us/launch native against 18.25 us/node with a graph (N=200), hipEngine 1.00x on gfx1100, and rocWMMA+graphs
+crashes on gfx1201 (llama.cpp #24961) - the workaround is this same env.
+
+## The second card sits on a PCIe 4.0 x2 uplink
+
+`lspci` topology, this box: card 0 is `03:00.0` behind `02:00.0` (**x16**, 16 GT/s); card 1 is `16:00.0` behind
+`15:00.0` (x16) which is behind **`14:00.0`: width 2, 16 GT/s = PCIe 4.0 x2** (~4 GB/s against ~32). The card
+negotiates x16, so `current_link_width` on the endpoint alone is misleading - the bridge is the bottleneck.
+
+That is a second, hardware reason the peer expert tier could not win (its per-layer hand-off rides that link), on top
+of the dense half being 63% of the step. For two cards here, only work with little cross-traffic pays; a layer split
+or a peer store served over x2 does not.
+
+## Expert kernels on gfx1100: the AMD layouts are compiled out, and switching them on is slower
+
+`src/kernels/cuda/iq_kernels.cu` carries two families of grouped-expert kernels: the CUDA layout (mode 0,
+`native_gu_kernel`, one output row per warp, 8 rows a block) and the AMD layouts (`native_gu_amd_kernel` modes 1/2/4,
+`native_gu_lds_kernel` and `native_gu_fused_kernel` modes 5-8) selected by `STRATA_EXP_MODE` (and per weight type by
+`STRATA_EXP_MODE_T<type>`). The AMD layouts are only **compiled** for `STRATA_HIP_GFX906` (`STRATA_EXP_LAYOUTS` is 0
+for every other HIP architecture), so on this card the tier has always run mode 0 - the layout the author measured at
+~136 GB/s on the fork's ternary weights (nsys).
+
+Measured 2026-10-16, same binary, same prompt/flags, 48-token replies, 3 runs a side (fused build, no DSpark):
+
+| `STRATA_EXP_MODE` | decode tok/s |
+| --- | ---: |
+| 0 (today's default) | **13.8** [14.0 13.8 10.4] |
+| 2 (R2: two rows per warp in one loop) | 10.4 [13.2 8.0 10.4] |
+| 4 (32 rows a block) | 12.0 [11.4 14.7 12.0] |
+
+Mode 2 is also what gfx906 lands on for these types through `kExpFallback`, so the AMD layout is not a missing win
+here: it is tuned for a 64-lane wavefront and loses on RDNA3's wave32. The kernels can be compiled in as an opt-in
+(`-DCMAKE_HIP_FLAGS=-DSTRATA_HIP_EXP_LAYOUTS=1`, patch in `iq_kernels.cu`, default mode stays 0) for anyone who wants
+to re-measure; the shipped build keeps the flag off.
+
+## DSpark's confidence trim at 0.9: still not adoptable
+
+`STRATA_DSPARK_CONF=0.9` (the trim that verifies only the leading drafts the confidence head is sure about) on three
+prompts, 48 tokens each, against the same run without it: `long` identical and +8%, but `code_review` and `capital`
+produce **different tokens** (`capital` also slower, 34.5 -> 22.6 tok/s). Changing the answer on 2 of 3 prompts for an
+inconsistent gain is not adoptable; the trim stays off (the 0.6 threshold was rejected earlier for worse).
+
+## The second GPU: implemented, measured, not adopted
+
+The project's **parent engine** (the Qwen one) does support several cards: contiguous layer ranges, one per GPU, each
+with the expert cache for its own layers (`docs/MULTI_GPU.md`, `src/core/peer_experts.hpp`, layer split /
+`--peer-device`). The **V4.1 engine** had none of that, so a peer expert tier was written for it: `--peer-device N`
+with a store on the second card, the pack/launch metadata lambdas factored so a launch can target either card, the
+peer's rows deposited into the primary's `d_parts` exactly like the CPU share already does (so the routed sum and the
+dense half are untouched), plus a startup seed that gives the peer the second half of card 0's ranked head.
+
+It is **correct**: identical tokens with the peer on and off, and `STRATA_PEER_CHECK=1` compared 4299/4299 of the
+peer's rows bit-for-bit against card 0's own computation. It moved real work: 91.5 routed rows/token (~35% of the
+258 rows a token routes) came off card 0's hits (10959 -> 6713 rows, every other counter identical).
+
+It is also **slower**: 11.8 vs 12.6 tok/s (no DSpark, 3 reps, round robin). The phase profile above says why - the
+expert tier is 23% of the step, the dense half 63%, so taking a third of the tier off card 0 buys ~3% and the
+per-layer hand-off (activation upload, metadata, event and wait, row copies, 40 layers a token) costs more than that.
+The whole attempt is saved as `local/peer-tier-attempt.patch` (901 lines) with its design note
+(`docs/ds4/V41_AMD_PEER_TIER.md`); it is the thing to pick up again if the dense half ever stops being the majority.
+
+For reference, the expert cache's own slope on one card: `--slots 1200` 19.30 tok/s (92.5% hits), `--slots 400` 14.98
+(80.0%), `--slots 2100` 5.34 (7.3% - an explicit budget larger than the free VRAM thrashes; leave `--slots auto`).
+
+## Not done yet
+
+- **512K context**: the 8-bit cache makes the state affordable, but nothing above 256K has been run here; the second
+  thing `--kv-fp4` would buy (a further ~0.4 GiB at 256K) is not available in this ggml tree, see the KV section.
+- **The attention/indexer kernels on RDNA3**: the remaining gap to the author's 4090 is here - `attn_router` 51.7
+  ms/token against 17.8, while the expert tier is close (19.4 vs 16.6). The CSA indexer's cost also grows with the
+  context (12.7 / 14.1 / 9.8 tok/s at ctx 4K / 32K / 256K, identical tokens). This is kernel work (profile, then port
+  or tune the gfx1100 paths), not a setting: it is the next real project, and `DSpark` went from 16.6 to 20.5 tok/s
+  with the cheap half of the same idea already done (the fused ops).
+- **The second card**, as above (design + measured negative in `V41_AMD_PEER_TIER.md`).
+- **`--chunk-mmq` tuning**: the Q2_0 MoE-MMQ kernels have no RDNA3-specific config here; the A/B is a wash.
+- **A last tuning batch not run**: `STRATA_D3_PF`, `--prefill-chunk`, `STRATA_TIER_GRAPH` on the fused build (the
+  earlier runs of the same knobs on the stock build were inside the noise).
+
+### Tool calls over the local server (fixed 2026-10-16)
+
+The model speaks DeepSeek's own DSML (`<｜DSML｜ invoke name="X">` + `<｜DSML｜ parameter name="K" string="true|false">V<...>`);
+Strata's `serve/frontend.py` only knows Qwen's XML call form. Overriding `CALL_START`/`CALL_END`, `call_end` and
+`parse_tool_call` (what the shim did) is not enough: `frontend.py`'s `_follower` gate looks for `<function=`,
+`<parameter=` or `{` right after the opener, so a DSML call was rejected as prose and left in `content` -
+`tool_calls: null`, the client ran nothing. Seen on a real harness session: 488 tool calls through
+`llama-cpp/Qwen3.8-Flash-Next` had worked, the one turn on this model produced a raw DSML block instead.
+
+`serve_ds41.py` now **translates the stream** (`ds41_translate`: DSML -> `<tool_call><function=NAME><parameter=K>V`),
+holding back a partial tag or element (including a closing tag split across deltas - that one leaked raw until the
+hold covered `</｜DSML｜ invoke`), which keeps every heuristic of that parser (code fences, a quoted call, the streamed
+body) working on the model's own syntax. Verified against the running server with an OpenAI client: non-streaming
+`finish_reason: tool_calls` with the parsed arguments, streaming a `tool_calls` delta in the SSE chunks, whole and
+byte-split streams, `string="false"` values typed (`30`, not `"30"`), two calls in one reply, and a quoted call
+inside a code fence stays text.
+
+The gate for all of it is already in the tree: `tools/v41/serve/test_serve_ds41.py`
+(`t_parser` compares the served path against DeepSeek's own parser at **every split 1..39**, thinking on and
+off; `t_http` drives the mock server over HTTP for the OpenAI and Anthropic APIs). It was **red** before the
+translation - the markup came out as `content`, the same failure the harness session hit - and is green now:
+`... test_serve_ds41.py models/V41-GSQ/tokenizer` prints `all passed` (12 checks). Its server subprocess now
+runs under the interpreter running the test (`STRATA_TEST_PY` overrides) instead of the author's
+`~/AI/Strata/.venv/bin/python`, which is what kept that half unrunnable on other machines.
+
+## API server (256K context)
+
+```sh
+STRATA_HOME=$PWD /path/to/venv/bin/python3 tools/v41/serve/serve_ds41.py \
+    --engine strata --config local/ds41-local.json --port 8150
+# OpenAI /v1/chat/completions, Anthropic /v1/messages, web UI on http://127.0.0.1:8150/
+```
+
+`local/ds41-local.json` is this machine's configuration: `--experts gpu`, `--arena-gib 60`, `--ctx 262144` (256K),
+`--engram` to the two table directories, `--prompt-batch 2048`, DSpark depth 4 with the 64-expert prune and no
+confidence trim, plus `STRATA_NO_LARGEPAGES=1`. `STRATA_HOME` is a new env hook in `serve_ds41.py` (default
+`~/AI/Strata`, unchanged): this checkout ships its own `serve/`, so the shim needs no installed Strata. Two signature
+drifts against the newer `serve/` were fixed in the shim: `Service.run(..., force=...)` and
+`OutputParser.finish(reason)`.
+# V4.1 GSQ: exact routing at 10-14 tok/s (2026-10-17)
+
+The route bias made the model fast and wrong (`HANDOVER.md` §3). This note records how the GSQ was made fast **with
+the model's own routing** (`--route-bias 0 --route-bias-file 0`) on this box: 2x RX 7900 XTX (card 1 behind a PCIe
+4.0 x2 bridge), Ryzen 9 9900X (12 cores / 24 threads), 122 GiB RAM, the GSQ on the Lexar NM1090 PRO (PCIe 5.0 x4).
+Every number below was measured on this box; one-shot runs are greedy, 300 tokens, `--ctx 8192`, arena 90 GiB.
+
+## Result
+
+| configuration (exact routing throughout) | Divina Commedia | Promessi Sposi | Python (English) |
+|---|---:|---:|---:|
+| before: GSQ `rank.bin`, 24 threads | 2.83-3.36 | 3.37 | 3.93 |
+| + `local/rank-gsq-mixed.bin` | 5.86 | 4.96 | 4.50 |
+| + `--arena-adapt` | - | 5.88 | 5.21 |
+| + `STRATA_PF_NO_DUMMY=1` | - | 6.72 | - |
+| + `--peer-device 1` (miss mode, below) | - | 7.29 | 5.84 |
+| + `--threads 12` | - | 10.39 | - |
+| + `--vram-margin 0.5` (= `local/ds41-local-fast-exact.json`) | 10.05 / **11.16** free | 10.68 | **9.85** |
+| + DSpark, peer in the verify path, `STRATA_TIER_BATCH_PCIE=0` | - | 11.06 | **14.03** |
+| `--vram-margin 0.5` config + `--pf-b 0`, no DSpark (= `local/ds41-local.json` now) | **13.07** | **12.98** | 10.32 |
+
+Through the server (`./run-v41-gsq.sh`, ctx 262144, arena 75 GiB, temperature 0), with `--pf-b 0`: Divina Commedia
+12.10 cold / 14.51 repeated, the nine circles 13.70 (TTFT 1.2 s), Promessi Sposi 13.40, the Python prompt 10.94, and
+with thinking on (temperature 0.8) 12.95 tok/s; before `--pf-b 0`: 11.84 / 14.05 / 13.64, thinking 11.27. The chat with exact routing ran at ~2.7 tok/s
+before. Answers checked by hand: correct dates, structure, the nine circles.
+
+Token agreement against the exact reference (the same stream forced with `STRATA_FORCE_IDS`, `STRATA_DEC_MARGIN=1`
+counting the positions whose argmax differs): every lossless change above stays at **2-7 of 300**, all near-ties
+(logit gaps <= 0.27), the same positions as an identical exact run repeated (2 of 300: the CPU and the cards round a
+row differently, and which computes it depends on the cache state). The route bias at 0.5/0.3 differs at **30 of
+300**, with gaps up to 18 logits.
+
+## What each step is
+
+1. **The rank was the main defect, not the routing.** The GSQ's `rank.bin` comes from an agentic/code corpus: on the
+   Divina Commedia answer's own routing it covers **11.5%** of the routed tokens in the first 14 GiB (the VRAM seed)
+   and 78.9% in 104 GiB; the Q2's counts (`local/calib-q2/stats-merged`, mixed Italian/English/code, same base
+   router) cover 51.6% and 97.5%. `local/rank-gsq-mixed.bin` is those counts ranked with the GSQ's real per-expert
+   sizes (`local/gsq-alloc-map.json`, from `V41-GSQ.gguf.experts.json`: type 11 = Q3_K, 42 = Q2_0, 143 = PTQ1_0):
+   `python3 tools/v41/engine/v41_rank.py --stats local/calib-q2/stats-merged --map local/gsq-alloc-map.json --out
+   local/rank-gsq-mixed.bin`. The Divina Commedia answer is partly in that corpus; the Promessi Sposi and the Python
+   prompt are not, and gain +47% and +15%.
+2. **`--arena-adapt`** (existing): a file-tier read takes the arena slot of the layer's least recently used expert.
+3. **`STRATA_PF_NO_DUMMY=1`** (existing): the prefetch DMA'd a zero blob for every predicted expert outside the
+   arena (6,070 of 17,102 prefetches in the exact run, 9.7 MB each) to keep an old simulator's timing.
+4. **The second card in miss mode** (`--peer-device 1`, new): the saved peer patch (`local/peer-tier-attempt.patch`)
+   re-applied, with one change of design. The old peer only moved the *kernel* of rows card 0 would compute anyway
+   and kept their DMA, to stay bit-identical; under exact routing the misses are the cost (~2 ms each on the
+   critical path), so now a miss whose expert the peer's store holds is computed on card 1 and **no blob moves** -
+   only n_embd floats each way over the x2 link. The store is the 22 GiB (`STRATA_PEER_GIB=22`, ~2,390 experts) of
+   ranked experts after card 0's VRAM head; with `--arena-adapt` its arena copies are not refreshed, so the arena
+   swaps them out. Wired in the single-token decode (`gpu_run`), its prefetch, and the DSpark verify pass
+   (`gpu_run_n_ex`, `prefetch_multi`); not in the prompt path. `STRATA_PEER_HOT=1` = the original hot split.
+5. **`--threads 12`**: the 12 physical cores. With 24 SMT threads the pool's threads contend with the thread that
+   drives the cards: 7.29 -> 10.39 tok/s, and the prompt 189.8 -> 246.4 tok/s (5,783 tokens).
+6. **`--vram-margin 0.5`**: 0.5 GiB more expert slots on card 0.
+7. **`--pf-b 0`** (no predicted prefetch): with the peer and 12 threads the prefetch's DMAs cost more than its hits
+   save - Promessi Sposi 10.68 -> 12.98, Divina Commedia 10.05 -> 13.07, Python 9.85 -> 10.32. Not with DSpark: there
+   the prefetch is what admits experts into VRAM in the verify pass (hits 74% -> 21-53% without it; Sposi 11.06 -> 9.60).
+
+## What does not work
+
+- **The near-tie bias** (`STRATA_RB_MARGIN=d`): d = 0.02 changes 5 of 300 positions and is no faster (45.7% VRAM
+  hits, the same as exact); d = 0.05 changes 8 and is no faster. The bias is fast only because it rewrites many
+  choices, so restricting it to near-ties leaves nothing to gain. `STRATA_RB_MARGIN=1` (the old chat config) is
+  wider than the scores' spread: it is the flat bias.
+- **File-tier-only penalty with the top 4 protected** (`STRATA_RB_PROTECT=4 --route-bias-file 0.3`): 6 of 300
+  changed, no faster.
+- **DSpark on Italian prose**: the drafter accepts ~1.0 draft per pass (code: 2.5-2.9), so the verify width is mostly
+  wasted; 11.06 vs 10.68 tok/s single-step.
+
+## The dense half is GPU-bound, not sync-bound (measured)
+
+An opt-in asynchronous dense path (`STRATA_DENSE_ASYNC=1`: `graph_compute_async`, the readbacks queued behind the
+graphs with one synchronize, and the tier handing over with an event that ggml's stream waits on instead of a
+stream sync) changed nothing: Sposi 12.98 sync vs 12.87 async at `--pf-b 0`, and the all-VRAM ceiling 20.54 vs 19.69.
+It was removed; the code is `local/dense-async-attempt.patch`. `rocprofv3 --kernel-trace` on the all-VRAM ceiling
+(64 tokens) says why: **32.4 ms of kernels per token in 4,596 launches** - `mul_mat_vec_q` 12.1 ms (335 launches, the
+~7.3 GB of Q8_0 dense weights at ~600 GB/s), the expert kernels 5.6 ms, `mul_mat_vec_f` 3.2 ms (197), copies 1.5 ms
+(815), rms_norm 1.6 ms (306), argsort 1.2 ms, the rest ~7 ms. Against the 48.7 ms an unprofiled token takes, ~16 ms is
+the gaps between ~4,600 launches (~3.5 us each on HIP), which the host cannot hide by running ahead: it launches one
+kernel at a time either way. Removing them needs ggml's HIP graphs to replay instead of re-capturing every token
+(`AMD_HIP_NOTES.md`, "ggml's HIP graph capture costs more than it saves here").
+
+## Session 2 (2026-10-17 night): the miss path and the prompt passes
+
+Three opt-in changes, now in the chat config (`local/ds41-local.json`); one-shot numbers are greedy 300-token runs on
+the forced exact stream, server numbers are `./run-v41-gsq.sh` at temperature 0.
+
+1. **The peer store follows the working set** (`STRATA_PEER_ADAPT=1`, `STRATA_PEER_ADAPT_INFLIGHT=8`,
+   `STRATA_PEER_ADAPT_WIN=16`): a miss that recurs within 16 calls of its layer and is in the arena is copied to
+   card 1 on a separate stream (after the peer's last launch), into the least recently used peer slot of the same
+   format class; the victim is unmapped at once and the newcomer published when its copy's event fires (a layer's
+   copies are waited for at its next call, because that call may hand the source arena slot to someone else).
+   1,360-1,870 experts admitted per 300 tokens, never a wait. A/B, alternated: Promessi Sposi 13.16 -> 13.55 tok/s
+   (mean of 2 vs 3 runs), Python 10.92 -> 11.39 (one adaptive run at 8.89 left out as an outlier).
+2. **`--pcie 0`**: the arena misses on the CPU pool (12 threads) instead of DMA'd to card 0 - with the peer and
+   12 threads the CPU is the cheaper path for one token: Sposi 13.55 -> 14.63, Python 11.39 -> 12.35 (`--pcie 0.25`:
+   13.44 / 12.22). It made the server's short prompts slower (they ran token by token, each recomputing its misses on
+   the CPU: a 40-token prompt 2.7 -> 6.1 s), which 3. fixes.
+3. **`STRATA_SERVE_PASS_BATCH=1`**: the server's prompt passes (prompts up to 768 tokens) call the tier with
+   `run_multi_to_dev` per 8 tokens, as the DSpark verify pass does - each distinct expert is served once for every token
+   routing it - instead of `run_to_dev` per token.
+
+| server, temperature 0 | before session 2 (graphs on) | after 1+2 | after 1+2+3 (= now) |
+|---|---:|---:|---:|
+| Divina Commedia cold / repeated | 11.71 / 15.18 | 13.32 / 15.46 | 12.77 / **16.07** |
+| nine circles: TTFT / decode | 1.26 s / 14.04 | 2.40 s / 14.82 | **0.94 s / 15.11** |
+| Promessi Sposi: TTFT / decode | 0.89 s / 13.69 | 1.39 s / 13.20 | **0.72 s / 15.02** |
+| Python: TTFT / decode | 2.33 s / 10.80 | 4.86 s / 10.75 | **2.00 s / 11.81** |
+| thinking (40-token prompt): TTFT / decode | 2.73 s / 13.50 | 6.12 s / 13.50 | 3.07 s / 12.86 |
+
+Answers checked: the nine circles, Beatrice (dead in 1290, guide from the Earthly Paradise). Gate (default flags,
+`code_review.i32`): tokens and tier counters identical to `local/gate-before.txt`.
+
+4. **`STRATA_VRAM_BG=1`**: with `--pcie 0` card 0's cache stopped changing (its promotions rode on the PCIe misses'
+   DMA): ~99 VRAM hits per token in the chat. Now one recurring miss per call is promoted into card 0 after the call,
+   off the critical path: the copies go on the tier's stream behind the call's kernels (a later kernel reading the slot
+   is ordered after them), the mapping is published at once, and a victim without an arena copy is demoted into the
+   slot the newcomer leaves. One-shot: Sposi 14.63 -> **15.74**, Python 12.35 -> **13.53** (`=2`: 10.48 / 13.35).
+   Server: ~167 VRAM hits per token; Divina Commedia 13.48 cold / **17.40** repeated, nine circles 15.82, Promessi Sposi
+   15.76, Python 10.83, thinking 14.37, two new questions 16.01 / 16.03 tok/s.
+
+5. **DSpark on this configuration** (one-shot, `STRATA_TIER_BATCH_PCIE=0`, the peer in the verify pass): Python at depth 4
+   **18.58** tok/s (3.7 tokens/pass) against 13.53 single-step, but Promessi Sposi 10.55 (depth 4) / 12.78 (depth 2)
+   against 15.74 - the drafter accepts ~1 draft per pass on Italian prose. Promotions inside the verify pass
+   (`STRATA_VRAM_BG_PASS=1/2`) gave Python 16.60 / 12.10 (depth 4), 15.27 / 15.38 (depth 2) and prose 11.84 / 11.99,
+   10.70 / 13.73: no clear gain inside the spread, so they are a separate opt-in, off. The chat stays single-step.
+6. **Where a
+
+Elenca in 5 punti le idee principali del testo qui sopra.

@@ -17,7 +17,7 @@
   "1",
   "--kv-q8",
   "--prompt-batch",
-  "12288",
+  "8192",
   "--arena-gib",
   "75",
   "--engram",
