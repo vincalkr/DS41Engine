@@ -8,6 +8,7 @@ without git history and does not match one llama.cpp commit (a diff against 3cf0
 `third_party/ggml/VERSION.txt` names, differs in ~370 files), so it is kept whole instead of as a commit plus patches.
 Do not re-apply the patches to it.
 
-Build it on its own (the layout `STRATA_GGML_PREBUILT` expects: `build-hip/ggml/src/libggml*.a`):
+Build it through `third_party/ggml-build` (llama.cpp's way of including ggml, without the rest of llama.cpp; the
+layout `STRATA_GGML_PREBUILT` expects, `build-hip/ggml/src/libggml*.a`):
 
-    cmake -S third_party/llama.cpp/ggml -B third_party/llama.cpp/build-hip/ggml ...   (see the README, "Build")
+    cmake -S third_party/ggml-build -B third_party/llama.cpp/build-hip ...   (see the README, "Build")

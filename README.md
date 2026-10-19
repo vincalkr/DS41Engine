@@ -91,10 +91,10 @@ ggml once, from the copy in `third_party/llama.cpp/ggml` (with this repository's
 tens of minutes.
 
 ```sh
-cmake -S third_party/llama.cpp/ggml -B third_party/llama.cpp/build-hip/ggml -DCMAKE_PREFIX_PATH=/opt/rocm \
+cmake -S third_party/ggml-build -B third_party/llama.cpp/build-hip -DCMAKE_PREFIX_PATH=/opt/rocm \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_HIP_ARCHITECTURES=gfx1100 -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
   -DGGML_HIP=ON -DGGML_HIP_GRAPHS=ON -DGGML_CUDA_FA=ON -DGGML_NATIVE=ON -DGGML_OPENMP=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build third_party/llama.cpp/build-hip/ggml -j
+cmake --build third_party/llama.cpp/build-hip -j
 
 cmake -S . -B build-hip-fused -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_HIP_ARCHITECTURES=gfx1100 -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
