@@ -36,7 +36,12 @@ td.log
 # created by setup.py on the user's machine
 /.venv/
 /build/
-/third_party/llama.cpp
+/third_party/llama.cpp/*
+!/third_party/llama.cpp/ggml/
+!/third_party/llama.cpp/LICENSE
+!/third_party/llama.cpp/VENDORED.md
+*.orig
+*.rej
 /models/
 /packs/
 /mtp/

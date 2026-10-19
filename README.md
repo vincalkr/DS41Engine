@@ -64,6 +64,17 @@ worse answers: ppl 11.63 vs the FP8's 8.56). Details and numbers in [docs/ds4/V4
 
 Three steps: fetch the model, build the engine, start the server.
 
+What it needs (measured on the machine above; other setups are untested):
+
+| | |
+| --- | --- |
+| OS, GPU stack | Linux, ROCm (7.14 here) with `hipcc`, hipBLAS and `/opt/rocm/lib/llvm/bin/clang++` |
+| GPU | an RDNA3 card the build targets (`gfx1100`: RX 7900 XT / XTX, 20-24 GB); others are not tested |
+| RAM | 128 GB class: the engine holds ~89 GB with the default 75 GiB arena (see "Adapting it" below) |
+| CPU | x86-64 with AVX2 (AVX-512 kernels are used when present) |
+| disk | 355 GB for `models/`, ~570 GB free at the download's peak (the Engram tables are extracted from two 101 GB shards); NVMe: experts that miss RAM are read from it during decode |
+| tools | `cmake` >= 3.24, gcc, Python 3 with pillow, psutil, regex and jinja2; `aria2c` for fast downloads |
+
 ### 1. Get the model files
 
 `local/fetch-model.sh` builds the layout in `models/` (355 GB): the GSQ from
@@ -75,13 +86,15 @@ option is documented at the top of the script.
 
 ### 2. Build
 
-ggml once, from `third_party/llama.cpp` (a llama.cpp checkout, not tracked here, patched with `tools/v41/ggml/*.patch`),
-then the engine (HIP only):
+ggml once, from the copy in `third_party/llama.cpp/ggml` (with this repository's ggml changes already in it; see
+`third_party/llama.cpp/VENDORED.md`), then the engine (HIP only). The ggml build compiles many HIP kernels: expect
+tens of minutes.
 
 ```sh
-cmake -S third_party/llama.cpp -B third_party/llama.cpp/build-hip -DCMAKE_BUILD_TYPE=Release -DGGML_HIP=ON \
-  -DGGML_HIP_GRAPHS=ON -DGGML_CUDA_FA=ON -DGGML_NATIVE=ON -DGGML_OPENMP=ON -DBUILD_SHARED_LIBS=OFF -DGPU_TARGETS=gfx1100
-cmake --build third_party/llama.cpp/build-hip --target ggml -j
+cmake -S third_party/llama.cpp/ggml -B third_party/llama.cpp/build-hip/ggml -DCMAKE_PREFIX_PATH=/opt/rocm \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_HIP_ARCHITECTURES=gfx1100 -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
+  -DGGML_HIP=ON -DGGML_HIP_GRAPHS=ON -DGGML_CUDA_FA=ON -DGGML_NATIVE=ON -DGGML_OPENMP=ON -DBUILD_SHARED_LIBS=OFF
+cmake --build third_party/llama.cpp/build-hip/ggml -j
 
 cmake -S . -B build-hip-fused -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_HIP_ARCHITECTURES=gfx1100 -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
@@ -108,6 +121,22 @@ Measured on this box: +13% decode on short prose (before the Q6_K dense half), t
 `run-v41-gsq.sh` checks that the model and the Engram tables are in `models/`. Python needs pillow, psutil, regex and jinja2
 (`python3 -m venv .venv && .venv/bin/pip install pillow psutil regex jinja2`). Never expose the server beyond
 `127.0.0.1` without `--api-key`. Loading takes about a minute; then `curl -s http://127.0.0.1:8150/v1/models` answers.
+
+### Adapting it to another machine
+
+`local/ds41-local.json` is this machine's configuration; `local/cfg.py` edits it without breaking the argument list
+(`python3 local/cfg.py show` prints it). The settings that depend on the hardware:
+
+```sh
+python3 local/cfg.py arg --threads 8         # the CPU's PHYSICAL cores (12 here: 12 measured 10.4 tok/s, 24 measured 7.3)
+python3 local/cfg.py arg --arena-gib 50      # pinned RAM for experts: 75 GiB on 122 GiB here; keep ~45 GiB beside it
+python3 local/cfg.py env HIP_VISIBLE_DEVICES=1    # which card, if the 7900 is not device 0
+```
+
+The arena is the biggest lever after the card: every expert that is not in VRAM or the arena is read from NVMe during
+decode. 75 GiB is what fits beside the engine's other ~14 GB, the server and the OS on this machine (80 and above
+were slower or unstable); the 50 above is an example for a 96 GB machine, not a measured setting. `--vram-margin`
+(0.5 GiB) is the VRAM left free beside the expert cache; raise it if another program uses the card.
 
 ## Documents
 
