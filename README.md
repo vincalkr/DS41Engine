@@ -17,8 +17,8 @@ name starts with "Strata" into its shared `Strata-data`.
 
 ## The machine, and what it does
 
-One RX 7900 XTX (a second one is installed but not used: behind its PCIe 4.0 x2 bridge it measured neither faster
-nor slower), Ryzen 9 9900X (12 cores), 122 GiB RAM, a PCIe 5.0 NVMe, ROCm 7.14. On disk in `models/`: the GSQ quant
+RX 7900 XTX (24 GB), Ryzen 9 9900X (12 cores), 122 GiB RAM, a PCIe 5.0 NVMe, ROCm 7.14. The numbers below are one
+card; a second card can be added as an extra expert tier (see "Quick start", step 3). On disk in `models/`: the GSQ quant
 (152 GiB), its DSpark draft and tokenizer, and the two Engram tables (189 GiB).
 
 | through the server, exact routing | |
@@ -55,23 +55,16 @@ from NVMe (~10 a token).
 
 ## Tried and reverted
 
-Route bias (fast and wrong: invented circles), DSpark on Italian prose (~1 draft accepted a pass), the second card as
-an expert tier (neutral at 25K context), the conversation-adaptive arena (more file reads on short turns), CPU pinning,
+Route bias (fast and wrong: invented circles), DSpark on Italian prose (~1 draft accepted a pass), the
+conversation-adaptive arena (more file reads on short turns), CPU pinning,
 `GGML_CUDA_DISABLE_FUSION`, an async dense path, and DeepSeek-V4.1-Flash-1017 as lxe's 2-bit quant (faithful load,
 worse answers: ppl 11.63 vs the FP8's 8.56). Details and numbers in [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
 
-## Run it
+## Quick start
 
-```sh
-./run-v41-gsq.sh                 # the server on 127.0.0.1:8150 (web chat at /, API at /v1), config local/ds41-local.json
-./run-v41-gsq.sh --port 8151     # extra server arguments are passed straight through
-```
+Three steps: fetch the model, build the engine, start the server.
 
-It checks that the model and the Engram tables are in `models/`. Python needs pillow, psutil, regex and jinja2
-(`python3 -m venv .venv && .venv/bin/pip install pillow psutil regex jinja2`). Never expose the server beyond
-`127.0.0.1` without `--api-key`. Loading takes about a minute; then `curl -s http://127.0.0.1:8150/v1/models` answers.
-
-## Getting the model files
+### 1. Get the model files
 
 `local/fetch-model.sh` builds the layout in `models/` (355 GB): the GSQ from
 [IndrasMirror/DeepSeek-V4.1-Flash-GSQ-Uncensored](https://huggingface.co/IndrasMirror/DeepSeek-V4.1-Flash-GSQ-Uncensored)
@@ -80,7 +73,7 @@ and 48 of [dealignai/DeepSeek-V4.1-Flash-UNCENSORED-FP8](https://huggingface.co/
 It is resumable and uses `aria2c` (4 connections per file by default, `CONN`); `DRY_RUN=1` prints the plan. Every
 option is documented at the top of the script.
 
-## Build
+### 2. Build
 
 ggml once, from `third_party/llama.cpp` (a llama.cpp checkout, not tracked here, patched with `tools/v41/ggml/*.patch`),
 then the engine (HIP only):
@@ -98,6 +91,23 @@ cmake --build build-hip-fused -j      # ds41_generate, the engine's tests (test_
 ```
 
 Server tests (no GPU or model needed): `.venv/bin/python -m unittest discover -s serve -p "test_*.py" -t .`
+
+### 3. Run it
+
+```sh
+./run-v41-gsq.sh                 # the server on 127.0.0.1:8150 (web chat at /, API at /v1), config local/ds41-local.json
+./run-v41-gsq.sh --port 8151     # extra server arguments are passed straight through
+./run-v41-gsq.sh --config local/ds41-local-2gpu.json    # two cards: the second holds extra experts
+```
+
+`local/ds41-local-2gpu.json` is the same configuration plus `--peer-device 1`: card 1 keeps its own 22 GiB expert
+store (adaptive), and the experts that miss card 0's VRAM but sit there are computed on card 1 instead of the CPU.
+Measured on this box: +13% decode on short prose (before the Q6_K dense half), the same as one card at 25K context
+(14.3 / 15.2 against 15.5 / 13.5 tok/s), so one card is the default. `--peer-device` takes one extra card.
+
+`run-v41-gsq.sh` checks that the model and the Engram tables are in `models/`. Python needs pillow, psutil, regex and jinja2
+(`python3 -m venv .venv && .venv/bin/pip install pillow psutil regex jinja2`). Never expose the server beyond
+`127.0.0.1` without `--api-key`. Loading takes about a minute; then `curl -s http://127.0.0.1:8150/v1/models` answers.
 
 ## Documents
 
