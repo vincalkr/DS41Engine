@@ -1,4 +1,4 @@
-# Upstream llama.cpp fixes ported to our vendored ggml (APPLIED 2026-10-14 - the vendored tree is gitignored: re-apply with `/usr/bin/patch -p1` in third_party/llama.cpp on a fresh checkout)
+# Upstream llama.cpp fixes ported to our vendored ggml (APPLIED 2026-10-14; already in the vendored third_party/llama.cpp/ggml - do not re-apply)
 
 Patch: `tools/v41/ggml/upstream-fixes.patch` — `-p1` relative to `third_party/llama.cpp`.
 Source PRs (ggml-org/llama.cpp):

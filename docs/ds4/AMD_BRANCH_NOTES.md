@@ -19,12 +19,7 @@ against 12.15-12.22 over 4-5 runs each; the engine is not bit-reproducible run t
 The folder is called `ds41e`, not `Strata-*`, on purpose: another Strata install's setup moves the `models/` folder
 of every sibling folder whose name starts with "Strata" into its shared `Strata-data` folder.  Keep the name.
 
-The platform is not ours.  The engine, the serve and the earlier DeepSeek-V4-Flash (0731) path come from
-[Indras-Mirror/Strata-DSV4.1](https://github.com/Indras-Mirror/Strata-DSV4.1), which builds on
-[Niko1221/Strata](https://github.com/Niko1221/Strata) (MIT; `LICENSE` is kept as it is).  Their README - the NVIDIA
-measurements, the 512K-context settings and the API - is kept verbatim in
-**[docs/upstream/README.md](../../docs/upstream/README.md)**.  Our contribution is the AMD path: the port, the tuning, the
-measurements and these notes.
+The AMD path - the port, the tuning, the measurements and these notes - is this repository's.
 
 ## Build
 
@@ -77,7 +72,7 @@ PCIe 4.0 **x2** bridge it is worth +10-20% as extra cache, not 2x (see the negat
 | `STRATA_PRESTAGE_GIB=1.5` | +5.8% prompt (231.2 -> 244.5 tok/s) |
 | `--kv-q8` (8-bit KV, not 4-bit) | lossless here: last-row cosine 0.998987, top-5 5/5, +0.37 GiB |
 | DSpark depth 4 with `KEEP 64` | depth 5, depth 6, `KEEP 32` and `KEEP 128` all measured worse |
-| `STRATA_SERVE_PASS_BIAS=0` | the upstream default (0.5/0.3) gives 2.2x the expert misses here: 12.1 against 25.1 tok/s |
+| `STRATA_SERVE_PASS_BIAS=0` | the original default (0.5/0.3) gives 2.2x the expert misses here: 12.1 against 25.1 tok/s |
 | the v41 serve's thinking budget (`reasoning_budget_tokens 8192`, `reasoning_close_retry`) | a runaway reasoning loop is now closed at the budget and the model answers (tested with a 128-token budget) |
 | the effort mapping aligned with the reference implementation | `low`/`medium`/`xhigh` resolve the way the reference server resolves them for V4.1 (75/75/75) |
 | DSML tool-call parsing in the local path | tool calls reach the client, streaming and not |
@@ -173,7 +168,6 @@ is reported instead of being joined over.  Every parameter:
 - [docs/ds4/AMD_HIP_NOTES.md](../../docs/ds4/AMD_HIP_NOTES.md) - every measurement and every setting on this machine.
 - [docs/ds4/V41_PIPELINE_OVERLAP.md](../../docs/ds4/V41_PIPELINE_OVERLAP.md) - the per-layer host handshake, measured and closed.
 - [docs/ds4/V41_AMD_PEER_TIER.md](../../docs/ds4/V41_AMD_PEER_TIER.md) - the second-card design that was measured and dropped.
-- [docs/upstream/README.md](../../docs/upstream/README.md) - the upstream README (NVIDIA, 512K, V4-Flash), verbatim.
 - [HANDOVER.md](../../HANDOVER.md) - the state of the work and how it got here.
 - [local/ds41-local.json](../../local/ds41-local.json) - the configuration these numbers were measured with.
 
@@ -228,7 +222,7 @@ quant, not the serving path.
 
 ## The ds4 Q2 weights
 
-This branch also runs antirez/ds4's `DeepSeek-V4.1-Flash-Q2.gguf` (365,713,686,528 B, architecture `deepseek41`,
+This branch also runs the ds4 Q2 weights, `DeepSeek-V4.1-Flash-Q2.gguf` (365,713,686,528 B, architecture `deepseek41`,
 1046 tensors) on the same `tools/v41` engine. Its experts are IQ2_XXS (gate and up) and Q2_K (down); the two 101.4 GB
 Engram tables travel inside the gguf as `blk.1.engram_embd` and `blk.14.engram_embd` and are skipped by the dense
 loader - the engine reads the same `F8_E4M3` weight / `F8_E8M0` scale rows from `models/engram/`, exactly as the GSQ

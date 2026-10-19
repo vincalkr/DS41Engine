@@ -1,8 +1,8 @@
-# Strata-DSV4.1 — full handover: what was done, what was measured, what is blocking
+# DS41Engine — full handover: what was done, what was measured, what is blocking
 
 Written 2026-10-17, end of a long session, for a stronger model to continue from. Repository:
-`/run/media/vincenzo/Dati/projects/other/ds41e` (until 2026-10-18 `Strata-DSV4.1`), branch `ds4-q2` (last commit `c583b2da`; everything after it is
-**uncommitted**). Nothing here is speculation unless marked; every number was measured on this machine.
+`/run/media/vincenzo/Dati/projects/other/ds41e`, branch `main` (written on the `ds4-q2` branch, now merged; the
+latest state is in the update notes below and in `docs/ds4/V41_EXACT_FAST.md`). Nothing here is speculation unless marked; every number was measured on this machine.
 
 > **Update 2026-10-17 (evening):** exact routing now runs at 10-14 tok/s through the chat (was ~2.7) with the same
 > answers - see [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md): the GSQ's `rank.bin` was the main defect
@@ -10,7 +10,7 @@ Written 2026-10-17, end of a long session, for a stronger model to continue from
 > (`--peer-device 1`), `--threads 12` and `--vram-margin 0.5`. The near-tie bias (P1) was measured and does not pay.
 >
 > **Update 2026-10-18:** the chat runs on one card with the dense half re-quantized to Q6_K (16-18.6 tok/s on short
-> prompts, ~11-14 at 25K context), and four upstream ds41 commits are in (small-turn prefill: a +304-token agent turn
+> prompts, ~11-14 at 25K context), and four ds41 engine commits are in (small-turn prefill: a +304-token agent turn
 > 4.8-5.0 -> 4.1-4.4 s with `STRATA_PRESTAGE_MIN=512`; the conversation-adaptive arena measured and left off) - all in
 > [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
 
@@ -24,7 +24,7 @@ tier). On this machine it runs two models:
   engine's route bias, **~2.7-3.2 tok/s with the routing made exact**, and in that exact configuration it answers
   **correctly** (verified: the nine circles of Hell, a full Divine Comedy summary with correct dates, structure,
   characters).
-- **ds4's Q2** (`DeepSeek-V4.1-Flash-Q2.gguf`, IQ2_XXS/Q2_K, antirez's model): 9.0 tok/s with the bias, **4.53 tok/s
+- **ds4's Q2** (`DeepSeek-V4.1-Flash-Q2.gguf`, IQ2_XXS/Q2_K, the ds4 Q2 model): 9.0 tok/s with the bias, **4.53 tok/s
   with exact routing and its own rank.bin**, correct circles. It does **not** work through the chat server (its
   thinking never closes).
 

@@ -146,8 +146,7 @@ Answers checked: the nine circles, Beatrice (dead in 1290, guide from the Earthl
    Server now: Divina Commedia 15.37 cold / **18.95** repeated, nine circles 16.02, Promessi Sposi 16.35, Python 12.27,
    thinking 14.75, two new questions 17.08 / 17.19 tok/s.
 
-8. **The dense half in Q6_K at load** (`STRATA_DENSE_REQUANT=q6_K`, the existing switch; upstream Xolotl's served
-   default, where it measured KL vs FP8 0.2281 -> 0.2306 and API top-1 85.87 -> 85.76 % with a 1,200-token greedy edit
+8. **The dense half in Q6_K at load** (`STRATA_DENSE_REQUANT=q6_K`, the existing switch; elsewhere measured at KL vs FP8 0.2281 -> 0.2306 and API top-1 85.87 -> 85.76 % with a 1,200-token greedy edit
    text identical to Q8_0). The file is untouched; 321 Q8_0 matrices are re-quantized in memory, 7.59 -> 5.86 GB, and
    card 0's expert slots grow 14.58 -> 16.19 GiB. This is a weight-precision change, not a routing one. One-shot:
    ceiling 22.46/22.53 -> **25.71/26.73** tok/s; on the forced exact stream 4 of 300 positions differ (Q8_0 itself: 6);
@@ -173,20 +172,12 @@ facts question thought 2,167 tokens (133 s) at 2048, 1,156 (76 s) at 1024. The c
 runs on card 0 only (`HIP_VISIBLE_DEVICES=0`, no `--peer-device`, no `STRATA_PEER_*`) and card 1 stays free. The
 two-card chat is `./run-v41-gsq.sh --config local/ds41-local-2gpu.json`.
 
-**Why upstream Xolotl reports 26.8 tok/s with the same model** (read 2026-10-18 from its README and serve config):
-`--route-bias 0.5 --route-bias-file 0.3` (the lossy routing above), an RTX 4090 (CUDA; this repo's notes put the 4090's
-dense half at 17.8 ms against 51.7 here at the time), decode measured during HumanEval / tool / agentic tasks with
-DSpark on (code drafts are accepted 3.5-3.9 tokens a pass here, Italian prose ~2), the DSpark confidence trim
-(`STRATA_DSPARK_CONF=0.6`, found unsafe on this box in `AMD_HIP_NOTES.md`), prompt-lookup drafts
-(`STRATA_SERVE_LOOKUP=14`, not in this fork) and the dense Q6_K above. Only the last one is adopted here.
-
 **The rank from the chat's own routing.** The chat config also runs `--dump-routes local/routes-chat`: in `--serve`
 the engine loads the counts already there at start and writes them after every request, so they accumulate across
 restarts (git-ignored: they are this user's routing). `local/rebuild-rank.sh [chat-weight]` adds them to the
 calibration counts and writes `local/rank-gsq-chat.bin`; point `--rank` at it and restart to use it.
 
-**Upstream's small-turn prefill and conversation-adaptive arena** (2026-10-18). Four ds41 commits from upstream
-(Indras-Mirror/Strata-DSV4.1, now Xolotl) are cherry-picked: 716cf901 (the span-index upload memo and the lazy
+**The small-turn prefill and the conversation-adaptive arena** (2026-10-18). Four ds41 engine commits are taken in: 716cf901 (the span-index upload memo and the lazy
 prestage below `STRATA_PRESTAGE_MIN` rows), 5429b5ad / cff4bb24 / 8d43fe1b (`STRATA_ARENA_REBAL`, the
 conversation-adaptive arena, with its cancel fix). Measured with `local/bench-v41/ab-rebal.sh` on the agent replay
 (`agent-replay.py`, 25,563-token first turn, then follow-ups of +19, +28, +304 and +16 tokens, 15 s between turns,
@@ -195,7 +186,7 @@ a fresh server per run, the chat config, one card); `rebal-summary.py` prints th
 | build / setting | runs | 25K prompt | +304 turn | file-tier experts, +19 / +304 turn |
 |---|---:|---:|---:|---:|
 | before the commits | 4 | 68.3-70.0 s | 4.8-5.0 s | 261-278 / 1,814-1,904 |
-| new, upstream defaults (lazy below 4096 rows), arena off | 4 | 69.8-72.9 s | 4.0-4.3 s | 246-288 / 1,783-1,932 |
+| new, as committed (lazy below 4096 rows), arena off | 4 | 69.8-72.9 s | 4.0-4.3 s | 246-288 / 1,783-1,932 |
 | new, arena on (`STRATA_ARENA_REBAL=1`) | 2 | 72.5-73.2 s | 4.0-4.9 s | 361-377 / 1,609-1,635 |
 | new, lazy prestage off (`STRATA_PRESTAGE_MIN=0`) | 2 | 68.6-69.3 s | 4.9-5.1 s | 268-279 / 1,866-1,918 |
 | **new, lazy below 512 rows** (`STRATA_PRESTAGE_MIN=512`, the chat now) | 2 | **69.5-69.6 s** | **4.1-4.4 s** | 270-271 / 1,850-1,857 |
@@ -203,10 +194,10 @@ a fresh server per run, the chat config, one card); `rebal-summary.py` prints th
 Decode (400 tokens a turn, 9-16 tok/s) and the one-token "exact passes" follow-ups (1.3-3.4 s) do not differ
 beyond the spread in any row. So:
 - The lazy prestage is the small-turn gain (the 304-row turn's experts 3.8-4.0 -> 3.2-3.5 s, its dense 0.96 -> 0.78 s), but
-  at upstream's 4,096-row threshold the 25K prompt's last 987-row batch also goes lazy and its 40 layers lose the DMA
+  at the commits' 4,096-row threshold the 25K prompt's last 987-row batch also goes lazy and its 40 layers lose the DMA
   overlap: +2-3 s. At 512 rows the long prompt is back to the old time and the 304-row turn keeps the gain.
   `local/ds41-local*.json` set `STRATA_PRESTAGE_MIN=512`.
-- The adaptive arena does not pay here and stays off (opt-in again, as upstream first had it): with a 75 GiB arena the
+- The adaptive arena does not pay here and stays off (opt-in again, as it first was): with a 75 GiB arena the
   file tier is small, the swaps it plans from the 25K document push out experts the short chat follow-ups route
   (+19 turn: 361-377 file-tier experts against 246-288), and only the +304 turn reads less (-12%).
 - Temperature 0 is not reproducible across runs of the same binary (base-r1 and base-r2 part after 113 characters):

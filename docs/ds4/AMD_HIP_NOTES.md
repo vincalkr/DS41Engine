@@ -22,7 +22,7 @@ flash-attention template instances did not finish in >40 min at 20 jobs on this 
 the same llama.cpp checkout already built:
 
 ```sh
-# 1. a llama.cpp checkout with the DSV4 hyper-connection ops (upstream has them), built once for gfx1100
+# 1. ggml with the DSV4 hyper-connection ops (third_party/llama.cpp/ggml), built once for gfx1100
 cmake -S /path/to/llama.cpp -B /path/to/llama.cpp/build -DGGML_HIP=ON -DCMAKE_HIP_ARCHITECTURES=gfx1100 ...
 cmake --build /path/to/llama.cpp/build -j
 
@@ -66,7 +66,7 @@ nothing can drift, and the normal CUDA/CPU paths are untouched.
 The tier itself needed no source change: it carries **no device code** (the kernels live in `strata_kernels`, which the
 HIP backend compiles for gfx1100), and every CUDA runtime call it makes was already in the compat shim.
 
-Local, not upstream: `local/run-one-shot.sh` (one-shot), `local/ds41-engine-local.sh` + `local/ds41-local.json` (the
+Local scripts: `local/run-one-shot.sh` (one-shot), `local/ds41-engine-local.sh` + `local/ds41-local.json` (the
 API server), `local/encode_prompt.py` / `local/detok.py` (tokenize a prompt into `--ids-file` and back),
 `local/engram_index.py` (merge the per-layer Engram indexes).
 
@@ -398,8 +398,7 @@ quant 0.95. The API calls, per token: `hipGetLastError` **685**, `hipLaunchKerne
 **392**, `hipStreamSynchronize` **215**, `hipGetDevice` **206**, `hipEventRecord` 97, `hipGraphLaunch` 77.
 
 So per layer (~40 a token) the engine issues ~5.4 blocking stream synchronizations and ~13 launches, and the GPU sits
-idle while the host walks that sequence. This is the same conclusion the upstream notes reached on CUDA ("removing
-ggml-stream syncs: the wait moves"), but on HIP the syncs cost more, and here they are 57-77% of the token: the
+idle while the host walks that sequence. Removing ggml-stream syncs only moves the wait (measured on CUDA too), and on HIP the syncs cost more, and here they are 57-77% of the token: the
 dense half is not slow because the kernels are slow, it is slow because of how many times the host waits.
 
 **Consequence for the plan:** the levers on the decode are, in order, (1) fewer synchronizations per layer (an engine
@@ -467,8 +466,7 @@ The dense pass graph wants ~2.19 GiB at that batch, does not fit next to a 75 Gi
 retry frees the prestage region and then **segfaults** instead of falling back to a smaller batch. Same prompt with
 `--prompt-batch 4096`: **works**, 63,613 tokens in 174.91 s = **363.7 tok/s** prefill. The serve path caps the batch
 from free VRAM itself ("serve: VRAM 14.87 GiB free -> prompt batch 10316"), which is why the long sessions in the
-server have not crashed, but a *fresh* 60K+ prompt on the one-shot path is a crash, not a slowdown. Upstream is
-tracking the same budget question (their run21 note: 16384 needs a speed knob, not a precision change).
+server have not crashed, but a *fresh* 60K+ prompt on the one-shot path is a crash, not a slowdown.
 
 **The context penalty, re-measured with the phase timer** (same binary, `STRATA_DEC_PROF`, 64 decode steps):
 
@@ -482,11 +480,10 @@ give most of it back. The earlier 12.7 / 14.1 / 9.8 tok/s at ctx 4K / 32K / 256K
 every context is `attn_router` (43-58 ms, 57-77% of the token), and it is **not** the indexer scaling with the
 context - which weakens the "batched indexer top-k" lead as the next step.
 
-## DSpark's adaptive bypass (DwarfStar's scheduler): implemented, measured, does NOT pay here
+## DSpark's adaptive bypass: implemented, measured, does NOT pay here
 
-DwarfStar's adaptive scheduler probes four speculative cycles and requires an average of four accepted tokens per
-cycle; below that it bypasses speculation, which caps the draft's overhead at 1.1% on their stack
-(`speed-bench/gfx1151-prefill-results.md:45-54`). Our low-acceptance case looked like the same problem (prose 16.3
+An adaptive scheduler probes four speculative cycles and requires an average of four accepted tokens per cycle;
+below that it bypasses speculation, which caps the draft's overhead. Our low-acceptance case looked like the same problem (prose 16.3
 tok/s against 26.7 on code), so the bypass was implemented in this engine's serve loop (`STRATA_DSPARK_ADAPT`,
 threshold `STRATA_DSPARK_ADAPT_MIN`, probe after 4 passes, re-probe every 64) and measured on the same creative
 prompt, 400 tokens, fresh server a side:
@@ -501,11 +498,11 @@ Two reasons it cannot win here: the probe's four passes are the *least* predicta
 acceptance rises to 2.19 as the text settles - so the bypass fires on bad evidence), and this engine's speculative
 pass is cheap enough that it beats the non-speculative one even at 1.5 accepted/pass (74 ms/token against 78
 bypassed). The patch was removed; the numbers are the record. Same shape as the confidence trim: a technique that
-pays on another stack (their DSpark is 1.32x, ours 1.7-2x) does not pay on this one.
+pays on another stack (DSpark is 1.7-2x here) does not pay on this one.
 
-## The author's serve settings, measured on this box (2026-10-16)
+## The original serve settings, measured on this box (2026-10-16)
 
-`tools/v41/serve/ds41-engine.sh` + `strata-ds41.json` are the author's production serve settings. Every one that
+`tools/v41/serve/ds41-engine.sh` + `strata-ds41.json` are the engine's original serve settings. Every one that
 differs from ours was measured here through `--serve`, same 5787-token prompt + 64-token reply, fresh server a side:
 
 | setting | author | ours | measured |

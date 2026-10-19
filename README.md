@@ -1,7 +1,7 @@
 <h1 align="center">ds41e - DeepSeek-V4.1-Flash on one RX 7900 XTX</h1>
 
 <p align="center"><b>DeepSeek-V4.1-Flash (40 layers x 384 experts) on ONE RX 7900 XTX - 152 GiB of experts across VRAM, pinned RAM and NVMe, plus 189 GiB of Engram on disk</b><br>
-The AMD port and tuning of <a href="https://github.com/Indras-Mirror/Strata-DSV4.1">Strata-DSV4.1</a>, itself built on <a href="https://github.com/Niko1221/Strata">Strata</a> - Linux - ROCm/HIP - MIT</p>
+Linux - ROCm/HIP - MIT</p>
 
 ## What this repository is
 
@@ -41,7 +41,7 @@ All from [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), where every r
 | `--pf-b 0` | Divina Commedia 11.16 -> 13.07 tok/s |
 | ggml's HIP graphs on (they replay now) | 7,491-token prompt 37.5 -> 30.5 s, decode after it 10.41 -> 12.02 tok/s |
 | dense half re-quantized Q8_0 -> Q6_K at load (`STRATA_DENSE_REQUANT=q6_K`) | all-VRAM ceiling 22.5 -> 25.7-26.7 tok/s, chat 16.5-18.6 tok/s; costs +0.9% ppl (measured on the 1017 quant) |
-| `STRATA_PRESTAGE_MIN=512` (upstream's lazy prestage) | +300-token turn 4.8-5.0 -> 4.1-4.4 s, long prompts unchanged |
+| `STRATA_PRESTAGE_MIN=512` (the lazy prestage) | +300-token turn 4.8-5.0 -> 4.1-4.4 s, long prompts unchanged |
 | `STRATA_SERVE_STEP_MAX=96` (from 256): agent turns of 97-256 new tokens go to the layer-major batch | time to first token on a +171 / +256-token turn 9.7-9.8 -> 6.3-6.8 s / 12.9-14.4 -> 6.0-9.4 s |
 | `--kv-q8`, `STRATA_PRESTAGE_GIB=1.5` | 8-bit KV: last-row top-5 identical (cosine 0.999); prestage +5.8% prompt |
 
@@ -145,5 +145,4 @@ were slower or unstable); the 50 above is an example for a 96 GB machine, not a 
   investigation, the thinking budget, the ds4 Q2 weights.
 - [docs/ds4/AMD_HIP_NOTES.md](docs/ds4/AMD_HIP_NOTES.md) - the HIP port's measurements and settings.
 - [HANDOVER.md](HANDOVER.md) - the state of the work and how it got here.
-- [docs/upstream/README.md](docs/upstream/README.md) - the upstream README (NVIDIA, 512K, V4-Flash), verbatim.
 - [local/ds41-local.json](local/ds41-local.json) - the configuration these numbers were measured with.

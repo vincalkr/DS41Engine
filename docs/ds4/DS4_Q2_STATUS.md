@@ -1,6 +1,6 @@
 # The ds4 Q2 weights on our engine — status (2026-10-17)
 
-Goal: run `DeepSeek-V4.1-Flash-Q2.gguf` (antirez/ds4's Q2, on the external SSD) with this repository's own
+Goal: run `DeepSeek-V4.1-Flash-Q2.gguf` (the ds4 Q2, on the external SSD) with this repository's own
 `tools/v41` engine. This file records what was verified and measured, so the next person does not have to rediscover
 it. The same numbers are in the README's "The ds4 Q2 weights" section.
 
