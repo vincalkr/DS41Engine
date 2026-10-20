@@ -1,5 +1,5 @@
-# Python packages for the server (run-v41-gsq.sh) and the tools in local/:  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-# The download (local/fetch-model.sh) and the Engram extraction need only python3's standard library.
+# Python packages for the server (run.sh) and the tools in local/:  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# The download (local/fetch-model.sh) needs only python3; the Engram extraction (local/ds4-engram-extract.py) needs numpy.
 pillow==12.3.0
 psutil==7.2.2
 regex==2026.9.29

@@ -14,7 +14,7 @@
 # 4. the decision is appended to local/sweep-1017/summary.txt.
 #
 # A running server (127.0.0.1:8150) is stopped for the measurement and started again afterwards with
-# ./run-v41-gsq.sh (the default configuration); NO_RESTART=1 leaves it stopped.  Env: ROUTES, REPS, CHAT_WEIGHT (the
+# ./run.sh (the default configuration); NO_RESTART=1 leaves it stopped.  Env: ROUTES, REPS, CHAT_WEIGHT (the
 # chat's weight against the corpus, default 1).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -42,8 +42,8 @@ if pgrep -f "[d]s41_generate --serve" >/dev/null; then
 fi
 restart() {
     if [ "$was_running" = 1 ] && [ -z "${NO_RESTART:-}" ]; then
-        say "starting the server again (./run-v41-gsq.sh)"
-        setsid ./run-v41-gsq.sh > local/serve-restart.log 2>&1 < /dev/null &
+        say "starting the server again (./run.sh)"
+        setsid ./run.sh > local/serve-restart.log 2>&1 < /dev/null &
     fi
 }
 trap restart EXIT

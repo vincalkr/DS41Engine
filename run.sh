@@ -1,7 +1,7 @@
 #!/bin/sh
-# DeepSeek-V4.1-Flash (GSQ) on two RX 7900 XTX (gfx1100, ROCm/HIP); one card: ./run-v41-gsq-1gpu.sh.
+# DeepSeek-V4.1-Flash (GSQ) on two RX 7900 XTX (gfx1100, ROCm/HIP); one card: ./run-1gpu.sh.
 # The model layout, the settings and the measured numbers: local/ds41-local.json and docs/ds4/.
-# Extra arguments are passed to the server, for example:  ./run-v41-gsq.sh --port 8151
+# Extra arguments are passed to the server, for example:  ./run.sh --port 8151
 # The repository root is wherever this script lives, so the launcher works from a clone anywhere.
 R=$(cd "$(dirname "$0")" && pwd) || exit 1
 cd "$R" || exit 1
@@ -20,12 +20,12 @@ for cand in "${STRATA_PY:-}" "$R/.venv/bin/python" "$(command -v python3)" "$R/v
     if "$cand" -c 'import PIL, psutil, regex, jinja2' 2>/dev/null; then PY="$cand"; break; fi
 done
 if [ -z "$PY" ]; then
-    echo "run-v41-gsq.sh: no python with pillow, psutil, regex and jinja2 found." >&2
+    echo "run.sh: no python with pillow, psutil, regex and jinja2 found." >&2
     echo "  make one:        python3 -m venv .venv && .venv/bin/pip install pillow psutil regex jinja2" >&2
-    echo "  or point at one: STRATA_PY=/path/to/python ./run-v41-gsq.sh" >&2
+    echo "  or point at one: STRATA_PY=/path/to/python ./run.sh" >&2
     exit 1
 fi
-echo "run-v41-gsq.sh: STRATA_HOME=$STRATA_HOME, python $PY"
+echo "run.sh: STRATA_HOME=$STRATA_HOME, python $PY"
 
 # The model files the configuration names (-m, --engram, its tokenizer) must be there.  --config in the arguments
 # replaces the default, as the server takes the last one.
@@ -46,7 +46,7 @@ for p in need:
 EOF
 )
 if [ -n "$missing" ]; then
-    echo "run-v41-gsq.sh: missing for $CFG:" >&2
+    echo "run.sh: missing for $CFG:" >&2
     echo "$missing" | sed 's/^/  /' >&2
     echo "fetch the model first - see the README, '1. Get the model files'." >&2
     exit 1

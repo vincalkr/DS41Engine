@@ -1,15 +1,15 @@
 # AGENTS.md
 
-ds41e runs DeepSeek-V4.1-Flash on an AMD RX 7900 XTX (ROCm/HIP), a second 24 GB card as an expert tier, system RAM
+ds41e runs DeepSeek-V4.1-Flash-1017 (antirez/ds4's Q2) on an AMD RX 7900 XTX (ROCm/HIP), a second 24 GB card as an expert tier, system RAM
 and NVMe: a C++/HIP engine (`tools/v41/engine`, with the few Strata libraries it links in `src/` and `include/`), an
 OpenAI- and Anthropic-compatible server with a web app (`serve/`, started through `tools/v41/serve/serve_ds41.py` by
-`./run-v41-gsq.sh`), and the configurations, tools and measurements in `local/`, `tools/v41/` and `docs/ds4/`.
+`./run.sh`), and the configurations, tools and measurements in `local/`, `tools/v41/` and `docs/ds4/`.
 It holds DeepSeek only: the Qwen engine, its installer and the other models' code were removed on 2026-10-18.
 
 ## Running it
 
-- `./run-v41-gsq.sh` starts the server on `127.0.0.1:8150` with `local/ds41-local.json` (two cards, the same as
-  `local/ds41-local-2gpu.json`; `./run-v41-gsq-1gpu.sh` for one card). Never expose it beyond `127.0.0.1`
+- `./run.sh` starts the server on `127.0.0.1:8150` with `local/ds41-local.json` (two cards, the same as
+  `local/ds41-local-2gpu.json`; `./run-1gpu.sh` for one card). Never expose it beyond `127.0.0.1`
   without `--api-key`.
 - The model files live in `models/` inside this folder (`local/fetch-model.sh` puts them there); keep it that way.
   The default model (2026-10-20) is DeepSeek-V4.1-Flash-1017 as antirez/ds4's Q2 (`models/ds4-1017`, Engram in
@@ -20,7 +20,7 @@ It holds DeepSeek only: the Qwen engine, its installer and the other models' cod
 
 ## Working on the code
 
-- From zero: `.venv` from `requirements.txt`, `local/fetch-model.sh`, `./build.sh`, `./run-v41-gsq.sh` (README,
+- From zero: `.venv` from `requirements.txt`, `local/fetch-model.sh`, `./build.sh`, `./run.sh` (README,
   "Quick start"). The build is HIP only: ggml from the vendored `third_party/llama.cpp/ggml` (its changes also kept
   as patches in `tools/v41/ggml/`) into `third_party/llama.cpp/build-hip`, then the engine into `build-hip-fused`.
 - Server tests: `.venv/bin/python -m unittest discover -s serve -p "test_*.py" -t .` (no GPU or model needed).

@@ -1,21 +1,19 @@
 #!/bin/sh
-# local/rebuild-rank.sh - rebuild the GSQ's rank from the calibration corpus plus what the chat has routed.
+# local/rebuild-rank.sh - rebuild the expert rank from the calibration corpus plus what the chat has routed.
 #
 #   local/rebuild-rank.sh [chat-weight]      (default 1: one chat selection counts as one corpus selection)
 #
-# The chat config runs the engine with --dump-routes local/routes-chat: the server adds every (layer, expert)
-# selection it routes and writes local/routes-chat/LNN.json after each request (the counts survive restarts).
-# This script sums those counts (times chat-weight) with local/calib-q2/stats-merged, ranks the sum with the GSQ's
-# per-expert sizes (local/gsq-alloc-map.json) and writes local/rank-gsq-chat.bin.  The chat config reads
-# local/rank-gsq-mixed.bin: to use the new rank, point --rank at the new file (or copy it over) and restart.
-# The ds4 1017 Q2 (the default model since 2026-10-20; one blob size, so no map):
-#   ROUTES=local/routes-1017 MAP= OUT=local/rank-1017.bin local/rebuild-rank.sh
+# The default configuration runs the engine with --dump-routes local/routes-1017: the server adds every (layer,
+# expert) selection it routes and writes LNN.json there after each request (the counts survive restarts).  This
+# script sums those counts (times chat-weight) with local/calib-q2/stats-merged, ranks the sum and writes
+# local/rank-1017.bin.  It does not apply it: local/update-rank.sh measures it against the rank in use and applies it
+# only if faster.  ROUTES, MAP (per-expert sizes, for a mixed-size quant) and OUT override the defaults.
 set -eu
 cd "$(dirname "$0")/.."
 W="${1:-1}"
-ROUTES="${ROUTES:-local/routes-chat}"
-MAP="${MAP-local/gsq-alloc-map.json}"
-OUT="${OUT:-local/rank-gsq-chat.bin}"
+ROUTES="${ROUTES:-local/routes-1017}"
+MAP="${MAP-}"
+OUT="${OUT:-local/rank-1017.bin}"
 STATS="${OUT%.bin}.stats"
 [ -f "$ROUTES/L00.json" ] || { echo "no chat routes yet in $ROUTES (start the chat, use it)" >&2; exit 1; }
 python3 - "$W" "$ROUTES" "$STATS" <<'EOF'

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# local/run-one-shot.sh - one-shot DeepSeek-V4.1-Flash GSQ run on THIS machine (AMD gfx1100, 2x RX 7900 XTX, 128 GiB RAM).
+# local/run-one-shot.sh - one-shot DeepSeek-V4.1-Flash-1017 (ds4 Q2) run on THIS machine (AMD gfx1100, 2x RX 7900 XTX, 128 GiB RAM).
 #
 #   local/run-one-shot.sh --ids 1,2,3 -n 16 [extra ds41_generate args...]
 #   local/run-one-shot.sh --ids-file local/prompts/code_review.i32 -n 96
@@ -13,8 +13,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-MODEL="${MODEL:-$PWD/models/V41-GSQ/V41-GSQ.gguf}"
-RANK="${RANK:-$PWD/models/V41-GSQ/rank.bin}"
+MODEL="${MODEL:-$PWD/models/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"
+RANK="${RANK:-$PWD/local/rank-q2.bin}"
 EXE="${EXE:-$PWD/build-hip-pre/ds41_generate}"
 ARENA="${ARENA_GIB:-60}"
 THREADS="${THREADS:-$(nproc)}"
@@ -32,7 +32,7 @@ if [ "$EXPERTS" = cpu ]; then
 fi
 
 [ -x "$EXE" ] || { echo "run-one-shot: $EXE missing - build it: make -C build-hip-pre -j$(nproc) ds41_generate" >&2; exit 1; }
-[ -f "$MODEL" ] || { echo "run-one-shot: $MODEL missing - join the parts (models/V41-GSQ/reassemble.sh)" >&2; exit 1; }
+[ -f "$MODEL" ] || { echo "run-one-shot: $MODEL missing - run local/fetch-model.sh" >&2; exit 1; }
 
 exec "$EXE" -m "$MODEL" \
     --backend cuda --experts "$EXPERTS" \

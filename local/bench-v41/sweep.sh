@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# local/bench-v41/sweep.sh OUTDIR PROMPT N TAG "ENV=.." [args...] - one greedy one-shot run of the GSQ engine.
+# local/bench-v41/sweep.sh OUTDIR PROMPT N TAG "ENV=.." [args...] - one greedy one-shot run of the engine (the ds4 1017 Q2 by default).
 # If OUTDIR/ref-PROMPTNAME.ids exists the run is FORCED on it (STRATA_FORCE_IDS + STRATA_DEC_MARGIN, unless NOFORCE=1):
 # same text, so the speed is comparable, and the "margin:" lines count where this variant's argmax differs.
-# Env: Q2 (model, default the GSQ), RANK, ARENA (GiB, 90), THREADS (12), PIN (taskset cpu list).
+# Env: Q2 (model, default the ds4 1017 Q2), RANK, ENGRAM, ARENA (GiB, 90), THREADS (12), PIN (taskset cpu list).
 set -u
 cd "$(dirname "$0")/../.."
 OUT=$1 PROMPT=$2 N=$3 TAG=$4 ENVS=$5; shift 5
-Q2="${Q2:-models/V41-GSQ/V41-GSQ.gguf}"
-RANK="${RANK:-local/rank-gsq-mixed.bin}"
+Q2="${Q2:-models/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"
+RANK="${RANK:-local/rank-q2.bin}"
+ENGRAM="${ENGRAM:-models/engram-1017/layers14:models/engram-1017/layers1}"
 ARENA="${ARENA:-90}"
 PY=/run/media/vincenzo/Dati/projects/other/Strata/.venv/bin/python
 mkdir -p "$OUT" ~/.quetza-data/conductor
@@ -18,7 +19,7 @@ force=""
 o="$OUT/$pn-$TAG"
 env $force $ENVS bash tools/ds4/memguard.sh 110 82 -- ${PIN:+taskset -c $PIN} ./build-hip-fused/ds41_generate -m "$Q2" \
   --ids-file "$PROMPT" -n "$N" --temp 0 --backend cuda --experts gpu --arena-gib "$ARENA" --ctx 8192 --kv-q8 \
-  --threads "${THREADS:-12}" --rank "$RANK" --engram models/engram/layers14:models/engram/layers1 --arena-skip-vram "$@" > "$o.out" 2>&1
+  --threads "${THREADS:-12}" --rank "$RANK" --engram "$ENGRAM" --arena-skip-vram "$@" > "$o.out" 2>&1
 grep -E '^[0-9]+$' "$o.out" > "$o.ids"
 [ -s "$ref" ] || cp "$o.ids" "$ref"
 "$PY" local/detok.py < "$o.ids" > "$o.txt" 2>/dev/null

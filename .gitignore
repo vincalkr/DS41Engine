@@ -47,8 +47,8 @@ td.log
 /mtp/
 /run-*.bat
 /run-*.sh
-!/run-v41-gsq.sh
-!/run-v41-gsq-1gpu.sh
+!/run.sh
+!/run-1gpu.sh
 /strata-*.json
 /strata-*.log
 /build-strata.bat
@@ -88,7 +88,7 @@ build-vision-cuda12.bat
 /.run/
 
 # our launcher is part of this branch (the run-*.sh files the setup generates are not)
-!/run-v41-gsq.sh
+!/run.sh
 /local/calib-q2/stats/
 /local/calib-q2/stats-corpus/
 /local/calib-q2/stats-circles/

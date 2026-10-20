@@ -9,7 +9,7 @@ in public are welcome as an issue or a pull request.
 
 ## What the server exposes
 
-The server runs the model on your PC and serves it over HTTP (`serve/server.py`, started by `./run-v41-gsq.sh`).
+The server runs the model on your PC and serves it over HTTP (`serve/server.py`, started by `./run.sh`).
 Out of the box it is reachable from this PC only.
 
 - **Where it listens.** `127.0.0.1` by default. `--host 0.0.0.0` (or `"host"` in the run config, `local/ds41-local.json`) opens it to

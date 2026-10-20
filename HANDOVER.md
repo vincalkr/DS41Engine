@@ -19,6 +19,13 @@ latest state is in the update notes below and in `docs/ds4/V41_EXACT_FAST.md`). 
 > NVMe reads -42%, decode +11% / +9% on short prose / 17K context against two cards without them; card 0 waits
 > ~0.1 ms per layer on card 1 (`STRATA_PEER_PROF=1`). Numbers in [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
 
+>
+> **Update 2026-10-20 (evening):** the model is now DeepSeek-V4.1-Flash-1017 as antirez/ds4's Q2 (`models/ds4-1017`,
+> Engram tables extracted from its GGUF into `models/engram-1017`), started with `./run.sh` (`./run-1gpu.sh` for one
+> card; the old `run-v41-gsq*.sh` names are gone). Quality and speed in
+> [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), "The ds4 1017 Q2 as the model". What follows below is
+> the history of the September GSQ.
+
 ## 0. TL;DR
 
 The stack is a fork of **Strata** (a Qwen3.8-oriented server + C++/HIP engine) with a v41 (DeepSeek-V4.1) shim and a

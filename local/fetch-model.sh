@@ -82,4 +82,4 @@ if [ "$(size "$ENG/layers1/engram-L1.safetensors")" -gt 100000000000 ] && [ "$(s
 elif [ "$DRY_RUN" != 1 ]; then
   "$PY" "$HERE/local/ds4-engram-extract.py" "$Q2/$Q2_FILE" "$ENG"
 fi
-say "=== done: ./run-v41-gsq.sh starts the server on it (local/ds41-local.json)"
+say "=== done: ./run.sh starts the server on it (local/ds41-local.json)"

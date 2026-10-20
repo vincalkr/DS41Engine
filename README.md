@@ -1,6 +1,6 @@
-<h1 align="center">ds41e - DeepSeek-V4.1-Flash on one RX 7900 XTX</h1>
+<h1 align="center">ds41e - DeepSeek-V4.1-Flash-1017 on RX 7900 XTX</h1>
 
-<p align="center"><b>DeepSeek-V4.1-Flash-1017 (40 layers x 384 experts, antirez/ds4's Q2) on RX 7900 XTX cards - 152 GiB of experts across VRAM, pinned RAM and NVMe, plus 189 GiB of Engram on disk</b><br>
+<p align="center"><b>DeepSeek-V4.1-Flash-1017 (40 layers x 384 experts, antirez/ds4's Q2) on two RX 7900 XTX - 152 GiB of experts across VRAM, pinned RAM and NVMe, plus 189 GiB of Engram on disk</b><br>
 Linux - ROCm/HIP - MIT</p>
 
 ## What this repository is
@@ -8,33 +8,35 @@ Linux - ROCm/HIP - MIT</p>
 The DeepSeek-V4.1-Flash engine (`tools/v41/engine`), its OpenAI- and Anthropic-compatible server and web app
 (`serve/`, `tools/v41/serve/serve_ds41.py`), and the configurations, tools and measurements for running it on
 RX 7900 XTX cards with the model's own routing (`--route-bias 0`: every expert the model picks, wherever it lives).
+The model is DeepSeek-V4.1-Flash-1017 as [antirez/ds4](https://github.com/antirez/ds4)'s Q2
+(`DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf`: IQ2_XXS gate/up, Q2_K down, imatrix-calibrated).
 
 ## The machine, and what it does
 
-RX 7900 XTX (24 GB), Ryzen 9 9900X (12 cores), 122 GiB RAM, a PCIe 5.0 NVMe, ROCm 7.14. The table below is one card
-and the September GSQ quant (152 GiB of experts, the model until 2026-10-20); the default configuration also uses a
-second 24 GB card as an extra expert tier, and one card works too (see "Quick start", step 3).
+Two RX 7900 XTX (24 GB each), Ryzen 9 9900X (12 cores), 122 GiB RAM, a PCIe 5.0 NVMe, ROCm 7.14, `local/power-tune.sh
+on`; the default configuration (two cards, exact routing). Measured 2026-10-20:
 
-| through the server, exact routing | |
+| | |
 | --- | ---: |
-| decode, short chat prompts (Divina Commedia, nine circles, Promessi Sposi) | 16.5-18.6 tok/s |
-| decode, thinking on | 16.4 tok/s |
-| decode, agent sessions at 18-41K context | 10-12 tok/s |
-| prompt, 25K tokens fresh | ~370 tok/s |
-| prompt, a +300-token agent turn on 27K | 4.1-4.4 s |
+| server: decode, a short chat answer (the nine circles) | 18.5 tok/s |
+| server: decode in an agent session at ~120K context (answers of 188, 1,024 and 3,969 tokens) | 16.1-17.4 tok/s |
+| server: prompt, a +497-token agent turn on 121K context (the rest reused) | 7.5 s |
+| one-shot: decode on Promessi Sposi, 5 runs | 18.76 tok/s (16.44-19.95) |
+| one-shot: decode at 17K context, 5 runs | 14.37 tok/s (13.96-14.61) |
 
-The default model since 2026-10-20 is **DeepSeek-V4.1-Flash-1017 as antirez/ds4's Q2** (`models/ds4-1017`): against
-the 1017 FP8 on Lucebox's held-out set (8 x 1024 tokens) ppl 9.78 (FP8 8.56), top-1 78.8%, KL 0.269, where lxe's 2-bit
-1017 quant scored 11.73 / 70.9% / 0.488. Two cards with `local/power-tune.sh on`, one-shot, 5 runs each: **14.37 tok/s
-at 17K context** (the GSQ: 13.63) and 18.76 on Promessi Sposi (the GSQ: 17.70; another model, so another text).
+Quality against the 1017 FP8 on Lucebox's held-out set (8 x 1024 tokens): ppl 9.78 (FP8 8.56), top-1 agreement 78.8%,
+KL 0.269 (lxe's 2-bit 1017 quant: 11.73 / 70.9% / 0.488). One card works too (`./run-1gpu.sh`), without the second
+card's expert tier.
 
 ## What made it fast, each with what it was worth
 
-All from [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), where every row is measured.
+All from [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), where every row is measured. The rows up to the
+second card were measured on the model before 2026-10-20 (the September checkpoint as a GSQ quant, the same expert
+sizes); the settings carry over to the current one.
 
 | change | measured effect |
 | --- | --- |
-| a `rank.bin` from the model's own routing (`local/rank-gsq-mixed.bin`) | Divina Commedia 2.83-3.36 -> 5.86 tok/s (the GSQ's own rank covered 11.5% of the VRAM head) |
+| a `rank.bin` from the model's own routing (today `local/rank-q2.bin`) | Divina Commedia 2.83-3.36 -> 5.86 tok/s (the quant's shipped rank covered 11.5% of the VRAM head) |
 | `--arena-adapt`, then `STRATA_PF_NO_DUMMY=1` | Promessi Sposi 4.96 -> 5.88 -> 6.72 tok/s |
 | `--threads 12` (the physical cores, not 24), then `--vram-margin 0.5` | Promessi Sposi 7.29 -> 10.39 -> 10.68 tok/s |
 | `--pf-b 0` | Divina Commedia 11.16 -> 13.07 tok/s |
@@ -48,16 +50,11 @@ All from [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), where every r
 
 ## Where the time goes
 
-Measured 2026-10-17 at 8K context (one-shot, before the Q6_K dense half): a token cost ~48.7 ms in the dense half
-(attention, router) and ~31 ms in the expert tier; with every expert in VRAM the same decode ran at 20.7 tok/s, so the
-misses cost ~42 ms a token. In the agent session of 2026-10-18 the VRAM
-held ~1,785 of the 15,360 experts and 60-65% of lookups hit it; the rest were computed on the CPU (~85 a token) or read
-from NVMe (~10 a token).
-
-Two cards, 2026-10-20 (`STRATA_DEC_PROF`, rocprofv3): short prose ~28 ms dense half + ~31 ms expert tier a token, 17K
-~37 + ~60. Card 0 is busy ~26 ms of a ~60 ms token and waits for the CPU tier once per layer. The CPU experts read
-~47-50 of the RAM's 52-54 GB/s, so only faster RAM or fewer CPU misses speed them up. Decode's NVMe reads come 10-20 ms
-apart, which let the drive and the CPU doze off between them: that is what `power-tune.sh` fixes.
+Two cards, 2026-10-20 (`STRATA_DEC_PROF`, rocprofv3, the previous model with the same expert sizes): short prose ~28
+ms dense half + ~31 ms expert tier a token, 17K ~37 + ~60. Card 0 is busy ~26 ms of a ~60 ms token and waits for the
+CPU tier once per layer. The CPU experts read ~47-50 of the RAM's 52-54 GB/s, so only faster RAM or fewer CPU misses
+speed them up. Decode's NVMe reads come 10-20 ms apart, which let the drive and the CPU doze off between them: that
+is what `power-tune.sh` fixes.
 
 ## Quick start
 
@@ -67,7 +64,7 @@ From a fresh clone, four commands (each step below says what it does):
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # the server's Python packages
 local/fetch-model.sh                                                  # 1. the model files into models/ (~570 GB)
 ./build.sh                                                            # 2. ggml and the engine (HIP)
-./run-v41-gsq.sh                                                      # 3. the server on 127.0.0.1:8150 (one card: ./run-v41-gsq-1gpu.sh)
+./run.sh                                                      # 3. the server on 127.0.0.1:8150 (one card: ./run-1gpu.sh)
 ```
 
 What it needs (measured on the machine above; other setups are untested):
@@ -75,7 +72,7 @@ What it needs (measured on the machine above; other setups are untested):
 | | |
 | --- | --- |
 | OS, GPU stack | Linux, ROCm (7.14 here) with `hipcc`, hipBLAS and `/opt/rocm/lib/llvm/bin/clang++` |
-| GPU | an RDNA3 card the build targets (`gfx1100`: RX 7900 XT / XTX, 20-24 GB); others are not tested. The default config uses a second 24 GB card; one card runs with `./run-v41-gsq-1gpu.sh` |
+| GPU | an RDNA3 card the build targets (`gfx1100`: RX 7900 XT / XTX, 20-24 GB); others are not tested. The default config uses a second 24 GB card; one card runs with `./run-1gpu.sh` |
 | RAM | 128 GB class: the engine holds ~89 GB with the default 75 GiB arena (see "Adapting it" below) |
 | CPU | x86-64 with AVX2 (AVX-512 kernels are used when present) |
 | disk | ~570 GB for `models/` (the 366 GB GGUF plus the 203 GB of Engram tables extracted from it); NVMe: experts that miss RAM are read from it during decode |
@@ -88,8 +85,7 @@ What it needs (measured on the machine above; other setups are untested):
 [antirez/deepseek-v4.1-flash-gguf](https://huggingface.co/antirez/deepseek-v4.1-flash-gguf), sha256-checked), its
 two Engram tables extracted from that GGUF into the files the engine reads (`local/ds4-engram-extract.py`, 203 GB),
 and the tokenizer tables. It is resumable and uses `aria2c` (4 connections per file by default, `CONN`); `DRY_RUN=1`
-prints the plan. The September GSQ (the default until 2026-10-20) is `local/fetch-model-gsq.sh` with
-`local/ds41-local-gsq.json`.
+prints the plan.
 
 ### 2. Build
 
@@ -104,9 +100,9 @@ Server tests (no GPU or model needed): `.venv/bin/python -m unittest discover -s
 ### 3. Run it
 
 ```sh
-./run-v41-gsq.sh                 # the server on 127.0.0.1:8150 (web chat at /, API at /v1), config local/ds41-local.json
-./run-v41-gsq.sh --port 8151     # extra server arguments are passed straight through
-./run-v41-gsq-1gpu.sh            # one card (local/ds41-local-1gpu.json)
+./run.sh                 # the server on 127.0.0.1:8150 (web chat at /, API at /v1), config local/ds41-local.json
+./run.sh --port 8151     # extra server arguments are passed straight through
+./run-1gpu.sh            # one card (local/ds41-local-1gpu.json)
 ```
 
 `local/ds41-local.json` (the default, the same as `local/ds41-local-2gpu.json`) uses two cards: `--peer-device 1`
@@ -116,7 +112,7 @@ instead of the CPU. `STRATA_PEER_DISJOINT=1` fills that store with experts the R
 copies. Measured 2026-10-20 (one-shot, 2 runs each): against two cards without the two envs, NVMe reads -42% and
 decode 14.07 -> 15.58 tok/s on short prose, 9.91 -> 10.82 tok/s at 17K context; one card measured 14.4 and 8.6 tok/s on
 the same prompts in another series. With a single card the default stops at startup ("peer device 1 does not
-exist"): use `./run-v41-gsq-1gpu.sh`. `--peer-device` takes one extra card.
+exist"): use `./run-1gpu.sh`. `--peer-device` takes one extra card.
 
 Optional, with root: `sudo bash local/power-tune.sh on` keeps the NVMe and the CPUs out of their deep idle states
 (APST, C3) and sets the `performance` governor. Decode reads an expert from the drive every 10-20 ms, and a drive or
@@ -124,7 +120,7 @@ core that dozed off in between doubled each read. Measured on this box (two card
 at 17K context, 17.17 -> 17.70 on short prose. It costs idle power and does not survive a reboot;
 `sudo bash local/power-tune.sh off` restores the defaults.
 
-`run-v41-gsq.sh` checks that the model and the Engram tables are in `models/` and uses `.venv` (or any python3 with
+`run.sh` checks that the model and the Engram tables are in `models/` and uses `.venv` (or any python3 with
 the packages of `requirements.txt`). Never expose the server beyond
 `127.0.0.1` without `--api-key`. Loading takes about a minute; then `curl -s http://127.0.0.1:8150/v1/models` answers.
 

@@ -4,7 +4,7 @@
   local/encode_prompt.py "some prompt" out.i32
   local/encode_prompt.py --chat "hello" out.i32        (DeepSeek-V4.1's own chat encoder)
 
-Local helper for this machine's checkout: it uses the BPE in models/V41-GSQ/tokenizer with llama.cpp's `joyai-llm`
+Local helper for this machine's checkout: it uses the BPE in models/ds4-1017/tokenizer with llama.cpp's `joyai-llm`
 pre-split (the same tables and the same pre-tokenizer serve_ds41.py gives the server).  Not part of the engine.
 """
 import json
@@ -21,8 +21,8 @@ import strata_tokenizer as ST  # noqa: E402
 # the tokenizer of whichever model is in models/ (the GSQ's and the ds4 1017 Q2's are the same tables);
 # STRATA_TOKENIZER=<dir> picks one
 TPATH = Path(os.environ["STRATA_TOKENIZER"]) if os.environ.get("STRATA_TOKENIZER") else next(
-    (d for d in (ROOT / "models" / "V41-GSQ" / "tokenizer", ROOT / "models" / "ds4-1017" / "tokenizer") if d.is_dir()),
-    ROOT / "models" / "V41-GSQ" / "tokenizer")
+    (d for d in (ROOT / "models" / "ds4-1017" / "tokenizer", ROOT / "models" / "V41-GSQ" / "tokenizer") if d.is_dir()),
+    ROOT / "models" / "ds4-1017" / "tokenizer")
 
 
 class _Ds41Tokenizer(ST.Tokenizer):

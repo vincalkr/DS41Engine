@@ -22,8 +22,8 @@ import time
 
 ROOT = None  # set in main
 EXE_DEFAULT = "build-hip-pre/ds41_generate"
-MODEL_DEFAULT = "models/V41-GSQ/V41-GSQ.gguf"
-RANK_DEFAULT = "models/V41-GSQ/rank.bin"
+MODEL_DEFAULT = "models/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf"
+RANK_DEFAULT = "local/rank-q2.bin"
 
 RE_PROMPT = re.compile(r"^prompt: (\d+) tokens in ([\d.]+) s = ([\d.]+) tok/s")
 RE_DECODE = re.compile(r"^decode: (\d+) tokens in ([\d.]+) s = ([\d.]+) tok/s")
