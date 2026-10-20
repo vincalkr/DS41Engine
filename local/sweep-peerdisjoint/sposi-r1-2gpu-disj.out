@@ -1,0 +1,297 @@
+memguard: scope ds4-guard-1028416 MemoryMax=110G swap=0 floor=4 GiB (avail 110 GiB)
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 49120 MiB):
+  Device 0: AMD Radeon RX 7900 XTX, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 24560 MiB
+  Device 1: AMD Radeon RX 7900 XTX, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 24560 MiB
+kv: compressed KV + indexer keys as q8_0 (--kv-q8/--kv-type)
+dense requant: 321 Q8_0 matrices -> q6_K, 7.59 -> 5.86 GB
+enc-skip: cut at layer 20 (last kv source), replay window 2560 (reach 2560)
+VRAM: 17.09 GiB free after the dense half -> 16.59 GiB of expert slots (margin 0.50)
+peer: device 1, 23.95 GiB free of 23.98 GiB
+arena: pinned (cudaHostRegister PORTABLE ok; large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages)
+tier: 0 experts in VRAM, 7896 in the RAM arena (75.0 GiB), 5555 file tier; seeded in 18.9 s
+loaded in 31.2 s: 40 layers, ctx 8192, prefill chunk 0, experts gpu, 9 classes
+enc-skip: first batch B=19, cut=0 (phase A 0 cols, phase B 19)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 11/11/42)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 143/143/11)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 11/11/11)
+chunk prestage: 1.50 GiB device region
+ds4_moe: run_chunk: layer 2 stays on MMVQ (types 42/42/11)
+ds4_moe: run_chunk: layer 31 stays on MMVQ (types 11/11/143)
+prompt 19/19peer: device 1 holds 2364 experts (22.00 of a 22.00 GiB budget), none in the arena, read from the model file in 7.2 s; the split leaves 1874 of card 0's 1874 resident experts to card 0
+
+VRAM after the prompt: 16.78 GiB free -> 16.28 GiB of expert slots: 1874 experts in VRAM (10.8 s)
+prompt: 19 tokens in 3.21 s = 5.9 tok/s (experts 0 hit / 0 cpu / 4560 pcie / 2681 file)
+prompt split: dense 0.4 s, experts 2.8 s (file wait 4.7 s), logits 0.0 s
+STRATA_FORCE_IDS: 265 forced tokens from local/sweep-peerdisjoint/ref-sposi.ids
+666
+43
+13887
+60096
+327
+1589
+75
+666
+1298
+105033
+3062
+92
+13102
+7269
+612
+34361
+7660
+127074
+26918
+3693
+23056
+59975
+73747
+1543
+71863
+78871
+339
+7529
+margin: step 28 argmax 55086 (41.2910) forced 259 (41.2378) gap 0.0531
+259
+29557
+28
+3504
+111282
+3044
+60096
+878
+21339
+14
+2619
+50653
+7660
+92497
+69540
+3873
+666
+312
+2619
+86643
+601
+50947
+4537
+13510
+80783
+27920
+11748
+17056
+93912
+47587
+17056
+5897
+347
+6846
+1520
+272
+28871
+2619
+13222
+110128
+13510
+1639
+22695
+2065
+85166
+716
+18371
+16
+8769
+3423
+434
+2619
+97257
+31571
+2154
+13935
+666
+9573
+20135
+11741
+14
+5164
+1008
+3504
+124409
+margin: step 93 argmax 4769 (38.2221) forced 285 (37.7528) gap 0.4692
+285
+26723
+687
+28
+85166
+3152
+29588
+1269
+601
+295
+612
+49207
+81
+260
+4649
+3373
+14
+14619
+7660
+10879
+260
+71829
+339
+84852
+3423
+2313
+93729
+71829
+7269
+1278
+82
+4862
+31056
+280
+15036
+312
+2945
+105005
+592
+716
+3493
+70106
+16
+85166
+41512
+34264
+4862
+margin: step 140 argmax 2945 (39.6145) forced 35914 (39.5997) gap 0.0148
+35914
+9
+666
+1124
+111258
+3693
+13510
+612
+2383
+6846
+1520
+492
+14
+1639
+50647
+3152
+9415
+592
+312
+847
+9556
+67
+16
+14619
+7660
+14
+48016
+104055
+716
+17932
+8087
+343
+margin: step 172 argmax 19660 (32.4237) forced 41249 (31.8949) gap 0.5287
+41249
+295
+35147
+479
+6848
+716
+280
+15036
+754
+17254
+307
+5193
+85166
+16
+7740
+110128
+14294
+492
+1298
+280
+15036
+14
+312
+1008
+3504
+117896
+3152
+46852
+4728
+339
+54
+22485
+114735
+28
+847
+9516
+88
+8632
+3373
+2646
+2091
+14
+847
+7487
+583
+59156
+46995
+14
+847
+3468
+3309
+423
+123832
+312
+15342
+1634
+113958
+14
+847
+285
+14010
+312
+847
+55085
+21294
+12950
+47433
+75
+16
+66978
+2255
+3693
+3493
+2342
+331
+4612
+81
+8340
+7010
+19133
+99978
+312
+3493
+17926
+10824
+1543
+34361
+7660
+5970
+81
+89034
+16
+1
+decode: 265 tokens in 17.73 s = 14.89 tok/s; experts 43903 hit / 11298 cpu / 0 pcie / 964 file (79.5% VRAM hits), cpu 2489 ms, file 2870 ms; spec reads 0 issued / 0 used; prefetch 0 issued / 0 outside the arena / 0 used
+peer: device 1 holds 2364 experts, computed 8159 decode rows
+peer adapt: 1604 experts admitted, 0 waits on a landing copy

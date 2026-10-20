@@ -1777,12 +1777,21 @@ bool Ds41MoeTier::build_arena_ranked(const std::vector<std::pair<int32_t, int32_
 /// lands at its own class's size, exactly like `struct Arena`.  Built once (the first seed wins), after the VRAM
 /// cache is filled so "the second half of the resident head" is the final answer.  `ranked` is the list the seed
 /// walked.
+/// STRATA_PEER_DISJOINT=1 (opt-in): the store takes the ranked experts the arena does NOT hold instead (the file
+/// tier, card 0's resident ones still left out), read from the model file by 8 threads through pinned bounces - so a
+/// miss the peer serves is an NVMe read saved, not a CPU pass, and RAM and card 1 together hold 22 GiB more distinct
+/// experts.  STRATA_PEER_ADAPT still admits recurring arena misses over the least recently used peer slots.
 bool peer_seed(Ds41MoeImpl& im, const std::vector<std::pair<int32_t, int32_t>>& ranked, std::string& err) {
     if (!im.gpu || !im.gpu->peer) return true;
     Gpu& gp = *im.gpu;
     PeerGpu& pg = *gp.peer;
     if (pg.built) return true;
-    if (!gp.arena.base || gp.arena.used == 0) {
+    static const bool disjoint = std::getenv("STRATA_PEER_DISJOINT") && std::getenv("STRATA_PEER_DISJOINT")[0] == '1';
+    if (disjoint && !im.blobs) {
+        err = "STRATA_PEER_DISJOINT: no model file to read the peer's experts from";
+        return false;
+    }
+    if (!disjoint && (!gp.arena.base || gp.arena.used == 0)) {
         std::fprintf(stderr, "peer: the RAM arena is empty, nothing for device %d\n", pg.dev);
         pg.built = true;
         return true;
@@ -1837,7 +1846,7 @@ bool peer_seed(Ds41MoeImpl& im, const std::vector<std::pair<int32_t, int32_t>>& 
             ++seen_res;
         }
         const uint8_t* p = gp.arena.ptr(l, e);
-        if (!p) continue;                                        // file tier: not in the arena
+        if (disjoint ? p != nullptr : p == nullptr) continue;    // default: arena experts only; disjoint: the others
         const uint64_t b = (uint64_t) im.bl[(size_t) im.g.cls(l, e)];
         if (pg.off.back() + b > budget) continue;
         pg.slot_of[(size_t) (l * im.g.n_experts + e)] = (int32_t) pick.size();
@@ -1866,7 +1875,36 @@ bool peer_seed(Ds41MoeImpl& im, const std::vector<std::pair<int32_t, int32_t>>& 
             pg.bytes = 0;
             return false;
         }
-        for (size_t i = 0; i < pick.size(); ++i) {
+        if (disjoint) {   // from the model file: 8 readers, each pread into its own pinned bounce, then the H2D
+            std::atomic<size_t> nx{0};
+            std::atomic<bool> bad{false};
+            std::vector<std::thread> th;
+            const int dev = pg.dev;
+            for (int k = 0; k < (int) std::min<size_t>(8, pick.size()); ++k)
+                th.emplace_back([&]() {
+                    uint8_t* buf = nullptr;
+                    if (cudaSetDevice(dev) != cudaSuccess || cudaMallocHost((void**) &buf, (size_t) im.blob) != cudaSuccess) {
+                        (void) cudaGetLastError();
+                        bad = true;
+                        return;
+                    }
+                    for (size_t i; !bad && (i = nx.fetch_add(1)) < pick.size();) {
+                        im.blobs->read(pick[i].first, pick[i].second, buf);
+                        if (cudaMemcpy((uint8_t*) pg.base + pg.off[i], buf, (size_t) (pg.off[i + 1] - pg.off[i]),
+                                       cudaMemcpyHostToDevice) != cudaSuccess) {
+                            (void) cudaGetLastError();
+                            bad = true;
+                        }
+                    }
+                    cudaFreeHost(buf);
+                });
+            for (auto& t : th) t.join();
+            if (bad) {
+                err = "peer: the expert store's reads from the model file failed";
+                return false;
+            }
+        }
+        for (size_t i = 0; i < pick.size() && !disjoint; ++i) {
             const int64_t l = pick[i].first, e = pick[i].second;
             const uint64_t b = pg.off[i + 1] - pg.off[i];
             if (cudaMemcpyAsync((uint8_t*) pg.base + pg.off[i], gp.arena.ptr(l, e), (size_t) b,
@@ -1884,9 +1922,10 @@ bool peer_seed(Ds41MoeImpl& im, const std::vector<std::pair<int32_t, int32_t>>& 
     }
     pg.seed_ms = now_ms() - t0;
     pg.built = true;
-    std::fprintf(stderr, "peer: device %d holds %lld experts (%.2f of a %.2f GiB budget), copied in %.1f s; the split "
+    std::fprintf(stderr, "peer: device %d holds %lld experts (%.2f of a %.2f GiB budget), %s in %.1f s; the split "
                          "leaves %lld of card 0's %lld resident experts to card 0\n",
-                 pg.dev, (long long) pg.used, pg.bytes / 1073741824.0, budget / 1073741824.0, pg.seed_ms / 1000.0,
+                 pg.dev, (long long) pg.used, pg.bytes / 1073741824.0, budget / 1073741824.0,
+                 disjoint ? "none in the arena, read from the model file" : "copied", pg.seed_ms / 1000.0,
                  (long long) keep_res, (long long) nres);
     return true;
 }
@@ -2405,9 +2444,13 @@ void arena_check_swap(Ds41MoeImpl& im, int64_t layer, int32_t e, int32_t slot) {
 
 /// arena_adapt: the layer's least-recently-used arena expert whose slot holds `need` bytes, not routed by this call
 /// (last_use < tick) and not in `taken` - or -1.
+/// STRATA_ARENA_EVICT_PEER=1 (opt-in): an expert the peer card holds goes first (LRU among those), since its arena
+/// copy is redundant - the peer computes it.  Keeps RAM from duplicating what STRATA_PEER_ADAPT copies over.
 int32_t arena_victim(Ds41MoeImpl& im, int64_t layer, uint64_t need, const int32_t* taken, int ntaken) {
     Gpu& gp = *im.gpu;
     const int64_t NX = im.g.n_experts;
+    static const bool evict_peer = std::getenv("STRATA_ARENA_EVICT_PEER") && std::getenv("STRATA_ARENA_EVICT_PEER")[0] == '1';
+    const PeerGpu* pg = evict_peer && gp.peer && gp.peer->built ? gp.peer.get() : nullptr;
     int32_t victim = -1;
     int64_t best = INT64_MAX;
     for (int64_t v = 0; v < NX; ++v) {
@@ -2419,7 +2462,8 @@ int32_t arena_victim(Ds41MoeImpl& im, int64_t layer, uint64_t need, const int32_
         bool t = false;
         for (int r = 0; r < ntaken && !t; ++r) t = taken[r] == (int32_t) v;
         if (t) continue;
-        if (u < best) { best = u; victim = (int32_t) v; }
+        const int64_t key = pg && pg->ptr(layer, v) ? u - ((int64_t) 1 << 62) : u;
+        if (key < best) { best = key; victim = (int32_t) v; }
     }
     return victim;
 }

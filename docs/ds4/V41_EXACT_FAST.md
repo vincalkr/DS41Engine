@@ -313,6 +313,57 @@ entirely is worth at most ~3-5%. What the second card changes is the CPU work: C
 arena, so it holds copies of arena experts, not experts that would otherwise be read from disk. The prompt is the
 same with one or two cards (337-346 tok/s at 17K).
 
+**A store disjoint from the arena.** Two opt-in envs (`tools/v41/engine/ds41_moe.cpp`), both off by default:
+
+- `STRATA_PEER_DISJOINT=1` (`peer_seed`): card 1's store takes the ranked experts the arena does *not* hold (card 0's
+  resident ones still left out), read from the model file by 8 threads through pinned bounces: 2,353-2,364 experts
+  in 7.2-8.5 s, as long as the copy from the arena takes (7.2-8.4 s). `STRATA_PEER_ADAPT` still admits recurring
+  arena misses over the least recently used peer slots.
+- `STRATA_ARENA_EVICT_PEER=1` (`arena_victim`): with `--arena-adapt`, a file-tier read takes the arena slot of an
+  expert card 1 holds first (the least recently used of those), since that copy is redundant.
+
+The first was the plan's option (a); the second is the eviction half of option (b), measured alone and with (a). (a)
+was the simpler one to make disjoint: one change in the seed, and the store holds no arena expert from the first
+token on, where (b) only frees one duplicate per file read. Same flags and env as above, 2 repetitions alternated
+with a fresh 2-card run in the same session, forced on the same reference tokens
+(`local/bench-v41/ab-peerdisjoint.sh`, results in `local/sweep-peerdisjoint/`):
+
+| Promessi Sposi, 265 tokens | 2 cards | + disjoint | + evict peer | + both |
+| --- | ---: | ---: | ---: | ---: |
+| decode tok/s | 13.53 / 14.61 | 14.89 / 15.77 | 15.50 / 15.50 | 14.89 / 16.26 |
+| NVMe reads (`file`) | 1,432 | 964 / 953 | 1,272 / 1,265 | 836 / 831 |
+| `file` ms | 4,457 / 3,839 | 2,870 / 3,180 | 3,546 / 3,582 | 2,491 / 2,680 |
+| CPU-computed misses | 9,506 | 11,298 / 11,297 | 9,430 / 9,420 | 11,112 / 11,136 |
+| card 0 VRAM hits | 82.6% | 79.5% | 82.4-82.5% | 79.4-79.5% |
+| margin lines (forced) | 6 / 6 | 4 / 2 | 5 / 6 | 4 / 3 |
+
+| 17,349-token prompt, 128 tokens | 2 cards | + disjoint | + evict peer | + both |
+| --- | ---: | ---: | ---: | ---: |
+| decode tok/s | 9.67 / 10.14 | 10.93 / 10.20 | 10.78 / 10.63 | 11.60 / 10.03 |
+| NVMe reads (`file`) | 1,894 / 1,916 | 1,235 / 1,247 | 1,676 / 1,665 | 1,119 / 1,132 |
+| `file` ms | 4,211 / 3,948 | 3,204 / 3,043 | 3,552 / 3,579 | 2,852 / 3,023 |
+| CPU-computed misses | 9,114 / 9,149 | 9,562 / 9,641 | 9,047 / 9,080 | 9,531 / 9,523 |
+| card 0 VRAM hits | 61.6 / 61.3% | 58.3 / 58.1% | 60.6% | 55.8 / 55.9% |
+| margin lines (forced) | 0 | 0 | 0 | 0 |
+
+The reads go down as intended and the counts repeat run to run: both envs together cut them 42% on Sposi (1,432 ->
+~834) and 41% at 17K (~1,905 -> ~1,126), `file` 4.1 -> 2.6-2.9 s (17K: ~32 -> ~23 ms/token); disjoint alone 33-35%,
+evict alone 11-12%. Two costs eat part of it. Experts the peer serves from outside the arena have no arena copy, and
+`STRATA_VRAM_BG` promotes a recurring miss into card 0 only from its arena copy, so card 0's VRAM hits fall (82.6 ->
+79.5% on Sposi, 61.5 -> 55.9% at 17K with both). And the arena's hottest experts start off card 1, so more misses
+go to the CPU (Sposi 9,506 -> ~11,100-11,300) until `STRATA_PEER_ADAPT` brings them over. The tokens stay as close to
+the reference as the plain 2-card runs' tokens do (2-4 margin lines against 6 on Sposi, 0 at 17K).
+
+Decode, mean of 2: Sposi 14.07 (2 cards) -> 15.33 / 15.50 / 15.58 tok/s (disjoint / evict / both), +9% / +10% / +11%;
+17K 9.91 -> 10.57 / 10.71 / 10.82, +7% / +8% / +9%. Against all four plain 2-card runs of the day (both sessions,
+Sposi mean 14.61, 17K mean 9.81) both envs give +7% and +10%. The three variants are not separated by 2 runs: their
+means are within 0.25 tok/s of each other, and one 17K run with both (10.03) was slower than its own 2-card run (10.14),
+while evict alone was the steadiest (15.50 / 15.50, 10.78 / 10.63).
+
+Verdict: make `STRATA_PEER_DISJOINT=1 STRATA_ARENA_EVICT_PEER=1` the 2-card config's default. It has the highest mean
+on both prompts, no loss in token agreement, the fewest NVMe reads, and the same startup time. Whether evict alone is as
+fast needs more than 2 runs; it does not cut reads nearly as much (11-12%).
+
 ## Reproduce
 
 ```
