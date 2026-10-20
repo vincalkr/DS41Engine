@@ -18,8 +18,9 @@ It holds DeepSeek only: the Qwen engine, its installer and the other models' cod
 
 ## Working on the code
 
-- Build: the README's "Build" section (HIP only; ggml prebuilt from `third_party/llama.cpp/build-hip`, which is not
-  tracked - its changes live as patches in `tools/v41/ggml/`).
+- From zero: `.venv` from `requirements.txt`, `local/fetch-model.sh`, `./build.sh`, `./run-v41-gsq.sh` (README,
+  "Quick start"). The build is HIP only: ggml from the vendored `third_party/llama.cpp/ggml` (its changes also kept
+  as patches in `tools/v41/ggml/`) into `third_party/llama.cpp/build-hip`, then the engine into `build-hip-fused`.
 - Server tests: `.venv/bin/python -m unittest discover -s serve -p "test_*.py" -t .` (no GPU or model needed).
 - How the engine works and every measured number: `docs/ds4/V41_EXACT_FAST.md`, `docs/ds4/AMD_HIP_NOTES.md`,
   `HANDOVER.md`.

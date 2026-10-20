@@ -78,18 +78,25 @@ step on agent sessions, simulated), and a smaller context (128K frees ~0.2 GiB o
 
 ## Quick start
 
-Three steps: fetch the model, build the engine, start the server.
+From a fresh clone, four commands (each step below says what it does):
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # the server's Python packages
+local/fetch-model.sh                                                  # 1. the model files into models/ (355 GB)
+./build.sh                                                            # 2. ggml and the engine (HIP)
+./run-v41-gsq.sh                                                      # 3. the server on 127.0.0.1:8150 (one card: ./run-v41-gsq-1gpu.sh)
+```
 
 What it needs (measured on the machine above; other setups are untested):
 
 | | |
 | --- | --- |
 | OS, GPU stack | Linux, ROCm (7.14 here) with `hipcc`, hipBLAS and `/opt/rocm/lib/llvm/bin/clang++` |
-| GPU | an RDNA3 card the build targets (`gfx1100`: RX 7900 XT / XTX, 20-24 GB); others are not tested. The default config uses a second 24 GB card; one card needs `local/ds41-local-1gpu.json` |
+| GPU | an RDNA3 card the build targets (`gfx1100`: RX 7900 XT / XTX, 20-24 GB); others are not tested. The default config uses a second 24 GB card; one card runs with `./run-v41-gsq-1gpu.sh` |
 | RAM | 128 GB class: the engine holds ~89 GB with the default 75 GiB arena (see "Adapting it" below) |
 | CPU | x86-64 with AVX2 (AVX-512 kernels are used when present) |
 | disk | 355 GB for `models/`, ~570 GB free at the download's peak (the Engram tables are extracted from two 101 GB shards); NVMe: experts that miss RAM are read from it during decode |
-| tools | `cmake` >= 3.24, gcc, Python 3 with pillow, psutil, regex and jinja2; `aria2c` for fast downloads |
+| tools | `cmake` >= 3.24, gcc, Python 3 (`requirements.txt`: pillow, psutil, regex, jinja2), curl; `aria2c` for fast downloads |
 
 ### 1. Get the model files
 
@@ -102,22 +109,11 @@ option is documented at the top of the script.
 
 ### 2. Build
 
-ggml once, from the copy in `third_party/llama.cpp/ggml` (with this repository's ggml changes already in it; see
-`third_party/llama.cpp/VENDORED.md`), then the engine (HIP only). The ggml build compiles many HIP kernels: expect
-tens of minutes.
-
-```sh
-cmake -S third_party/ggml-build -B third_party/llama.cpp/build-hip -DCMAKE_PREFIX_PATH=/opt/rocm \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_HIP_ARCHITECTURES=gfx1100 -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
-  -DGGML_HIP=ON -DGGML_HIP_GRAPHS=ON -DGGML_CUDA_FA=ON -DGGML_NATIVE=ON -DGGML_OPENMP=ON -DBUILD_SHARED_LIBS=OFF
-cmake --build third_party/llama.cpp/build-hip -j
-
-cmake -S . -B build-hip-fused -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1100 -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
-  -DSTRATA_GGML_DIR=$PWD/third_party/llama.cpp -DSTRATA_GGML_PREBUILT=$PWD/third_party/llama.cpp/build-hip \
-  -DSTRATA_DSV41_HC_MIX=ON -DSTRATA_DSV41_FQ_OP=ON
-cmake --build build-hip-fused -j      # ds41_generate, the engine's tests (test_ds41_*)
-```
+`./build.sh` builds ggml once, from the copy in `third_party/llama.cpp/ggml` (with this repository's ggml changes
+already in it; see `third_party/llama.cpp/VENDORED.md`), into `third_party/llama.cpp/build-hip`, then the engine
+(HIP only) into `build-hip-fused` (`ds41_generate` and the engine's tests). The ggml build compiles many HIP kernels:
+expect tens of minutes the first time; a second run rebuilds only what changed. `ROCM` (default `/opt/rocm`), `GFX`
+(`gfx1100`), `JOBS` and `REBUILD_GGML=1` are read from the environment; the cmake commands are in the script.
 
 Server tests (no GPU or model needed): `.venv/bin/python -m unittest discover -s serve -p "test_*.py" -t .`
 
@@ -144,8 +140,8 @@ core that dozed off in between doubled each read. Measured on this box (two card
 at 17K context, 17.17 -> 17.70 on short prose. It costs idle power and does not survive a reboot;
 `sudo bash local/power-tune.sh off` restores the defaults.
 
-`run-v41-gsq.sh` checks that the model and the Engram tables are in `models/`. Python needs pillow, psutil, regex and jinja2
-(`python3 -m venv .venv && .venv/bin/pip install pillow psutil regex jinja2`). Never expose the server beyond
+`run-v41-gsq.sh` checks that the model and the Engram tables are in `models/` and uses `.venv` (or any python3 with
+the packages of `requirements.txt`). Never expose the server beyond
 `127.0.0.1` without `--api-key`. Loading takes about a minute; then `curl -s http://127.0.0.1:8150/v1/models` answers.
 
 ### Adapting it to another machine
