@@ -1,0 +1,4 @@
+base-1                       sposi          diff=8    decode: 246 tokens in 14.08 s = 17.40 tok/s; experts 40515 hit / 9799 cpu / 0 pcie / 843 file (80.5% VRAM hits), cpu 2151 ms, file 1096 ms; spec reads 0 issued / 0 used; 
+f-1                          sposi          diff=6    decode: 246 tokens in 13.92 s = 17.60 tok/s; experts 40607 hit / 9879 cpu / 0 pcie / 856 file (80.4% VRAM hits), cpu 2151 ms, file 1114 ms; spec reads 0 issued / 0 used; 
+base-2                       sposi          diff=7    decode: 246 tokens in 13.02 s = 18.82 tok/s; experts 40675 hit / 9821 cpu / 0 pcie / 841 file (80.6% VRAM hits), cpu 2144 ms, file 1128 ms; spec reads 0 issued / 0 used; 
+f-2                          sposi          diff=7    decode: 246 tokens in 13.97 s = 17.53 tok/s; experts 40756 hit / 9840 cpu / 0 pcie / 852 file (80.6% VRAM hits), cpu 2127 ms, file 1129 ms; spec reads 0 issued / 0 used; 

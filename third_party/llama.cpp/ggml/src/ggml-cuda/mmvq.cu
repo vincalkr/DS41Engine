@@ -1,4 +1,5 @@
 #include "mmvq.cuh"
+#include "mmvq-q6k.cuh"
 #include "quantize.cuh"
 #include "unary.cuh"
 #include "vecdotq.cuh"
@@ -1456,6 +1457,20 @@ void ggml_cuda_mul_mat_vec_q(
     const float   * src1_d =       (const float   *) src1->data;
     const int32_t *  ids_d = ids ? (const int32_t *)  ids->data : nullptr;
     float         *  dst_d =       (float         *)  dst->data;
+
+    // ds41e (tools/v41/ggml/q6k-mmvq.patch): GGML_CUDA_Q6K_MMVQ=1 (off by default) - a Q6_K matrix times one f32
+    // column (decode) goes to q6k_mmvq_f (mmvq-q6k.cuh): 128-bit weight loads and the f32 column used as it is, so
+    // there is no quantize_q8_1 launch before it. Other cases, and shapes it has no configuration for, take the path
+    // below.
+    static const bool q6k_f32 = [] {
+        const char * v = getenv("GGML_CUDA_Q6K_MMVQ");
+        return v && v[0] == '1';
+    }();
+    if (q6k_f32 && src0->type == GGML_TYPE_Q6_K && !ids && !fusion && ne11 == 1 && ne12 == ne02 && ne03 == 1 && ne13 == 1 &&
+            (uintptr_t) src1_d % 16 == 0 && (ne12 == 1 || nb12 % 16 == 0) &&
+            q6k_mmvq_f_cuda(src0->data, src1_d, dst_d, ne00, ne01, ne02, nb01, nb02, nb12 / ts_src1, nb2 / ts_dst, stream)) {
+        return;
+    }
 
     ggml_cuda_mm_fusion_args_device fusion_local{};
 

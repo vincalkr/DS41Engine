@@ -381,7 +381,9 @@ ms); 17K 74 on the CPU (16.9 ms) and 8.8 file reads (25.9 ms). A file read costs
 
 **Card 0's kernels** (`rocprofv3 --kernel-trace --memory-copy-trace`, a run of 80 tokens minus one of 16 = 64 decode
 tokens, `local/bench-v41/trace-summary.py`): 3,582 kernels and 25.7 ms busy per token (card 1: 115 kernels, 2.8 ms).
-`mul_mat_vec_q` (the Q6_K dense half) 321 launches, 10.7 ms: ~5.6 GB at ~530 GB/s, 55% of the card's 960 GB/s. The
+`mul_mat_vec_q` (the Q6_K dense half) 321 launches, 10.7 ms: ~5.6 GB at ~530 GB/s, 55% of the card's 960 GB/s (in
+steady state 7.9 ms, ~740 GB/s: the difference includes one launch that stalled for 186 ms - see "The dense half's
+Q6_K matvecs at decode" below). The
 expert kernels 3.4 ms (card 1: 2.1 ms), 377 `copyBuffer` 1.2 ms, and 164 host-to-device + 72 device-to-host copies a
 token at 39 / 61 us each. Card 0's idle gaps over 20 us (last 3 s of the profiled run): **25.7 ms/token after its
 own expert kernels, waiting for the CPU tier's rows** (once per layer), 2.8 ms between layers, ~4.4 ms of copies
@@ -475,6 +477,102 @@ copied from the conversation after the last 4/3/2-token match. On the Pi session
 output tokens) 1.42-1.51 tokens per step (drafts of 4-16), 2.5-3.1 per drafted pass; on two coding-agent sessions of
 2026-10-19 (another model, 19,415 and 47,614 output tokens) 1.33-1.40. The reasoning text is mostly new, so a verify
 pass (which costs several single steps here) would rarely pay.
+
+## The dense half's Q6_K matvecs at decode: `GGML_CUDA_Q6K_MMVQ=1` (2026-10-20)
+
+Opt-in, off by default. With `STRATA_DENSE_REQUANT=q6_K` a decode token runs 321 Q6_K matrix-vector products (8 a
+layer and the vocabulary head), each as two ggml kernels: `quantize_q8_1` (the f32 column to 8 bits, one scale per
+32 values) and `mul_mat_vec_q`. `GGML_CUDA_Q6K_MMVQ=1` sends them to one kernel, `q6k_mmvq_f`
+(`third_party/llama.cpp/ggml/src/ggml-cuda/mmvq-q6k.cuh`, recorded in `tools/v41/ggml/q6k-mmvq.patch`). It reads the
+standard Q6_K blocks (so the prompt passes keep reading the same tensors) with 64-bit loads, 8 lanes a block - the
+blocks are 210 B, so most loads are only 2-byte aligned, which the card takes - and multiplies the f32 column as it
+is: each 6-bit value is converted with `v_cvt_f32_ubyte` and multiplied in with an f32 fma, the -32 taken off as 32 x
+the sum of 8 activations. So there is no `quantize_q8_1` launch (321 fewer kernels a token) and the products are
+exact. Every other matvec (prompt passes, other types and shapes) takes ggml's path, and so does everything with the
+variable unset.
+
+**What the matvecs cost.** Re-read token by token from `local/sweep-prof/trace-80` (tokens 20-78): 7.8-8.1 ms a token
+(mean 7.92) for ~5.86 GB (40 x 132.9 MB + the 543 MB head), ~740 GB/s; `quantize_q8_1` 0.49 ms more. The 10.7 ms of
+the trace difference in the section above includes one 5120-row launch that stalled for 186 ms in the 80-token run
+(186 / 64 = +2.9 ms a token).
+
+**In isolation** (`local/bench-v41/q6k-mmvq.hip`, card 0, level `auto`: core ~2.5 GHz, memory at its top level;
+random weights rotated through >= 768 MB so the 96 MB Infinity Cache does not hold them). Launches back to back,
+medians of 3, us a product (ggml's with its `quantize_q8_1` launch), and the kernels' own durations from a
+`rocprofv3` trace of the same sweep (no launch gaps):
+
+| | rows x K | ggml, back to back | `q6k_mmvq_f` | | ggml kernels (traced) | `q6k_mmvq_f` (traced) | plain read of the bytes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| attn_q_a | 1280 x 5120 | 13.07 | 9.71 | -26% | 7.80 + 1.68 | 7.96 | 9.25 |
+| attn_q_b | 32768 x 1280 | 49.31 | 43.17 | -12% | 43.96 + 1.64 | 41.00 | 39.22 |
+| attn_kv | 512 x 5120 | 10.75 | 6.60 | -39% | 5.44 + 1.68 | 4.72 | 5.93 |
+| attn_output_a | 8 x 1024 x 4096 | 38.80 | 34.18 | -12% | 33.36 + 1.80 | 32.28 | 31.88 |
+| attn_output_b | 5120 x 8192 | 46.62 | 40.88 | -12% | 41.16 + 1.68 | 39.00 | 38.94 |
+| ffn_gate/up_shexp (x2) | 2304 x 5120 | 18.40 | 14.36 | -22% | 13.16 + 1.68 | 12.60 | 13.57 |
+| ffn_down_shexp | 5120 x 2304 | 19.28 | 14.89 | -23% | 14.04 + 1.68 | 12.88 | 13.59 |
+| output (head) | 129280 x 5120 | 594.35 | 585.09 | -2% | 576.32 + 1.68 | 570.64 | 573.0 |
+| **a token** | | **9.18 ms** | **7.71 ms** | **-16%** | 8.00 ms | 7.09 ms | 7.21 ms |
+
+(The plain read is the same benchmark's `roof`, launches back to back, so it includes the launch gaps the traced
+columns do not.) ggml's matvec alone is close to the bandwidth already; most of what is left is the quantize launch.
+The 321 products of 40 distinct layers and the head in decode order (`token`, GPU time a token, two rounds each):
+9.44 / 9.56 -> 8.09 / 8.10 ms at full clock; with 700 us idle between layers - the core clock then sits at
+1.26 GHz, as during decode at 17K - 13.24 / 13.38 -> 10.44 / 10.44 ms. Traced at 1.26 GHz the kernel is still
+shorter than ggml's matvec + quantize on every shape (attn_q_b 66.72 + 3.00 -> 55.04 us, attn_output_a 39.56 + 3.00
+-> 40.96, the head 669.7 + 3.0 -> 659.6).
+
+**In the engine** (`rocprofv3 --kernel-trace`, the default two-card configuration, Sposi forced, 80 tokens, steady
+state tokens 20-78): the Q6_K matvecs with their quantization 8.43 -> 7.98 ms a token (-0.45 ms), card 0's kernels
+3,578 -> 3,257 a token and 23.32 -> 22.88 ms busy. Inside the engine the matvec kernels themselves come out even with
+ggml's (attn_q_b 45.3 -> 43.5 us, the head 577.8 -> 573.4, but attn_output_b 40.3 -> 42.4, attn_output_a 36.3 ->
+37.6): the saving there is the quantize kernels and their launches.
+
+**Accuracy** (`check`: every row of every shape against the CPU product in double with the exact f32 column; error
+relative to the row's sum of |w x|, the maximum over the rows): ggml 3.6e-4 to 1.2e-3 (the 8-bit column),
+`q6k_mmvq_f` 1.4e-8 to 4.0e-8.
+
+**Decode** (`local/bench-v41/ab-q6kmmvq.sh`: the default two-card configuration, forced on the reference tokens,
+5 runs each interleaved, level `auto`, `power-tune.sh on`; `local/sweep-q6k/summary.txt`, tags `q6k-*`):
+
+| tok/s, one value per run | 17K | Sposi |
+| --- | --- | --- |
+| default | 13.57 13.12 13.56 13.21 12.15 (mean 13.12) | 18.02 17.02 18.19 18.16 18.00 (mean 17.88) |
+| `GGML_CUDA_Q6K_MMVQ=1` | 13.59 13.84 12.28 12.16 13.11 (mean 13.00) | 18.30 18.84 16.87 17.01 18.40 (mean 17.88) |
+
+No difference above the runs' spread; an earlier series with the 4-lane version measured the same (17K 12.96 ->
+12.86, Sposi 17.94 -> 17.86, tags `q6k4-*`). The ~0.45 ms a token the engine trace shows is under 1% of a 56-77 ms
+token, inside the 3-5% that single runs vary. Forced-token argmax differences on Sposi: default 1-4 a run, the new
+path 5-8 - its products are exact, ggml's rounded the column to 8 bits, so it leaves the reference text (made with
+ggml's path) at a few more near-ties.
+
+Hidden states (`STRATA_DUMP_MAIN`: the state after layers 36, 37, 38 at each of 263 decode steps, Sposi forced,
+`local/bench-v41/dump-main-diff.py`, relative L2 difference, mean; measured with the 4-lane version, the same
+arithmetic per product): two runs of the default 6.2%, two runs of the new path 4.3%, default against new
+7.2-7.9% - a small systematic shift on top of the engine's own run-to-run spread, which is of the same size.
+
+`STRATA_DEC_NLL=1` (with `STRATA_FORCE_IDS`) now prints the decode path's perplexity of the forced text, and
+`local/bench-v41/dec-nll.sh` runs Lucebox's held-out sequences through it; not run yet for this comparison.
+
+**What did not pay** (the same benchmark; the kernels are kept in `q6k-mmvq.hip`):
+- the same weight loads with ggml's 8-bit column (`q6k_mmvq`, 4 lanes a block, 128-bit loads): even with ggml's
+  matvec alone (7.96 against 7.97 ms a token), and still after a `quantize_q8_1` launch each;
+- each workgroup quantizing the column into LDS exactly as `quantize_q8_1` (`q6k_mmvq_fq`, bit-identical results):
+  the in-kernel quantization (IEEE divisions, then a barrier) costs what the launch did, 9.20 against 9.18 ms;
+- f16 arithmetic (`q6k_mmvq_h`: the column converted to f16, `v_dot2_f32_f16`): 8.25 ms (-10%), slower than f32 on
+  attn_output_b and the head, and f16 overflows past 65504 (attn_output_b's input is not normalized);
+- f32 with 4 lanes a block and 128-bit loads (`q6k_mmvq_f4`, the first version): 64 activation registers a step,
+  6-10 waves a SIMD, 11.8 ms a token at 1.26 GHz against 10.44 for 8 lanes. It also spilled registers at K = 4096 /
+  8192 (75-95 us on attn_output_b) until a memory fence at the top of each row and step kept the compiler from
+  loading the steps' activations once, before the row loop;
+- ggml's own kernel with other launch parameters (1-8 waves a row, 1-4 rows a workgroup): 1-15 us on some shapes
+  (attn_kv 5.44 -> 4.24 us with 4 waves, the head 576.3 -> 561.4 with 8 waves and 2 rows), still after the quantize
+  launch.
+
+At the cards' `high` level (above) every product runs on the 772 MHz memory clock: a plain read reached ~580 GB/s on
+every size, ggml's head matvec 573 GB/s against 920 at `auto`.
+
+So `GGML_CUDA_Q6K_MMVQ=1` stays opt-in: fewer kernels and exact products, no measured decode speed. The matvecs were
+already within ~10% of a plain read of their bytes; the dense half's time is in its ~3,600 launches a token, not here.
 
 ## Reproduce
 

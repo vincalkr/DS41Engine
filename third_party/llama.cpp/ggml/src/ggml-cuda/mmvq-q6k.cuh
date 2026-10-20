@@ -1,0 +1,137 @@
+#pragma once
+
+// ds41e (tools/v41/ggml/q6k-mmvq.patch): a Q6_K matrix times one f32 column (decode), for RDNA3 - used by
+// ggml_cuda_mul_mat_vec_q when GGML_CUDA_Q6K_MMVQ=1 (off by default); measured with local/bench-v41/q6k-mmvq.hip.
+//
+// The weights stay in the standard block_q6_K layout, so the prompt passes (MMQ) read the same tensors. ggml's
+// mul_mat_vec_q reads a block with 32 lanes of 16-bit loads, one int of ql per lane, after a quantize_q8_1 launch that
+// turns the column into 8-bit values with one scale per 32; q6k_mmvq_f below reads the column as it is.
+
+#include "common.cuh"
+
+typedef int q6k_i32x4 __attribute__((ext_vector_type(4), aligned(2)));
+typedef int q6k_i32x2 __attribute__((ext_vector_type(2), aligned(2)));
+
+// q6k_mmvq_f: Q6_K x f32 column in f32 arithmetic, no activation quantization and no conversion. 8 lanes a block:
+// lane (h, s4) reads 8 B of ql at 64h+8s4, 8 B of ql at 64h+32+8s4 and 8 B of qh at 32h+8s4 (32 weights: l = 8s4 ..
+// 8s4+7 of half h, groups g = 0..3 at +32g) with 64-bit loads - blocks are 210 B, so most of these loads are only
+// 2-byte aligned, which the hardware takes - plus the half's 8 scales and d; a wave takes 4 blocks a step and R whole
+// rows. Each 6-bit value q (0..63, assembled in a byte) becomes a float with v_cvt_f32_ubyteN and is multiplied into
+// the f32 activation with an fma; the -32 is taken off once per 8 values as 32 * (their activations' sum), shared by
+// the R rows. The products are exact in f32 (q has 6 bits), so the result is the Q6_K matrix times the column up to
+// f32 summation. (4 lanes a block with 128-bit loads needed 64 activation registers a step and ran slower: the
+// benchmark keeps it as q6k_mmvq_f4.)
+template <int NB, int R, int W>
+static __global__ void __launch_bounds__(W*32, 1) q6k_mmvq_f(
+        const uint8_t * __restrict__ vx, const float * __restrict__ x, float * __restrict__ dst, const int nrows,
+        const int64_t row_bytes, const int64_t ch_bytes, const int64_t sx_ch, const int64_t dst_ch) {
+    const int lane = threadIdx.x;
+    const int bl = lane >> 3, h = (lane >> 2) & 1, s4 = lane & 3;
+    vx += blockIdx.y*ch_bytes + 64*h + 8*s4;
+    x  += blockIdx.y*sx_ch + 128*h + 8*s4;
+    const int sb = 8*(s4 >> 1);   // bit offset of scale byte s4 >> 1: the 16 l this lane's 8 belong to
+    for (int row0 = (blockIdx.x*W + threadIdx.y)*R; row0 < nrows; row0 += gridDim.x*W*R) {
+        float acc[R];
+#pragma unroll
+        for (int r = 0; r < R; ++r) acc[r] = 0.0f;
+        if (NB >= 16) {
+            // the activations do not depend on the row: without this the compiler loads all the steps' activations
+            // once, before the row loop, and K = 4096 / 8192 run out of registers (measured)
+            asm volatile("" ::: "memory");
+        }
+        const uint8_t * xr = vx + (int64_t) row0*row_bytes;
+#pragma unroll
+        for (int st = 0; st < (NB + 3)/4; ++st) {
+            const int j = 4*st + bl;
+            if (NB % 4 != 0 && j >= NB) break;
+            if (NB >= 16 && st > 0) {
+                asm volatile("" ::: "memory");   // one step's loads in flight a wave (the same register limit)
+            }
+            float4 a[4][2];
+            float  z[4];
+#pragma unroll
+            for (int g = 0; g < 4; ++g) {
+                a[g][0] = *(const float4 *) (x + 256*j + 32*g);
+                a[g][1] = *(const float4 *) (x + 256*j + 32*g + 4);
+                z[g] = -32.0f * (((a[g][0].x + a[g][1].x) + (a[g][0].y + a[g][1].y)) +
+                                 ((a[g][0].z + a[g][1].z) + (a[g][0].w + a[g][1].w)));
+            }
+#pragma unroll
+            for (int r = 0; r < R; ++r) {
+                const uint8_t * b = xr + r*row_bytes + 210*j;   // + 64h + 8s4
+                const q6k_i32x2 la = *(const q6k_i32x2 *) (b);
+                const q6k_i32x2 lb = *(const q6k_i32x2 *) (b + 32);
+                const q6k_i32x2 qh = *(const q6k_i32x2 *) (b + 128 - 32*h);
+                const q6k_i32x2 sc = *(const q6k_i32x2 *) (b + 192 - 56*h - 8*s4);
+                const float     dw = __half2float(*(const half *) (b + 208 - 64*h - 8*s4));
+                float s0 = z[0], s1 = z[1], s2 = z[2], s3 = z[3];
+#pragma unroll
+                for (int k = 0; k < 2; ++k) {
+                    const uint32_t l = la[k], m = lb[k], q = qh[k];
+                    const uint32_t q0 = ( l       & 0x0F0F0F0F) | ((q << 4) & 0x30303030);
+                    const uint32_t q1 = ( m       & 0x0F0F0F0F) | ((q << 2) & 0x30303030);
+                    const uint32_t q2 = ((l >> 4) & 0x0F0F0F0F) | ( q       & 0x30303030);
+                    const uint32_t q3 = ((m >> 4) & 0x0F0F0F0F) | ((q >> 2) & 0x30303030);
+#define Q6K_F_FMA(qq, sg, g) \
+                    sg = fmaf((float) ( qq        & 0xFF), a[g][k].x, sg); \
+                    sg = fmaf((float) ((qq >>  8) & 0xFF), a[g][k].y, sg); \
+                    sg = fmaf((float) ((qq >> 16) & 0xFF), a[g][k].z, sg); \
+                    sg = fmaf((float) ( qq >> 24        ), a[g][k].w, sg)
+                    Q6K_F_FMA(q0, s0, 0);
+                    Q6K_F_FMA(q1, s1, 1);
+                    Q6K_F_FMA(q2, s2, 2);
+                    Q6K_F_FMA(q3, s3, 3);
+#undef Q6K_F_FMA
+                }
+                // scales[8h + (s4 >> 1) + 2g]: byte (s4 >> 1) and 2 + (s4 >> 1) of the half's first 4 and last 4
+                const float c0 = (int8_t) (sc.x >> sb), c1 = (int8_t) (sc.x >> (16 + sb));
+                const float c2 = (int8_t) (sc.y >> sb), c3 = (int8_t) (sc.y >> (16 + sb));
+                acc[r] = fmaf(dw, fmaf(c3, s3, fmaf(c2, s2, fmaf(c1, s1, c0*s0))), acc[r]);
+            }
+        }
+#pragma unroll
+        for (int r = 0; r < R; ++r) acc[r] = warp_reduce_sum<32>(acc[r]);
+        if (lane == 0) {
+#pragma unroll
+            for (int r = 0; r < R; ++r) dst[blockIdx.y*dst_ch + row0 + r] = acc[r];
+        }
+    }
+}
+
+template <int NB, int R, int W>
+static void q6k_mmvq_f_launch(const void * vx, const float * x, float * dst, const int nrows, const int nch,
+                              const int64_t row_bytes, const int64_t ch_bytes, const int64_t sx_ch,
+                              const int64_t dst_ch, const int max_wg, cudaStream_t stream) {
+    int grid = (nrows + R*W - 1) / (R*W);
+    if (max_wg > 0 && grid > max_wg) {
+        grid = max_wg;
+    }
+    q6k_mmvq_f<NB, R, W><<<dim3(grid, nch), dim3(32, W), 0, stream>>>((const uint8_t *) vx, x, dst, nrows, row_bytes,
+                                                                      ch_bytes, sx_ch, dst_ch);
+}
+
+// dst[c][r] = sum_k x[c][r][k] * y[c][k] for the rows of a Q6_K matrix (rows row_bytes apart, channels ch_bytes apart;
+// y f32, channels sx_ch floats apart, 16-byte aligned; dst channels dst_ch floats apart). The configuration per K and
+// row count was measured on an RX 7900 XTX (the kernels' own durations in a local/bench-v41/q6k-mmvq.hip sweep under
+// rocprofv3). Returns false, launching nothing, for a K or a row count it has no configuration for.
+static bool q6k_mmvq_f_cuda(const void * vx, const float * y, float * dst, const int K, const int nrows, const int nch,
+                            const int64_t row_bytes, const int64_t ch_bytes, const int64_t sx_ch, const int64_t dst_ch,
+                            cudaStream_t stream) {
+    // the blocks need 2-byte alignment; the rows below go R <= 2 at a time
+    if (K % QK_K != 0 || (uintptr_t) vx % 2 != 0 || row_bytes % 2 != 0 || ch_bytes % 2 != 0 || nrows % 2 != 0) {
+        return false;
+    }
+#define Q6K_F(NB, R, W, G) \
+    q6k_mmvq_f_launch<NB, R, W>(vx, y, dst, nrows, nch, row_bytes, ch_bytes, sx_ch, dst_ch, G, stream); return true
+    switch (K / QK_K) {   // DeepSeek-V4.1's dense half: rows x K
+        case  5: Q6K_F( 5, 2, 2, 768);                         // attn_q_b 32768 x 1280
+        case  9: Q6K_F( 9, 1, 2, 768);                         // ffn_down_shexp 5120 x 2304
+        case 16: Q6K_F(16, 1, 1, 768);                         // attn_output_a 8 x 1024 x 4096
+        case 20: if (nrows <= 1280) { Q6K_F(20, 2, 1, 0); }    // attn_kv 512, attn_q_a 1280 x 5120
+                 if (nrows <= 8192) { Q6K_F(20, 2, 1, 768); }  // ffn_gate/up_shexp 2304 x 5120
+                 Q6K_F(20, 1, 1, 0);                           // output 129280 x 5120
+        case 32: Q6K_F(32, 1, 1, 0);                           // attn_output_b 5120 x 8192
+        default: return false;
+    }
+#undef Q6K_F
+}

@@ -3,7 +3,8 @@
 Only `ggml/` (and llama.cpp's `LICENSE`, MIT) is kept here: the rest of llama.cpp is not needed. This is ggml 0.26.0
 as it was on the machine where every number in `docs/ds4/` was measured, with this repository's ggml changes already
 applied (`tools/v41/ggml/*.patch`: the fused DeepSeek-V4.1 ops `GGML_OP_DSV41_FAKE_QUANT` / `GGML_OP_DSV41_HC_MIXES`,
-the FP4 KV cache, the deterministic MMQ, the rank argsort, the upstream fixes in `UPSTREAM_FIXES.md`). It was copied in
+the FP4 KV cache, the deterministic MMQ, the rank argsort, the upstream fixes in `UPSTREAM_FIXES.md`, the opt-in Q6_K
+decode matvec `GGML_CUDA_Q6K_MMVQ=1` in `q6k-mmvq.patch`). It was copied in
 without git history and does not match one llama.cpp commit (a diff against 3cf03257, the commit
 `third_party/ggml/VERSION.txt` names, differs in ~370 files), so it is kept whole instead of as a commit plus patches.
 Do not re-apply the patches to it.

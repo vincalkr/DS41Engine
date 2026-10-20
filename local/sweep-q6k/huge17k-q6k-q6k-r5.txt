@@ -1,0 +1,16 @@
+You are reviewing a small C++ function that reads a configuration file.
+
+    std::string read_file(const std::string & path) {
+        std::ifstream f(path);
+        std::string s, line;
+        while (std::getline(f, line)) s += line;
+        return s;
+    }
+
+It is used on files up to a few megabytes, on Windows and Linux, by a single thread.
+
+List, in order, the three most important problems with this function and how to fix each one. Be concise.
+
+You are reviewing a small C++ function that reads a configuration file.
+
+    std::string read

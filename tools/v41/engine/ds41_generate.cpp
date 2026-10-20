@@ -1939,8 +1939,21 @@ int main(int argc, char ** argv) {
         }
     }
 #endif
+    // STRATA_DEC_NLL=1 (quality tap, with STRATA_FORCE_IDS): the forced token's negative log-probability under the
+    // step's logits, summed over the forced steps and printed after the decode as the decode path's perplexity of the
+    // forced text (--ppl measures the prompt pass, which runs other kernels)
+    static const bool dec_nll = std::getenv("STRATA_DEC_NLL") != nullptr;
+    double nll_sum = 0;
+    long nll_n = 0;
     for (; !spec && gen < a.n_predict; ++gen) {
         int tok = sample_p(lg.data(), nv, a.temp, 0, 1.0f, 0.0f, rng);
+        if (dec_nll && gen < (int) forced.size()) {
+            const float mx = *std::max_element(lg.begin(), lg.begin() + nv);
+            double se = 0;
+            for (int i = 0; i < nv; ++i) se += std::exp((double) lg[(size_t) i] - mx);
+            nll_sum += std::log(se) + mx - lg[(size_t) forced[(size_t) gen]];
+            ++nll_n;
+        }
         if (gen < (int) forced.size()) {
             // STRATA_DEC_MARGIN=1 (gate tap, with STRATA_FORCE_IDS): per step the argmax, its logit and the forced
             // token's logit - a forced stream that leaves the greedy path at a near-tie shows a tiny gap there
@@ -1958,6 +1971,7 @@ int main(int argc, char ** argv) {
         ++pos;
     }
     const double dec_ms = now_ms() - td0;
+    if (nll_n) std::fprintf(stderr, "decode nll: %ld forced tokens, mean %.5f, ppl %.4f\n", nll_n, nll_sum / nll_n, std::exp(nll_sum / nll_n));
     if (prof_decode) Ds41MoeTier::profiler(false);
     const Ds41MoeStats st = tier.stats();
     std::fprintf(stderr, "decode: %d tokens in %.2f s = %.2f tok/s; experts %lld hit / %lld cpu / %lld pcie / %lld file "
