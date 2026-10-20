@@ -447,8 +447,10 @@ cost idle power and do not survive a reboot; `local/power-tune.sh off` restores 
 **The cards' clock level `high`** (`local/gpu-perf.sh high`, on top of `power-tune.sh on`, 5 runs each) is slower:
 17K 13.23 13.14 12.99 12.86 13.22 = 13.09 tok/s against 13.63 at `auto`, Sposi 17.37 17.34 17.18 16.82 15.75 = 16.89
 against 17.70 (the rest of the token 44.5 -> 47.5 and 42.4 -> 45.1 ms; the first 17K run overlapped another session's
-GPU benchmark and was repeated as r6). Even at `high` card 0's core clock averaged
-1.74 GHz while busy, 29% of the samples under 1.5 GHz. Keep `auto`.
+GPU benchmark and was repeated as r6). The reason is the memory: on this card and driver `high` holds the memory
+clock at 772 MHz (`pp_dpm_mclk` level 2 of 0-3, not 1249), and a plain streaming read on card 0 got ~580 GB/s
+against ~920 at `auto` (measured by the Q6_K kernel session the same day). Card 0's core clock averaged 1.74 GHz while
+busy, 29% of the samples under 1.5 GHz. Keep `auto`.
 
 **Host-path options** (all opt-in, the default path unchanged; tokens identical to the reference where checked):
 
