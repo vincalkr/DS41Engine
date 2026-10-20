@@ -8,6 +8,7 @@ Local helper for this machine's checkout: it uses the BPE in models/V41-GSQ/toke
 pre-split (the same tables and the same pre-tokenizer serve_ds41.py gives the server).  Not part of the engine.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -17,7 +18,11 @@ sys.path.insert(0, str(ROOT / "tools"))
 import numpy as np  # noqa: E402
 import strata_tokenizer as ST  # noqa: E402
 
-TPATH = ROOT / "models" / "V41-GSQ" / "tokenizer"
+# the tokenizer of whichever model is in models/ (the GSQ's and the ds4 1017 Q2's are the same tables);
+# STRATA_TOKENIZER=<dir> picks one
+TPATH = Path(os.environ["STRATA_TOKENIZER"]) if os.environ.get("STRATA_TOKENIZER") else next(
+    (d for d in (ROOT / "models" / "V41-GSQ" / "tokenizer", ROOT / "models" / "ds4-1017" / "tokenizer") if d.is_dir()),
+    ROOT / "models" / "V41-GSQ" / "tokenizer")
 
 
 class _Ds41Tokenizer(ST.Tokenizer):

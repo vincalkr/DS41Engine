@@ -2,13 +2,13 @@
  "exe": "local/ds41-engine-local.sh",
  "args": [
   "-m",
-  "models/V41-GSQ/V41-GSQ.gguf",
+  "models/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf",
   "--backend",
   "cuda",
   "--experts",
   "gpu",
   "--rank",
-  "local/rank-gsq-mixed.bin",
+  "local/rank-q2.bin",
   "--threads",
   "12",
   "--ctx",
@@ -21,7 +21,7 @@
   "--arena-gib",
   "75",
   "--engram",
-  "models/engram/layers14:models/engram/layers1",
+  "models/engram-1017/layers14:models/engram-1017/layers1",
   "--route-bias",
   "0",
   "--route-bias-file",
@@ -37,7 +37,7 @@
   "--pcie",
   "0",
   "--dump-routes",
-  "local/routes-chat"
+  "local/routes-1017"
  ],
  "env": {
   "STRATA_NO_LARGEPAGES": "1",
@@ -63,8 +63,8 @@
   "STRATA_ARENA_EVICT_PEER": "1"
  },
  "cwd": ".",
- "tokenizer": "models/V41-GSQ/tokenizer",
- "model_name": "deepseek-v4.1-flash-gsq-hip",
+ "tokenizer": "models/ds4-1017/tokenizer",
+ "model_name": "deepseek-v4.1-flash-1017-q2-hip",
  "log": "local/serve-engine.log",
  "port": 8150,
  "backend": "hip",

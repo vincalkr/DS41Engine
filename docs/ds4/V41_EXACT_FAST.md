@@ -574,6 +574,32 @@ every size, ggml's head matvec 573 GB/s against 920 at `auto`.
 So `GGML_CUDA_Q6K_MMVQ=1` stays opt-in: fewer kernels and exact products, no measured decode speed. The matvecs were
 already within ~10% of a plain read of their bytes; the dense half's time is in its ~3,600 launches a token, not here.
 
+## The ds4 1017 Q2 as the model (2026-10-20)
+
+DeepSeek-V4.1-Flash-1017 (DeepSeek, 2026-10-17) as antirez/ds4's Q2, `DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf`
+(366 GB, `antirez/deepseek-v4.1-flash-gguf`; ds4's download script switched to it on 2026-10-19). Its header against
+the September Q2 the engine ran on 2026-10-17 (`DS4_Q2_STATUS.md`): the same 1,046 tensors, names, shapes and types,
+the same metadata (geometry, Engram encoding, tokenizer tables) except the source revision and the imatrix hash. So it
+loads unchanged. The Engram tables are inside the GGUF (rows of 256 E4M3 + 8 E8M0 bytes, checked against the
+September tables) and differ from the September ones; `local/ds4-engram-extract.py` writes them as the engine's
+safetensors (24 rows per table checked against the GGUF). Configuration: the default `local/ds41-local.json`
+(`--rank local/rank-q2.bin`, the September Q2's routing rank), `local/fetch-model.sh` fetches it.
+
+Nine circles: all nine right, 17.6 tok/s. Quality on Lucebox's held-out set (`local/eval-lucebox`, `run-eval.sh`
+with `MODEL`/`RANK`/`ENGRAM`, one card, exact routing, dense half Q6_K), against the 1017 FP8 teacher:
+
+| | ppl | top-1 agreement | KL (top-256) |
+| --- | ---: | ---: | ---: |
+| 1017 FP8 (teacher) | 8.56 | - | - |
+| **ds4 1017 Q2** | **9.78** | **78.8%** | **0.269** |
+| lxe's 1017 2-bit (2026-10-18, dropped) | 11.73 | 70.9% | 0.488 |
+
+Speed, default two-card configuration with `local/power-tune.sh on`, 5 runs each (`local/bench-v41/ab-1017.sh`,
+`local/sweep-1017/`): 17K **14.48 13.96 14.51 14.27 14.61 = 14.37 tok/s** (the GSQ the same day: 13.63), Promessi Sposi
+19.80 19.95 17.71 16.44 19.89 = 18.76 (the GSQ: 17.70; a different model writes a different text - 300 tokens here,
+246 there). A rank rebuilt from the 1017's own routing (`--dump-routes local/routes-1017` is in the configuration) has
+not been tried yet.
+
 ## Reproduce
 
 ```

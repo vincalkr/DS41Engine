@@ -1,6 +1,6 @@
 <h1 align="center">ds41e - DeepSeek-V4.1-Flash on one RX 7900 XTX</h1>
 
-<p align="center"><b>DeepSeek-V4.1-Flash (40 layers x 384 experts) on ONE RX 7900 XTX - 152 GiB of experts across VRAM, pinned RAM and NVMe, plus 189 GiB of Engram on disk</b><br>
+<p align="center"><b>DeepSeek-V4.1-Flash-1017 (40 layers x 384 experts, antirez/ds4's Q2) on RX 7900 XTX cards - 152 GiB of experts across VRAM, pinned RAM and NVMe, plus 189 GiB of Engram on disk</b><br>
 Linux - ROCm/HIP - MIT</p>
 
 ## What this repository is
@@ -17,10 +17,9 @@ name starts with "Strata" into its shared `Strata-data`.
 
 ## The machine, and what it does
 
-RX 7900 XTX (24 GB), Ryzen 9 9900X (12 cores), 122 GiB RAM, a PCIe 5.0 NVMe, ROCm 7.14. The numbers below are one
-card; the default configuration also uses a second 24 GB card as an extra expert tier, and one card works too (see
-"Quick start", step 3). On disk in `models/`: the GSQ quant
-(152 GiB), its DSpark draft and tokenizer, and the two Engram tables (189 GiB).
+RX 7900 XTX (24 GB), Ryzen 9 9900X (12 cores), 122 GiB RAM, a PCIe 5.0 NVMe, ROCm 7.14. The table below is one card
+and the September GSQ quant (152 GiB of experts, the model until 2026-10-20); the default configuration also uses a
+second 24 GB card as an extra expert tier, and one card works too (see "Quick start", step 3).
 
 | through the server, exact routing | |
 | --- | ---: |
@@ -30,8 +29,10 @@ card; the default configuration also uses a second 24 GB card as an extra expert
 | prompt, 25K tokens fresh | ~370 tok/s |
 | prompt, a +300-token agent turn on 27K | 4.1-4.4 s |
 
-Two cards (the default) with `local/power-tune.sh on`, one-shot, 5 runs each: 17.70 tok/s mean on Promessi Sposi,
-**13.63 tok/s at 17K context** (one card, another series without power-tune: ~14.4 / ~8.6).
+The default model since 2026-10-20 is **DeepSeek-V4.1-Flash-1017 as antirez/ds4's Q2** (`models/ds4-1017`): against
+the 1017 FP8 on Lucebox's held-out set (8 x 1024 tokens) ppl 9.78 (FP8 8.56), top-1 78.8%, KL 0.269, where lxe's 2-bit
+1017 quant scored 11.73 / 70.9% / 0.488. Two cards with `local/power-tune.sh on`, one-shot, 5 runs each: **14.37 tok/s
+at 17K context** (the GSQ: 13.63) and 18.76 on Promessi Sposi (the GSQ: 17.70; another model, so another text).
 
 ## What made it fast, each with what it was worth
 
@@ -70,7 +71,7 @@ From a fresh clone, four commands (each step below says what it does):
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # the server's Python packages
-local/fetch-model.sh                                                  # 1. the model files into models/ (355 GB)
+local/fetch-model.sh                                                  # 1. the model files into models/ (~570 GB)
 ./build.sh                                                            # 2. ggml and the engine (HIP)
 ./run-v41-gsq.sh                                                      # 3. the server on 127.0.0.1:8150 (one card: ./run-v41-gsq-1gpu.sh)
 ```
@@ -83,17 +84,18 @@ What it needs (measured on the machine above; other setups are untested):
 | GPU | an RDNA3 card the build targets (`gfx1100`: RX 7900 XT / XTX, 20-24 GB); others are not tested. The default config uses a second 24 GB card; one card runs with `./run-v41-gsq-1gpu.sh` |
 | RAM | 128 GB class: the engine holds ~89 GB with the default 75 GiB arena (see "Adapting it" below) |
 | CPU | x86-64 with AVX2 (AVX-512 kernels are used when present) |
-| disk | 355 GB for `models/`, ~570 GB free at the download's peak (the Engram tables are extracted from two 101 GB shards); NVMe: experts that miss RAM are read from it during decode |
+| disk | ~570 GB for `models/` (the 366 GB GGUF plus the 203 GB of Engram tables extracted from it); NVMe: experts that miss RAM are read from it during decode |
 | tools | `cmake` >= 3.24, gcc, Python 3 (`requirements.txt`: pillow, psutil, regex, jinja2), curl; `aria2c` for fast downloads |
 
 ### 1. Get the model files
 
-`local/fetch-model.sh` builds the layout in `models/` (355 GB): the GSQ from
-[IndrasMirror/DeepSeek-V4.1-Flash-GSQ-Uncensored](https://huggingface.co/IndrasMirror/DeepSeek-V4.1-Flash-GSQ-Uncensored)
-(16 parts, joined and sha256-checked by the repo's `reassemble.sh`) and the two Engram tables, extracted from shards 47
-and 48 of [dealignai/DeepSeek-V4.1-Flash-UNCENSORED-FP8](https://huggingface.co/dealignai/DeepSeek-V4.1-Flash-UNCENSORED-FP8).
-It is resumable and uses `aria2c` (4 connections per file by default, `CONN`); `DRY_RUN=1` prints the plan. Every
-option is documented at the top of the script.
+`local/fetch-model.sh` builds the layout in `models/` (~570 GB): DeepSeek-V4.1-Flash-1017 as
+[antirez/ds4](https://github.com/antirez/ds4)'s Q2 (`DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf`, 366 GB, from
+[antirez/deepseek-v4.1-flash-gguf](https://huggingface.co/antirez/deepseek-v4.1-flash-gguf), sha256-checked), its
+two Engram tables extracted from that GGUF into the files the engine reads (`local/ds4-engram-extract.py`, 203 GB),
+and the tokenizer tables. It is resumable and uses `aria2c` (4 connections per file by default, `CONN`); `DRY_RUN=1`
+prints the plan. The September GSQ (the default until 2026-10-20) is `local/fetch-model-gsq.sh` with
+`local/ds41-local-gsq.json`.
 
 ### 2. Build
 

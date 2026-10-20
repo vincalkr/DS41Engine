@@ -27,15 +27,30 @@ if [ -z "$PY" ]; then
 fi
 echo "run-v41-gsq.sh: STRATA_HOME=$STRATA_HOME, python $PY"
 
-for f in "$R/models/V41-GSQ/V41-GSQ.gguf" \
-         "$R/models/engram/layers1/engram-L1.safetensors" \
-         "$R/models/engram/layers14/engram-L14.safetensors"; do
-    if [ ! -s "$f" ]; then
-        echo "run-v41-gsq.sh: $f is missing (or empty)." >&2
-        echo "run local/fetch-model.sh first - see the README, 'Getting the model files'." >&2
-        exit 1
-    fi
-done
+# The model files the configuration names (-m, --engram, its tokenizer) must be there.  --config in the arguments
+# replaces the default, as the server takes the last one.
+CFG="$R/local/ds41-local.json"
+prev=""
+for a in "$@"; do [ "$prev" = "--config" ] && CFG="$a"; prev="$a"; done
+missing=$("$PY" - "$CFG" "$R" <<'EOF'
+import json, os, sys
+cfg, root = sys.argv[1], sys.argv[2]
+c = json.load(open(cfg))
+a = c.get("args", [])
+need = [a[a.index("-m") + 1]] if "-m" in a else []
+if "--engram" in a: need += a[a.index("--engram") + 1].split(":")
+if c.get("tokenizer"): need.append(c["tokenizer"])
+for p in need:
+    q = p if os.path.isabs(p) else os.path.join(root, p)
+    if not os.path.exists(q) or (os.path.isfile(q) and os.path.getsize(q) == 0): print(q)
+EOF
+)
+if [ -n "$missing" ]; then
+    echo "run-v41-gsq.sh: missing for $CFG:" >&2
+    echo "$missing" | sed 's/^/  /' >&2
+    echo "fetch the model first - see the README, '1. Get the model files'." >&2
+    exit 1
+fi
 
 exec "$PY" "$R/tools/v41/serve/serve_ds41.py" \
      "--engine" "strata" \

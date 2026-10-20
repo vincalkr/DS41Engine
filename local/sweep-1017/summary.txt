@@ -1,0 +1,12 @@
+smoke                        circles        diff=0    decode: 47 tokens in 2.61 s = 17.62 tok/s; experts 7421 hit / 3010 cpu / 0 pcie / 92 file (71.1% VRAM hits), cpu 653 ms, file 124 ms; spec reads 0 issued / 0 used; prefet
+q2-r1                        huge17k        diff=0    decode: 128 tokens in 8.77 s = 14.48 tok/s; experts 12934 hit / 9420 cpu / 0 pcie / 952 file (57.9% VRAM hits), cpu 1984 ms, file 1264 ms; spec reads 0 issued / 0 used; p
+q2-r1                        sposi          diff=0    decode: 300 tokens in 15.10 s = 19.80 tok/s; experts 52160 hit / 11150 cpu / 0 pcie / 844 file (82.4% VRAM hits), cpu 2375 ms, file 1107 ms; spec reads 0 issued / 0 used;
+q2-r2                        huge17k        diff=0    decode: 128 tokens in 9.10 s = 13.96 tok/s; experts 12848 hit / 9378 cpu / 0 pcie / 972 file (57.8% VRAM hits), cpu 1954 ms, file 1570 ms; spec reads 0 issued / 0 used; p
+q2-r2                        sposi          diff=2    decode: 300 tokens in 14.99 s = 19.95 tok/s; experts 52353 hit / 11149 cpu / 0 pcie / 836 file (82.4% VRAM hits), cpu 2301 ms, file 1101 ms; spec reads 0 issued / 0 used;
+q2-r3                        huge17k        diff=0    decode: 128 tokens in 8.75 s = 14.51 tok/s; experts 12899 hit / 9466 cpu / 0 pcie / 964 file (57.7% VRAM hits), cpu 1965 ms, file 1275 ms; spec reads 0 issued / 0 used; p
+q2-r3                        sposi          diff=0    decode: 300 tokens in 16.88 s = 17.71 tok/s; experts 52160 hit / 11150 cpu / 0 pcie / 844 file (82.4% VRAM hits), cpu 2328 ms, file 1109 ms; spec reads 0 issued / 0 used;
+q2-r4                        huge17k        diff=0    decode: 128 tokens in 8.90 s = 14.27 tok/s; experts 12748 hit / 9480 cpu / 0 pcie / 983 file (57.4% VRAM hits), cpu 2008 ms, file 1292 ms; spec reads 0 issued / 0 used; p
+q2-r4                        sposi          diff=0    decode: 300 tokens in 18.18 s = 16.44 tok/s; experts 52160 hit / 11150 cpu / 0 pcie / 844 file (82.4% VRAM hits), cpu 2386 ms, file 1103 ms; spec reads 0 issued / 0 used;
+q2-r5                        huge17k        diff=0    decode: 128 tokens in 8.69 s = 14.61 tok/s; experts 12898 hit / 9419 cpu / 0 pcie / 960 file (57.8% VRAM hits), cpu 1939 ms, file 1222 ms; spec reads 0 issued / 0 used; p
+q2-r5                        sposi          diff=2    decode: 300 tokens in 15.03 s = 19.89 tok/s; experts 52353 hit / 11149 cpu / 0 pcie / 836 file (82.4% VRAM hits), cpu 2229 ms, file 1359 ms; spec reads 0 issued / 0 used;
+AB1017DONE

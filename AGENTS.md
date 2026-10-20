@@ -12,7 +12,9 @@ It holds DeepSeek only: the Qwen engine, its installer and the other models' cod
   `local/ds41-local-2gpu.json`; `./run-v41-gsq-1gpu.sh` for one card). Never expose it beyond `127.0.0.1`
   without `--api-key`.
 - The model files live in `models/` inside this folder (`local/fetch-model.sh` puts them there); keep it that way.
-  A verified backup is on the USB SSD (`/run/media/vincenzo/SSD NVME SAMSUNG/models`).
+  The default model (2026-10-20) is DeepSeek-V4.1-Flash-1017 as antirez/ds4's Q2 (`models/ds4-1017`, Engram in
+  `models/engram-1017`); the September GSQ is `local/ds41-local-gsq.json` (`local/fetch-model-gsq.sh`), backed up on
+  the USB SSD (`/run/media/vincenzo/SSD NVME SAMSUNG/models`).
 - Keep the folder name `ds41e`: a sibling Strata install's setup moves the `models/` of every sibling folder named
   `Strata*` into its `Strata-data`.
 
