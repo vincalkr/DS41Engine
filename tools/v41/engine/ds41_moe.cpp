@@ -206,6 +206,30 @@ struct PeerGpu {
     std::vector<Pend> pend;
     std::vector<cudaEvent_t> ev_free;
     int64_t admits = 0, admit_waits = 0;
+    /// STRATA_PEER_PROF=1 (diagnostic): at each hand-off the primary's stream is synced first, so the host sees when
+    /// card 0 - its own launches and the CPU rows - was ready, and then how much longer the peer's rows took.  Adds
+    /// one host sync per layer that used the peer (the sum sync follows right after anyway).
+    double t_issue = 0;                   ///< host time the layer's peer work was issued
+    double prof_issue_ms = 0;             ///< host time spent issuing it (card 0's own launches wait behind it)
+    int64_t prof_n = 0, prof_late = 0;    ///< hand-offs, and those where the peer was not done when card 0 was
+    double prof_ready_ms = 0;             ///< sum of issue -> card 0 ready
+    double prof_wait_ms = 0, prof_wait_max = 0, prof_chain_late_ms = 0;   ///< card 0 idle on the peer; issue -> peer done (late ones)
+
+    void prof_handoff(cudaStream_t prim) {
+        ck(cudaStreamSynchronize(prim), "peer prof primary sync");
+        const double t1 = now_ms();
+        ++prof_n;
+        prof_ready_ms += t1 - t_issue;
+        const cudaError_t q = cudaEventQuery(done);
+        if (q == cudaSuccess) return;
+        (void) cudaGetLastError();
+        ck(cudaEventSynchronize(done), "peer prof wait");
+        const double t2 = now_ms();
+        ++prof_late;
+        prof_wait_ms += t2 - t1;
+        prof_wait_max = std::max(prof_wait_max, t2 - t1);
+        prof_chain_late_ms += t2 - t_issue;
+    }
 
     const uint8_t* ptr(int64_t layer, int64_t expert) const {
         if (!base || layer < 0 || layer >= n_layers || expert < 0 || expert >= n_experts) return nullptr;
@@ -220,6 +244,15 @@ struct PeerGpu {
         if (admits > 0 || !pend.empty())
             std::fprintf(stderr, "peer adapt: %lld experts admitted, %lld waits on a landing copy\n", (long long) admits,
                          (long long) admit_waits);
+        if (prof_n > 0)
+            std::fprintf(stderr, "peer prof: %lld hand-offs (%lld rows); card 0 ready %.3f ms after the issue on "
+                                 "average; the peer was late in %lld (%.1f%%), card 0 waited %.1f ms in all "
+                                 "(%.3f ms per hand-off, max %.3f); issue -> peer done %.3f ms on the late ones; issuing took %.3f ms "
+                                 "per hand-off on the host\n",
+                         (long long) prof_n, (long long) rows, prof_ready_ms / (double) prof_n, (long long) prof_late,
+                         100.0 * (double) prof_late / (double) prof_n, prof_wait_ms, prof_wait_ms / (double) prof_n,
+                         prof_wait_max, prof_late > 0 ? prof_chain_late_ms / (double) prof_late : 0.0,
+                         prof_issue_ms / (double) prof_n);
         if (s_copy) (void) cudaStreamSynchronize(s_copy);
         for (const Pend& q : pend) (void) cudaEventDestroy(q.ev);
         for (cudaEvent_t ev : ev_free) (void) cudaEventDestroy(ev);
@@ -2812,6 +2845,7 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
     // without a peer makes, and only the kernel of these rows runs on the other card. ----
     if (npeer > 0) {
         PeerGpu& pg = *gp.peer;
+        const double t_peer0 = now_ms();
         DevGuard dg(pg.dev);
         // the activation: gp.h_x holds the same bytes the primary quantized (the branch above forces the host path
         // whenever the peer has rows), so the peer's q8_1 rows are the primary's byte for byte
@@ -2833,6 +2867,8 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
         ck(cudaMemcpyAsync(pg.h_parts, pg.d_parts, (size_t) npeer * (size_t) H * 4, cudaMemcpyDeviceToHost, pg.s),
            "peer parts d2h");
         ck(cudaEventRecord(pg.done, pg.s), "peer done");
+        pg.t_issue = now_ms();
+        pg.prof_issue_ms += pg.t_issue - t_peer0;
         if (!pg.slot_last.empty()) {
             ck(cudaEventRecord(pg.kdone, pg.s), "peer kernels done");
             for (int i = 0; i < npeer; ++i) {
@@ -3316,6 +3352,8 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
             gp.peer->rows += npeer;
             ++gp.peer->launches;
         } else if (npeer > 0) {
+            static const bool peer_prof = std::getenv("STRATA_PEER_PROF") != nullptr;
+            if (peer_prof) gp.peer->prof_handoff(gp.s);
             const cudaError_t we = cudaStreamWaitEvent(gp.s, gp.peer->done, 0);
             if (we != cudaSuccess || std::getenv("STRATA_PEER_HOSTWAIT")) {   // host wait: the fallback for a runtime
                 (void) cudaGetLastError();                                    // that refuses a cross-device wait
@@ -3879,6 +3917,7 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
     int npe = 0;
     if (npe_u > 0) {
         PeerGpu& pg = *gp.peer;
+        const double t_peer0 = now_ms();
         DevGuard dg(pg.dev);
         ck(cudaMemcpyAsync(pg.d_x, gp.h_x, (size_t) nt * (size_t) H * 4, cudaMemcpyHostToDevice, pg.s), "peer x h2d");
         strata::kernels::native_quantize_q8_1((const float*) pg.d_x, pg.d_xq, (int) H, nt, pg.s);
@@ -3924,6 +3963,8 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
         ck(cudaMemcpyAsync(pg.h_parts, pg.d_parts, (size_t) npe * (size_t) H * 4, cudaMemcpyDeviceToHost, pg.s),
            "peer parts d2h");
         ck(cudaEventRecord(pg.done, pg.s), "peer done");
+        pg.t_issue = now_ms();
+        pg.prof_issue_ms += pg.t_issue - t_peer0;
     }
     xmark(1);
     // ---- one grouped launch per (site, class); groups = distinct experts, entries = the tokens routing to them ----
@@ -4164,6 +4205,8 @@ bool gpu_run_n_ex(Ds41MoeImpl& im, int64_t layer, int nt, const int32_t* ids, co
                                gp.s), "cpu row h2d");
         }
         if (npe > 0) {   // the peer's rows: wait for its D2H, then each into its routing-index row
+            static const bool peer_prof = std::getenv("STRATA_PEER_PROF") != nullptr;
+            if (peer_prof) gp.peer->prof_handoff(gp.s);
             if (cudaStreamWaitEvent(gp.s, gp.peer->done, 0) != cudaSuccess) {
                 (void) cudaGetLastError();
                 ck(cudaEventSynchronize(gp.peer->done), "peer host wait");

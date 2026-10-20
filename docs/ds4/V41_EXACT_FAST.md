@@ -284,6 +284,35 @@ ms, tier 105-195 ms.
 
 Prompt (5,783 tokens, 12 threads): 246.4 tok/s, split dense 7.2 s / experts 16.0 s (file wait 5.1 s).
 
+## How long card 0 waits for card 1 (2026-10-20)
+
+`STRATA_PEER_PROF=1` (opt-in diagnostic, `PeerGpu::prof_handoff`): at each layer's hand-off card 0's stream is synced
+first, then the peer's event, so the host sees when card 0 (its own launches and the CPU rows) was ready and how
+much longer the peer's rows took. One-shot runs, the chat configuration's flags and env (`--arena-gib 75`, Q6_K dense
+half, `--pcie 0`, `--pf-b 0`, the peer adaptive), forced on the 1-card run's tokens, 2 repetitions
+(`local/bench-v41/ab-peerwait.sh`, results in `local/sweep-peerwait/`):
+
+| | 1 card | 2 cards | 2 cards + profiler |
+| --- | ---: | ---: | ---: |
+| Promessi Sposi, 265 tokens, decode tok/s | 14.74 / 14.13 | 15.34 / 14.94 | 15.27 / 14.92 |
+| 17,349-token prompt, 128 tokens, decode tok/s | 8.78 / 8.49 | 9.65 / 9.77 | 9.21 / 9.63 |
+
+| profiler, per hand-off (one layer that used the peer) | Sposi | 17K |
+| --- | ---: | ---: |
+| hand-offs per token | 22.2 | 30.3 |
+| card 0 ready after the peer's issue | 0.62-0.63 ms | 1.27-1.51 ms |
+| peer later than card 0 | 69% | 45% |
+| card 0 idle waiting for it | 0.135 ms (3.0 ms/token, ~5% of a token) | 0.097 ms (2.9 ms/token, ~3%) |
+| issue -> peer rows back on the host, when late | 0.40 ms | 0.47 ms |
+| host time to issue the peer's work | 0.017 ms | 0.018 ms |
+
+The round trip over the x2 chipset link is ~0.4-0.5 ms and mostly hides behind card 0's own work; removing the wait
+entirely is worth at most ~3-5%. What the second card changes is the CPU work: CPU-computed misses 18,134 -> 9,506
+(Sposi) and 14,759 -> ~9,130 (17K), `cpu` 3.9 -> 2.1 s and 3.0 -> 1.95 s. The NVMe reads do not go down (Sposi 1,528
+-> 1,432, 17K 1,818 -> ~1,900; `file` 3.7-4.2 s either way, ~30 ms/token at 17K): the peer's store is filled from the
+arena, so it holds copies of arena experts, not experts that would otherwise be read from disk. The prompt is the
+same with one or two cards (337-346 tok/s at 17K).
+
 ## Reproduce
 
 ```
