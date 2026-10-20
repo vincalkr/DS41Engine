@@ -9,7 +9,7 @@ It holds DeepSeek only: the Qwen engine, its installer and the other models' cod
 ## Running it
 
 - `./run-v41-gsq.sh` starts the server on `127.0.0.1:8150` with `local/ds41-local.json` (two cards, the same as
-  `local/ds41-local-2gpu.json`; `--config local/ds41-local-1gpu.json` for one). Never expose it beyond `127.0.0.1`
+  `local/ds41-local-2gpu.json`; `./run-v41-gsq-1gpu.sh` for one card). Never expose it beyond `127.0.0.1`
   without `--api-key`.
 - The model files live in `models/` inside this folder (`local/fetch-model.sh` puts them there); keep it that way.
   A verified backup is on the USB SSD (`/run/media/vincenzo/SSD NVME SAMSUNG/models`).

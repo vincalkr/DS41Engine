@@ -1,5 +1,5 @@
 #!/bin/sh
-# DeepSeek-V4.1-Flash (GSQ) on one RX 7900 XTX (gfx1100, ROCm/HIP).
+# DeepSeek-V4.1-Flash (GSQ) on two RX 7900 XTX (gfx1100, ROCm/HIP); one card: ./run-v41-gsq-1gpu.sh.
 # The model layout, the settings and the measured numbers: local/ds41-local.json and docs/ds4/.
 # Extra arguments are passed to the server, for example:  ./run-v41-gsq.sh --port 8151
 # The repository root is wherever this script lives, so the launcher works from a clone anywhere.

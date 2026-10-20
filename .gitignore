@@ -47,6 +47,8 @@ td.log
 /mtp/
 /run-*.bat
 /run-*.sh
+!/run-v41-gsq.sh
+!/run-v41-gsq-1gpu.sh
 /strata-*.json
 /strata-*.log
 /build-strata.bat

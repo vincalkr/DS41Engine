@@ -126,7 +126,7 @@ Server tests (no GPU or model needed): `.venv/bin/python -m unittest discover -s
 ```sh
 ./run-v41-gsq.sh                 # the server on 127.0.0.1:8150 (web chat at /, API at /v1), config local/ds41-local.json
 ./run-v41-gsq.sh --port 8151     # extra server arguments are passed straight through
-./run-v41-gsq.sh --config local/ds41-local-1gpu.json    # one card
+./run-v41-gsq-1gpu.sh            # one card (local/ds41-local-1gpu.json)
 ```
 
 `local/ds41-local.json` (the default, the same as `local/ds41-local-2gpu.json`) uses two cards: `--peer-device 1`
@@ -136,7 +136,7 @@ instead of the CPU. `STRATA_PEER_DISJOINT=1` fills that store with experts the R
 copies. Measured 2026-10-20 (one-shot, 2 runs each): against two cards without the two envs, NVMe reads -42% and
 decode 14.07 -> 15.58 tok/s on short prose, 9.91 -> 10.82 tok/s at 17K context; one card measured 14.4 and 8.6 tok/s on
 the same prompts in another series. With a single card the default stops at startup ("peer device 1 does not
-exist"): use `local/ds41-local-1gpu.json`. `--peer-device` takes one extra card.
+exist"): use `./run-v41-gsq-1gpu.sh`. `--peer-device` takes one extra card.
 
 Optional, with root: `sudo bash local/power-tune.sh on` keeps the NVMe and the CPUs out of their deep idle states
 (APST, C3) and sets the `performance` governor. Decode reads an expert from the drive every 10-20 ms, and a drive or
