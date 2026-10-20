@@ -6,14 +6,8 @@ Linux - ROCm/HIP - MIT</p>
 ## What this repository is
 
 The DeepSeek-V4.1-Flash engine (`tools/v41/engine`), its OpenAI- and Anthropic-compatible server and web app
-(`serve/`, `tools/v41/serve/serve_ds41.py`), and the configurations, tools and measurements for running it on **one**
-RX 7900 XTX with the model's own routing (`--route-bias 0`: every expert the model picks, wherever it lives).
-Everything that belonged to other models (Strata's Qwen engine, the SYCL port, the Qwen installer) was removed on
-2026-10-18; of Strata's C++ only the 61 files the engine links are left (expert cache, pinned memory, CPU and HIP
-expert kernels, the prompt path's MMQ).
-
-Keep the folder name `ds41e`: another Strata install's setup moves the `models/` folder of every sibling folder whose
-name starts with "Strata" into its shared `Strata-data`.
+(`serve/`, `tools/v41/serve/serve_ds41.py`), and the configurations, tools and measurements for running it on
+RX 7900 XTX cards with the model's own routing (`--route-bias 0`: every expert the model picks, wherever it lives).
 
 ## The machine, and what it does
 
