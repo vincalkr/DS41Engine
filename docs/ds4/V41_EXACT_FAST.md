@@ -598,11 +598,16 @@ in the config's `env` (the server otherwise exposes only `"gpu"`).
 Default flags (no `--peer-device`), greedy 96 tokens on `local/prompts/code_review.i32`: tokens identical to
 `local/gate-before.txt`, and the arena/file/VRAM counts (8229 / 7131 / 1622) and hit counters too.
 
-## Next levers, by expected value
+## Next levers, by expected value (2026-10-20)
 
-1. **The dense half's launch count** (4,596 kernels a token, ~16 ms of gaps at the ceiling): ggml graph replay
-   instead of re-capture, or fewer, fused ops. Removing host syncs alone was measured and does not pay (above).
-2. **An adaptive peer store**: card 1's store is static; admitting card 1's own misses over the x2 link (async, ~3 ms
-   per blob) would let both cards follow the conversation's working set (one answer uses < 64 GiB of experts).
-3. **The verify pass's tier** (105-195 ms for 5.5 tokens): union hit rate 60-74% against 88% single-step.
-4. **A drafter that accepts Italian**: at ~1 draft per pass DSpark cannot pay on prose.
+1. **The machine's settings**: keep `local/power-tune.sh on` across reboots (`nvme_core.default_ps_max_latency_us=0`
+   and the C3 / governor settings at boot): +12.6% at 17K, measured.
+2. **RAM bandwidth**: the CPU experts run at ~47-50 of the RAM's 52-54 GB/s (10 ms a token on short prose, 17 at
+   17K); faster RAM (EXPO, if the DIMMs run under their rating) is the only lever on them short of fewer misses.
+3. **The spread left**: one short-prose run in five still loses ~10 ms a token in the dense half or the host, cause
+   not found.
+4. **The dense half's small kernels** (~3,500 launches a token on card 0): fusion; the Q6_K matvec itself is no longer
+   the lever (`GGML_CUDA_Q6K_MMVQ=1` is faster alone, decode unchanged).
+5. **A better expert predictor** for speculative file reads: today's uses 4-5% of what it reads and loses.
+
+Done since the earlier list: the adaptive peer store (`STRATA_PEER_ADAPT`), graph replay (on).

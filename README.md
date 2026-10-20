@@ -30,6 +30,9 @@ card; the default configuration also uses a second 24 GB card as an extra expert
 | prompt, 25K tokens fresh | ~370 tok/s |
 | prompt, a +300-token agent turn on 27K | 4.1-4.4 s |
 
+Two cards (the default) with `local/power-tune.sh on`, one-shot, 5 runs each: 17.70 tok/s mean on Promessi Sposi,
+**13.63 tok/s at 17K context** (one card, another series without power-tune: ~14.4 / ~8.6).
+
 ## What made it fast, each with what it was worth
 
 All from [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), where every row is measured.
@@ -45,6 +48,8 @@ All from [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), where every r
 | `STRATA_PRESTAGE_MIN=512` (the lazy prestage) | +300-token turn 4.8-5.0 -> 4.1-4.4 s, long prompts unchanged |
 | `STRATA_SERVE_STEP_MAX=96` (from 256): agent turns of 97-256 new tokens go to the layer-major batch | time to first token on a +171 / +256-token turn 9.7-9.8 -> 6.3-6.8 s / 12.9-14.4 -> 6.0-9.4 s |
 | `--kv-q8`, `STRATA_PRESTAGE_GIB=1.5` | 8-bit KV: last-row top-5 identical (cosine 0.999); prestage +5.8% prompt |
+| second card, its store disjoint from the RAM arena (`STRATA_PEER_DISJOINT`, `STRATA_ARENA_EVICT_PEER`) | NVMe reads -42%; short prose 14.07 -> 15.58, 17K 9.91 -> 10.82 tok/s |
+| `local/power-tune.sh on` (root: NVMe APST off, CPU C3 off, `performance` governor) | a file read 2.0 -> 1.4 ms; 17K 12.11 -> 13.63 tok/s, every run fast (before: 2 of 5) |
 
 ## Where the time goes
 
@@ -54,12 +59,22 @@ misses cost ~42 ms a token. In the agent session of 2026-10-18 the VRAM
 held ~1,785 of the 15,360 experts and 60-65% of lookups hit it; the rest were computed on the CPU (~85 a token) or read
 from NVMe (~10 a token).
 
+Two cards, 2026-10-20 (`STRATA_DEC_PROF`, rocprofv3): short prose ~28 ms dense half + ~31 ms expert tier a token, 17K
+~37 + ~60. Card 0 is busy ~26 ms of a ~60 ms token and waits for the CPU tier once per layer. The CPU experts read
+~47-50 of the RAM's 52-54 GB/s, so only faster RAM or fewer CPU misses speed them up. Decode's NVMe reads come 10-20 ms
+apart, which let the drive and the CPU doze off between them: that is what `power-tune.sh` fixes.
+
 ## Tried and reverted
 
 Route bias (fast and wrong: invented circles), DSpark on Italian prose (~1 draft accepted a pass), the
 conversation-adaptive arena (more file reads on short turns), CPU pinning,
 `GGML_CUDA_DISABLE_FUSION`, an async dense path, and DeepSeek-V4.1-Flash-1017 as lxe's 2-bit quant (faithful load,
-worse answers: ppl 11.63 vs the FP8's 8.56). Details and numbers in [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
+worse answers: ppl 11.63 vs the FP8's 8.56). Measured on 2026-10-20 without a gain (kept opt-in or as scripts): ROCm
+runtime knobs (`HSA_ENABLE_SDMA=0` -22%), the cards' clock level `high` (it holds the memory clock at 772 MHz: -4%),
+zero-copy expert sums, persistent file readers, speculative file reads (4-5% of them used: -5 to -26%), a faster
+Q6_K matvec kernel (`GGML_CUDA_Q6K_MMVQ=1`: faster alone, decode unchanged), prompt-lookup drafting (1.3-1.5 tokens a
+step on agent sessions, simulated), and a smaller context (128K frees ~0.2 GiB of VRAM). Details and numbers in
+[docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
 
 ## Quick start
 
