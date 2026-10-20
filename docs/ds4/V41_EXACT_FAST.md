@@ -604,6 +604,8 @@ one agent session through the server, 113,170 tokens = 27.2 M selections, plus t
 not pay (`local/bench-v41/ab-rank1017.sh`, 3 runs each, interleaved): 17K 14.09 (`rank-q2.bin`) against 14.08, VRAM
 hits 57.5% against 58.8%; Promessi Sposi **19.98 against 17.73**, VRAM hits 82.4% against 80.4%, file reads 843
 against 1,080. One session's routing fits that session's kind of text and costs prose; `local/rank-q2.bin` stays.
+`local/update-rank.sh` does the rebuild, this measurement and the decision in one go (apply only if neither prompt is
+>2% slower and the two together >=1% faster); on these runs it answers KEEP, and APPLY with the two ranks swapped.
 
 ## Reproduce
 

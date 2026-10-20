@@ -134,6 +134,15 @@ at 17K context, 17.17 -> 17.70 on short prose. It costs idle power and does not 
 the packages of `requirements.txt`). Never expose the server beyond
 `127.0.0.1` without `--api-key`. Loading takes about a minute; then `curl -s http://127.0.0.1:8150/v1/models` answers.
 
+### Updating the expert rank
+
+The server counts which experts the router picks (`--dump-routes local/routes-1017`, kept across restarts).
+`local/update-rank.sh` turns those counts plus the calibration corpus into a new rank, measures it against the one in
+use (3 runs each at 17K context and on short prose, ~25 minutes, the server stopped meanwhile and started again after)
+and applies it only if neither prompt is more than 2% slower and both together are at least 1% faster; the decision
+goes to `local/sweep-1017/summary.txt`. Measured 2026-10-20: a rank from one agent session tied at 17K and lost 11% on
+prose, so it was kept out.
+
 ### Adapting it to another machine
 
 `local/ds41-local.json` is this machine's configuration; `local/cfg.py` edits it without breaking the argument list
