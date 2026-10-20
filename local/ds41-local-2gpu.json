@@ -58,7 +58,9 @@
   "STRATA_DENSE_NOCONT": "1",
   "STRATA_DENSE_ALIAS": "1",
   "STRATA_DENSE_REQUANT": "q6_K",
-  "STRATA_SERVE_STEP_MAX": "96"
+  "STRATA_SERVE_STEP_MAX": "96",
+  "STRATA_PEER_DISJOINT": "1",
+  "STRATA_ARENA_EVICT_PEER": "1"
  },
  "cwd": ".",
  "tokenizer": "models/V41-GSQ/tokenizer",

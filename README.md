@@ -18,7 +18,8 @@ name starts with "Strata" into its shared `Strata-data`.
 ## The machine, and what it does
 
 RX 7900 XTX (24 GB), Ryzen 9 9900X (12 cores), 122 GiB RAM, a PCIe 5.0 NVMe, ROCm 7.14. The numbers below are one
-card; a second card can be added as an extra expert tier (see "Quick start", step 3). On disk in `models/`: the GSQ quant
+card; the default configuration also uses a second 24 GB card as an extra expert tier, and one card works too (see
+"Quick start", step 3). On disk in `models/`: the GSQ quant
 (152 GiB), its DSpark draft and tokenizer, and the two Engram tables (189 GiB).
 
 | through the server, exact routing | |
@@ -69,7 +70,7 @@ What it needs (measured on the machine above; other setups are untested):
 | | |
 | --- | --- |
 | OS, GPU stack | Linux, ROCm (7.14 here) with `hipcc`, hipBLAS and `/opt/rocm/lib/llvm/bin/clang++` |
-| GPU | an RDNA3 card the build targets (`gfx1100`: RX 7900 XT / XTX, 20-24 GB); others are not tested |
+| GPU | an RDNA3 card the build targets (`gfx1100`: RX 7900 XT / XTX, 20-24 GB); others are not tested. The default config uses a second 24 GB card; one card needs `local/ds41-local-1gpu.json` |
 | RAM | 128 GB class: the engine holds ~89 GB with the default 75 GiB arena (see "Adapting it" below) |
 | CPU | x86-64 with AVX2 (AVX-512 kernels are used when present) |
 | disk | 355 GB for `models/`, ~570 GB free at the download's peak (the Engram tables are extracted from two 101 GB shards); NVMe: experts that miss RAM are read from it during decode |
@@ -110,13 +111,17 @@ Server tests (no GPU or model needed): `.venv/bin/python -m unittest discover -s
 ```sh
 ./run-v41-gsq.sh                 # the server on 127.0.0.1:8150 (web chat at /, API at /v1), config local/ds41-local.json
 ./run-v41-gsq.sh --port 8151     # extra server arguments are passed straight through
-./run-v41-gsq.sh --config local/ds41-local-2gpu.json    # two cards: the second holds extra experts
+./run-v41-gsq.sh --config local/ds41-local-1gpu.json    # one card
 ```
 
-`local/ds41-local-2gpu.json` is the same configuration plus `--peer-device 1`: card 1 keeps its own 22 GiB expert
-store (adaptive), and the experts that miss card 0's VRAM but sit there are computed on card 1 instead of the CPU.
-Measured on this box: +13% decode on short prose (before the Q6_K dense half), the same as one card at 25K context
-(14.3 / 15.2 against 15.5 / 13.5 tok/s), so one card is the default. `--peer-device` takes one extra card.
+`local/ds41-local.json` (the default, the same as `local/ds41-local-2gpu.json`) uses two cards: `--peer-device 1`
+gives card 1 its own 22 GiB expert store, and the experts that miss card 0's VRAM but sit there are computed on card 1
+instead of the CPU. `STRATA_PEER_DISJOINT=1` fills that store with experts the RAM arena does not hold, and
+`STRATA_ARENA_EVICT_PEER=1` makes the arena give up the experts card 1 holds first, so card 1 adds capacity instead of
+copies. Measured 2026-10-20 (one-shot, 2 runs each): against two cards without the two envs, NVMe reads -42% and
+decode 14.07 -> 15.58 tok/s on short prose, 9.91 -> 10.82 tok/s at 17K context; one card measured 14.4 and 8.6 tok/s on
+the same prompts in another series. With a single card the default stops at startup ("peer device 1 does not
+exist"): use `local/ds41-local-1gpu.json`. `--peer-device` takes one extra card.
 
 `run-v41-gsq.sh` checks that the model and the Engram tables are in `models/`. Python needs pillow, psutil, regex and jinja2
 (`python3 -m venv .venv && .venv/bin/pip install pillow psutil regex jinja2`). Never expose the server beyond
@@ -130,7 +135,7 @@ Measured on this box: +13% decode on short prose (before the Q6_K dense half), t
 ```sh
 python3 local/cfg.py arg --threads 8         # the CPU's PHYSICAL cores (12 here: 12 measured 10.4 tok/s, 24 measured 7.3)
 python3 local/cfg.py arg --arena-gib 50      # pinned RAM for experts: 75 GiB on 122 GiB here; keep ~45 GiB beside it
-python3 local/cfg.py env HIP_VISIBLE_DEVICES=1    # which card, if the 7900 is not device 0
+python3 local/cfg.py env HIP_VISIBLE_DEVICES=1,0  # the cards, the one on the fastest PCIe link first (it streams the prompt's experts)
 ```
 
 The arena is the biggest lever after the card: every expert that is not in VRAM or the arena is read from NVMe during

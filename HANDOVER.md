@@ -13,6 +13,11 @@ latest state is in the update notes below and in `docs/ds4/V41_EXACT_FAST.md`). 
 > prompts, ~11-14 at 25K context), and four ds41 engine commits are in (small-turn prefill: a +304-token agent turn
 > 4.8-5.0 -> 4.1-4.4 s with `STRATA_PRESTAGE_MIN=512`; the conversation-adaptive arena measured and left off) - all in
 > [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
+>
+> **Update 2026-10-20:** the chat runs on two cards again (`local/ds41-local.json` = `local/ds41-local-2gpu.json`):
+> card 1's store now holds experts the RAM arena does not (`STRATA_PEER_DISJOINT=1`, `STRATA_ARENA_EVICT_PEER=1`),
+> NVMe reads -42%, decode +11% / +9% on short prose / 17K context against two cards without them; card 0 waits
+> ~0.1 ms per layer on card 1 (`STRATA_PEER_PROF=1`). Numbers in [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
 
 ## 0. TL;DR
 
