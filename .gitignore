@@ -95,3 +95,8 @@ build-vision-cuda12.bat
 /local/routes-chat/
 /local/routes-1017/
 /local/stats-chat-merged/
+
+# the per-run logs of the measurement sweeps stay local; the summaries and the reference tokens are kept
+/local/sweep-*/*
+!/local/sweep-*/summary.txt
+!/local/sweep-*/ref-*.ids

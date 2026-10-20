@@ -1,9 +1,0 @@
-La **Divina Commedia** è il capolavoro di Dante Alighieri, scritto tra il 1304 e il 1321. È un poema in tre parti (Inferno, Purgatorio, Paradiso) che racconta il viaggio di Dante attraverso l'aldilà.
-
-**Struttura:**
-
-- **Inferno**: Dante, guidato dal poeta Virgilio, attraversa i 9 cerchi dell'Inferno, dove i peccatori sono puniti secondo la legge del contrappasso (la pena riflette il peccato). Incontra figure come Paolo e Francesca, Ulisse, e Lucifero al fondo.
-- **Purgatorio**: Dante risale la montagna del Purgatorio, dove le anime si purificano dai peccati. Qui incontra Beatrice, che diventa la sua guida.
-- **Paradiso**: Dante sale attraverso i cieli del Paradiso fino alla visione di Dio, guidato da Beatrice e poi da San Bernardo.
-
-**Significato:** Il viaggio rappresenta allegoricamente il percorso dell'anima verso la redenzione: dall'Inferno (peccato) al Purgatorio (purificazione) al Paradiso (salvezza). Dante usa il poema per esplorare temi teologici, politici e morali, mescolando personaggi reali,
