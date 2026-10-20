@@ -64,18 +64,6 @@ Two cards, 2026-10-20 (`STRATA_DEC_PROF`, rocprofv3): short prose ~28 ms dense h
 ~47-50 of the RAM's 52-54 GB/s, so only faster RAM or fewer CPU misses speed them up. Decode's NVMe reads come 10-20 ms
 apart, which let the drive and the CPU doze off between them: that is what `power-tune.sh` fixes.
 
-## Tried and reverted
-
-Route bias (fast and wrong: invented circles), DSpark on Italian prose (~1 draft accepted a pass), the
-conversation-adaptive arena (more file reads on short turns), CPU pinning,
-`GGML_CUDA_DISABLE_FUSION`, an async dense path, and DeepSeek-V4.1-Flash-1017 as lxe's 2-bit quant (faithful load,
-worse answers: ppl 11.63 vs the FP8's 8.56). Measured on 2026-10-20 without a gain (kept opt-in or as scripts): ROCm
-runtime knobs (`HSA_ENABLE_SDMA=0` -22%), the cards' clock level `high` (it holds the memory clock at 772 MHz: -4%),
-zero-copy expert sums, persistent file readers, speculative file reads (4-5% of them used: -5 to -26%), a faster
-Q6_K matvec kernel (`GGML_CUDA_Q6K_MMVQ=1`: faster alone, decode unchanged), prompt-lookup drafting (1.3-1.5 tokens a
-step on agent sessions, simulated), and a smaller context (128K frees ~0.2 GiB of VRAM). Details and numbers in
-[docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
-
 ## Quick start
 
 From a fresh clone, four commands (each step below says what it does):
