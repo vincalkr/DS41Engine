@@ -597,8 +597,13 @@ with `MODEL`/`RANK`/`ENGRAM`, one card, exact routing, dense half Q6_K), against
 Speed, default two-card configuration with `local/power-tune.sh on`, 5 runs each (`local/bench-v41/ab-1017.sh`,
 `local/sweep-1017/`): 17K **14.48 13.96 14.51 14.27 14.61 = 14.37 tok/s** (the GSQ the same day: 13.63), Promessi Sposi
 19.80 19.95 17.71 16.44 19.89 = 18.76 (the GSQ: 17.70; a different model writes a different text - 300 tokens here,
-246 there). A rank rebuilt from the 1017's own routing (`--dump-routes local/routes-1017` is in the configuration) has
-not been tried yet.
+246 there).
+
+A rank from the 1017's own routing (`ROUTES=local/routes-1017 MAP= OUT=local/rank-1017.bin local/rebuild-rank.sh`:
+one agent session through the server, 113,170 tokens = 27.2 M selections, plus the September Q2's corpus, 2.0 M) does
+not pay (`local/bench-v41/ab-rank1017.sh`, 3 runs each, interleaved): 17K 14.09 (`rank-q2.bin`) against 14.08, VRAM
+hits 57.5% against 58.8%; Promessi Sposi **19.98 against 17.73**, VRAM hits 82.4% against 80.4%, file reads 843
+against 1,080. One session's routing fits that session's kind of text and costs prose; `local/rank-q2.bin` stays.
 
 ## Reproduce
 

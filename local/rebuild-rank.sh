@@ -8,20 +8,26 @@
 # This script sums those counts (times chat-weight) with local/calib-q2/stats-merged, ranks the sum with the GSQ's
 # per-expert sizes (local/gsq-alloc-map.json) and writes local/rank-gsq-chat.bin.  The chat config reads
 # local/rank-gsq-mixed.bin: to use the new rank, point --rank at the new file (or copy it over) and restart.
+# The ds4 1017 Q2 (the default model since 2026-10-20; one blob size, so no map):
+#   ROUTES=local/routes-1017 MAP= OUT=local/rank-1017.bin local/rebuild-rank.sh
 set -eu
 cd "$(dirname "$0")/.."
 W="${1:-1}"
-[ -f local/routes-chat/L00.json ] || { echo "no chat routes yet in local/routes-chat (start the chat, use it)" >&2; exit 1; }
-python3 - "$W" <<'EOF'
+ROUTES="${ROUTES:-local/routes-chat}"
+MAP="${MAP-local/gsq-alloc-map.json}"
+OUT="${OUT:-local/rank-gsq-chat.bin}"
+STATS="${OUT%.bin}.stats"
+[ -f "$ROUTES/L00.json" ] || { echo "no chat routes yet in $ROUTES (start the chat, use it)" >&2; exit 1; }
+python3 - "$W" "$ROUTES" "$STATS" <<'EOF'
 import json, os, sys
 w = float(sys.argv[1])
 L, NE = 40, 384
-out = "local/stats-chat-merged"
+routes, out = sys.argv[2], sys.argv[3]
 os.makedirs(out, exist_ok=True)
 tot_c = tot_r = 0
 for l in range(L):
     a = json.load(open(f"local/calib-q2/stats-merged/L{l:02d}.json"))["experts"]
-    b = json.load(open(f"local/routes-chat/L{l:02d}.json"))["experts"]
+    b = json.load(open(f"{routes}/L{l:02d}.json"))["experts"]
     ex = {}
     for e in range(NE):
         na, nb = int(a[str(e)]["n"]), int(b[str(e)]["n"])
@@ -30,4 +36,4 @@ for l in range(L):
     json.dump({"layer": l, "top_k": 6, "experts": ex}, open(f"{out}/L{l:02d}.json", "w"))
 print(f"corpus {tot_c} selections + chat {tot_r} x {w} -> {out}")
 EOF
-python3 tools/v41/engine/v41_rank.py --stats local/stats-chat-merged --map local/gsq-alloc-map.json --out local/rank-gsq-chat.bin
+python3 tools/v41/engine/v41_rank.py --stats "$STATS" ${MAP:+--map "$MAP"} --out "$OUT"
