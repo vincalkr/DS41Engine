@@ -1,0 +1,156 @@
+memguard: scope ds4-guard-2283031 MemoryMax=110G swap=0 floor=4 GiB (avail 109 GiB)
+ggml_cuda_init: found 2 ROCm devices (Total VRAM: 49120 MiB):
+  Device 0: AMD Radeon RX 7900 XTX, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 24560 MiB
+  Device 1: AMD Radeon RX 7900 XTX, gfx1100 (0x1100), VMM: no, Wave Size: 32, VRAM: 24560 MiB
+kv: compressed KV + indexer keys as q8_0 (--kv-q8/--kv-type)
+dense requant: 321 Q8_0 matrices -> q6_K, 7.59 -> 5.86 GB
+enc-skip: cut at layer 20 (last kv source), replay window 2560 (reach 2560)
+VRAM: 14.66 GiB free after the dense half -> 14.16 GiB of expert slots (margin 0.50)
+peer: device 1, 23.95 GiB free of 23.98 GiB
+arena: pinned (cudaHostRegister PORTABLE ok; large pages skipped (STRATA_NO_LARGEPAGES); using 4 KB pages)
+tier: 0 experts in VRAM, 7910 in the RAM arena (75.0 GiB), 5817 file tier; seeded in 21.0 s
+loaded in 33.8 s: 40 layers, ctx 24576, prefill chunk 0, experts gpu, 9 classes
+enc-skip: first batch B=8192, cut=8192 (phase A 8192 cols, phase B 0)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 11/11/42)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 143/143/11)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 11/11/11)
+ds4_moe: run_chunk: layer 0 stays on MMVQ (types 42/42/11)
+chunk prestage: 1.50 GiB device region
+prompt 8192/17349ds4_moe: run_chunk: layer 31 stays on MMVQ (types 11/11/143)
+prompt 16384/17349prompt 17349/17349peer: device 1 holds 2353 experts (21.99 of a 22.00 GiB budget), none in the arena, read from the model file in 8.3 s; the split leaves 1330 of card 0's 1330 resident experts to card 0
+
+VRAM after the prompt: 11.85 GiB free -> 11.35 GiB of expert slots: 1330 experts in VRAM (11.0 s)
+prompt: 17349 tokens in 51.99 s = 333.7 tok/s (experts 0 hit / 0 cpu / 2443440 pcie / 8884 file)
+prompt split: dense 17.0 s, experts 34.7 s (file wait 11.2 s), logits 0.0 s
+STRATA_FORCE_IDS: 128 forced tokens from local/sweep-prof/ref-huge17k.ids
+3476
+477
+35694
+260
+2395
+345
+3312
+2019
+396
+23332
+260
+13055
+4245
+339
+361
+6849
+2366
+4463
+1733
+19086
+18121
+6849
+2366
+4463
+1051
+3618
+11
+875
+528
+6849
+2366
+394
+10628
+285
+34333
+833
+528
+6849
+2366
+4463
+269
+14
+2562
+510
+528
+1901
+343
+8017
+2366
+1133
+1836
+5123
+14
+2562
+2542
+269
+7004
+2562
+510
+528
+1354
+269
+510
+361
+2376
+2107
+344
+1505
+377
+9405
+890
+304
+260
+2767
+80706
+14
+377
+12757
+305
+24353
+14
+513
+260
+4031
+12625
+339
+3536
+14
+295
+2496
+14
+270
+2038
+1473
+2239
+4454
+418
+566
+2019
+305
+1192
+304
+11284
+1660
+834
+16
+2866
+47468
+339
+3476
+477
+35694
+260
+2395
+345
+3312
+2019
+396
+23332
+260
+13055
+4245
+339
+361
+6849
+2366
+4463
+1733
+decode: 128 tokens in 13.93 s = 9.12 tok/s; experts 11934 hit / 9493 cpu / 0 pcie / 1124 file (55.7% VRAM hits), cpu 2137 ms, file 3139 ms; spec reads 0 issued / 0 used; prefetch 0 issued / 0 outside the arena / 0 used
+peer: device 1 holds 2353 experts, computed 9053 decode rows
+peer adapt: 1748 experts admitted, 0 waits on a landing copy

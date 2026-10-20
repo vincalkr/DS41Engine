@@ -44,3 +44,28 @@ void decode_rows_sum(const float* parts, const float* w, int K, int64_t H, float
     decode_rows_sum_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(parts, w, K, H, out);
     check("decode_rows_sum");
 }
+
+// The same sum with each row read from its own address and the weights passed by value: a row the CPU pool or the
+// peer card computed is read straight out of its pinned host buffer (device-accessible), so neither it nor the
+// weights need a host -> device copy first.  Same double accumulation in k order, so the result is bit for bit the
+// one decode_rows_sum gives over the deposited rows.
+struct RowSrcs { const float* p[kRowSrcMax]; float w[kRowSrcMax]; };
+__global__ void decode_rows_sum_src_kernel(RowSrcs rs, int K, int64_t H, float* __restrict__ out) {
+    for (int64_t i = (int64_t) blockIdx.x * blockDim.x + threadIdx.x; i < H; i += (int64_t) gridDim.x * blockDim.x) {
+        double s = 0.0;
+        for (int k = 0; k < K; ++k) {
+            const float wk = rs.w[k];
+            if (wk == 0.0f) continue;
+            s = __dadd_rn(s, __dmul_rn((double) wk, (double) rs.p[k][i]));
+        }
+        out[i] = (float) s;
+    }
+}
+
+void decode_rows_sum_src(const float* const* src, const float* w, int K, int64_t H, float* out, void* stream) {
+    RowSrcs rs{};
+    for (int k = 0; k < K && k < kRowSrcMax; ++k) { rs.p[k] = src[k]; rs.w[k] = w[k]; }
+    const unsigned blocks = (unsigned) std::min<int64_t>((H + 255) / 256, 1024);
+    decode_rows_sum_src_kernel<<<blocks, 256, 0, (cudaStream_t) stream>>>(rs, std::min(K, kRowSrcMax), H, out);
+    check("decode_rows_sum_src");
+}

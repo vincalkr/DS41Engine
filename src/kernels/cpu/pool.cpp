@@ -438,6 +438,9 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     if (tasks < 0 || tasks > kMaxTasks) throw std::invalid_argument("expert pool tasks must be in 0..4096");
     if (const char* e = std::getenv("STRATA_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
+    // STRATA_POOL_YIELD=1: a parked worker also yields its CPU every 1024 pauses, so a runnable thread on that CPU
+    // (the file-tier readers, the thread that drives the cards) runs at once instead of waiting out the spin
+    yield_ = std::getenv("STRATA_POOL_YIELD") != nullptr && std::getenv("STRATA_POOL_YIELD")[0] == '1';
     if (n_workers > 0) {
         n_ = n_workers;
     } else if (topo_.is_hybrid && affinity_ != PoolAffinity::All) {
@@ -511,6 +514,7 @@ void ExpertPool::worker(int id) {
             if (stop_.load(std::memory_order_relaxed)) return;
             _mm_pause();
             if ((++spins & 1023u) != 0) continue;
+            if (yield_) std::this_thread::yield();
             if (std::chrono::steady_clock::now() - parked_at < spin_before_sleep_) continue;
             std::unique_lock<std::mutex> lk(sleep_mu_);
             wstate_[(size_t) id].store(kSleeping, std::memory_order_relaxed);

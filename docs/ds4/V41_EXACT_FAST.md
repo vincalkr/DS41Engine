@@ -364,6 +364,116 @@ Verdict: make `STRATA_PEER_DISJOINT=1 STRATA_ARENA_EVICT_PEER=1` the 2-card conf
 on both prompts, no loss in token agreement, the fewest NVMe reads, and the same startup time. Whether evict alone is as
 fast needs more than 2 runs; it does not cut reads nearly as much (11-12%).
 
+## Where a two-card token goes (2026-10-20)
+
+The default two-card configuration (`local/ds41-local.json`), one-shot, forced on reference tokens
+(`local/bench-v41/prof-decode.sh`, results in `local/sweep-prof/`).
+
+**Stages** (`STRATA_DEC_PROF=1`, ms/token):
+
+| | begin | attn_router | tier | finish | tok/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Promessi Sposi (246 tokens) | 2.8 | 27.9 | 30.8 | 1.5 | 15.8 |
+| 17,349-token prompt (128 tokens) | 0.6 | 37.3 | 59.6 | 2.0 | 10.7 |
+
+Inside the tier, per token: Sposi 42.9 experts computed on the CPU (`cpu` 10.5 ms) and 3.2 file reads (`file` 9.2
+ms); 17K 74 on the CPU (16.9 ms) and 8.8 file reads (25.9 ms). A file read costs 2.5-2.9 ms in the engine.
+
+**Card 0's kernels** (`rocprofv3 --kernel-trace --memory-copy-trace`, a run of 80 tokens minus one of 16 = 64 decode
+tokens, `local/bench-v41/trace-summary.py`): 3,582 kernels and 25.7 ms busy per token (card 1: 115 kernels, 2.8 ms).
+`mul_mat_vec_q` (the Q6_K dense half) 321 launches, 10.7 ms: ~5.6 GB at ~530 GB/s, 55% of the card's 960 GB/s. The
+expert kernels 3.4 ms (card 1: 2.1 ms), 377 `copyBuffer` 1.2 ms, and 164 host-to-device + 72 device-to-host copies a
+token at 39 / 61 us each. Card 0's idle gaps over 20 us (last 3 s of the profiled run): **25.7 ms/token after its
+own expert kernels, waiting for the CPU tier's rows** (once per layer), 2.8 ms between layers, ~4.4 ms of copies
+queued behind each other. So the card waits for the CPU tier most of the token.
+
+**The CPU tier's limits, measured apart from the engine:**
+- RAM (`local/bench-v41/membw.c`): 12 threads streaming an 8 GiB buffer read 51.6-54.3 GB/s, the same with 4 KiB pages and transparent huge
+  pages (6 / 24 threads: 52.0-54.3). The CPU experts run at ~47-50 GB/s (`cpu` ms against 9.7 MiB per expert), so
+  they are at the RAM's limit: faster CPU kernels or huge pages cannot help them, only fewer of them or faster RAM.
+- NVMe (Lexar NM1090 PRO, PCIe 5.0 x4, ext4; `local/bench-v41/nvme-blob-read.c`): O_DIRECT reads of 9.7 MiB at random offsets of the GSQ file take 3.01
+  ms on 1 thread, 1.65 ms on 8, 1.24-1.27 ms on 16-32 (8.0-8.2 GB/s), and two to four blobs in flight reach 9.5-11
+  GB/s. The engine pays 2.5-2.9 ms per read.
+
+**ROCm runtime knobs** (Sposi, against 14.99 / 14.19 / 15.52 tok/s): `HIP_FORCE_DEV_KERNARG=1` 15.17 / 15.48 and
+`HSA_ENABLE_INTERRUPT=0` 15.58 / 15.03, both inside the spread; `HSA_ENABLE_SDMA=0` (copies by blit kernels)
+11.58 / 11.72, -22%; all three 12.52 / 11.37. Checked and fine as they are: both cards in identity (pass-through)
+IOMMU domains, Resizable BAR on (32 GiB BAR), the memory clock at its top level in ~97% of decode samples. The core
+clock's median during decode was 2.2 GHz on Sposi and **1.3 GHz at 17K** (level `auto`): the card idles between
+layers and the clock drops meanwhile (`local/gpu-perf.sh` sets `high` / `compute`, with root; not measured yet).
+
+**Noise:** single runs of the same configuration differ by 5-10% here (16.46 against 15.67, 16.33 against 14.87), so
+every comparison below has at least two runs each.
+
+**Fast runs and slow runs.** The same configuration lands in one of two modes, and the split of the token time
+(`local/sweep-prof/`, 30+ runs per prompt across the variants below) shows what differs:
+
+| ms/token | total | CPU experts | file reads (per read) | the rest |
+| --- | ---: | ---: | ---: | ---: |
+| 17K, fast runs | 71-74 | 16-18 | ~11 (~1.25 ms) | ~44 |
+| 17K, slow runs | 89-103 | 16-18 | 22-26 (2.5-2.9 ms) | 49-59 |
+| Sposi, fast runs | 53-55 | 9.4-10.4 | ~4 (~1.3 ms) | ~40 |
+| Sposi, slow runs | 59-70 | 9.3-10.5 | 9-12 (2.9-3.7 ms) | 42-49 |
+
+In the fast runs a file read costs what the drive delivers when busy; in the slow ones twice that, and the rest of the
+token is slower too. The default configuration's 17K runs: 2 fast of 5 (mean 12.11 tok/s, 10.92-13.93).
+
+**Idle power states** (`local/bench-v41/nvme-idle-read.c`: one 9.7 MiB O_DIRECT read on 8 threads every GAP,
+60 reads; "CPU tick" = a thread waking every 0.5 ms and doing nothing; "NVMe keep-alive" = a 4 KiB read every 0.5 ms):
+
+| a read every | alone | + CPU tick | + NVMe keep-alive |
+| --- | ---: | ---: | ---: |
+| 10 ms | 2.16-2.77 ms (p90 4.6-6.0) | 1.17 | 1.19-1.29 |
+| 20 ms | 5.54 | 4.92 | 1.25 |
+| 30 ms | 5.59 | - | 1.36 |
+
+Two states add up: at 10 ms the CPU's deep idle state (C3, 350 us exit latency on this box) is what costs, from
+~20 ms the drive's own power saving (APST, enabled: `pm_qos_latency_tolerance_us` 100000). Decode's reads come 10-20
+ms apart. Twelve busy-waiting threads (the CPU pool parked) did not change the microbench (2.69 ms at 10 ms).
+
+**`local/power-tune.sh on`** (root: APST off, C3 off, the `performance` governor) brings the microbench's spaced reads
+to 1.15 / 1.51 / 1.17 ms at 10 / 20 / 30 ms, and the engine (default two-card configuration, 5 runs each):
+
+| | before (tok/s) | mean | with `power-tune.sh on` (tok/s) | mean | file read |
+| --- | --- | ---: | --- | ---: | ---: |
+| 17K | 10.96 10.92 13.93 10.92 13.84 | 12.11 | 12.92 13.83 13.83 13.85 13.72 | **13.63 (+12.6%)** | 2.04 -> 1.40 ms |
+| Sposi | 16.68 18.72 18.34 16.05 16.06 | 17.17 | 17.60 18.70 18.69 15.34 18.15 | 17.70 (+3%) | 2.18 -> 1.45 ms |
+
+At 17K every run is now a fast one (ms/token 83.0 -> 72.8: file 17.8 -> 12.1, the rest 48.8 -> 44.5). On Sposi one
+run of five is still slow, and not because of the reads: its file and CPU time are the others' (5.4 / 9.4 ms/token)
+and the rest is 50.2 ms against 39.7-41.3 - a second source of spread, in the dense half or the host. The settings
+cost idle power and do not survive a reboot; `local/power-tune.sh off` restores the boot values.
+
+**The cards' clock level `high`** (`local/gpu-perf.sh high`, on top of `power-tune.sh on`, 5 runs each) is slower:
+17K 13.23 13.14 12.99 12.86 13.22 = 13.09 tok/s against 13.63 at `auto`, Sposi 17.37 17.34 17.18 16.82 15.75 = 16.89
+against 17.70 (the rest of the token 44.5 -> 47.5 and 42.4 -> 45.1 ms; the first 17K run overlapped another session's
+GPU benchmark and was repeated as r6). Even at `high` card 0's core clock averaged
+1.74 GHz while busy, 29% of the samples under 1.5 GHz. Keep `auto`.
+
+**Host-path options** (all opt-in, the default path unchanged; tokens identical to the reference where checked):
+
+| tok/s, one value per run | 17K | Sposi |
+| --- | --- | --- |
+| default | 10.96 10.92 13.93 10.92 13.84 | 16.68 18.72 18.34 16.05 16.06 |
+| `STRATA_SUM_ZEROCOPY=1` (the sum reads the CPU's and the peer's rows from pinned host memory: ~105 fewer copies a token) | 13.49 10.55 | 15.92 18.83 |
+| `STRATA_FILE_POOL=1 STRATA_FILE_THREADS=16` (file reads on persistent threads, 16 parts) | 11.11 10.41 | 18.61 16.27 |
+| `STRATA_FILE_THREADS=16` / `32` without the pool (threads created per layer) | 9.77 / 9.12 | 14.87 / 14.33 |
+| `STRATA_POOL_SPIN_US=300` (the CPU pool sleeps after 300 us instead of 20 ms) | 13.49 13.62 13.54 13.35 10.20 | 18.20 14.39 15.17 15.37 14.30 |
+| `STRATA_POOL_SPIN_US=100` / `1000` | 10.19 11.28 10.13 / 9.61 9.77 13.34 | 15.64 16.76 18.64 / 16.80 14.86 15.17 |
+| `STRATA_SPEC_TOP=4 STRATA_SPEC_ADAPT=1` + the pool (speculative reads two layers ahead under `--arena-adapt`) | 8.77 9.12 | 14.99 15.32 |
+| `STRATA_SPEC_TOP=2 STRATA_SPEC_ADAPT=1` + the pool | 11.88 11.08 | 15.27 13.82 |
+
+None separates from the two modes, except the speculative reads, which lose: at 17K 8,443 reads issued for 333 used
+of ~1,140 file misses (TOP 4), 3,845 for ~200 (TOP 2) - 4-5% of what they read is used, and the rest costs RAM
+bandwidth (`cpu` 2.1 -> 2.7-3.1 s). `STRATA_NVME_KEEPALIVE_US=500` (the keep-alive inside the engine) and
+`STRATA_POOL_YIELD=1` (the parked pool yields its CPU) were only smoke-tested.
+
+**Prompt-lookup drafting** (`local/bench-v41/pld-sim.py`, the model's tokenizer, no model run): the next tokens
+copied from the conversation after the last 4/3/2-token match. On the Pi session of 2026-10-18 that used ds41e (10,240
+output tokens) 1.42-1.51 tokens per step (drafts of 4-16), 2.5-3.1 per drafted pass; on two coding-agent sessions of
+2026-10-19 (another model, 19,415 and 47,614 output tokens) 1.33-1.40. The reasoning text is mostly new, so a verify
+pass (which costs several single steps here) would rarely pay.
+
 ## Reproduce
 
 ```

@@ -210,6 +210,8 @@ private:
 /// DeepSeek-V4.1 (`deepseek41`, tools/v41/v41_gguf.py): each expert's gate/up/down rows live in the stacked tensor of
 /// its type (slot = its rank among that type's experts).  A blob is assembled from the three spans with preads (page
 /// cache; no mmap of the 150 GiB file).  `geom()` is the per-expert-class geometry for the tier.
+struct NvmeKeepAlive;   ///< ds41_moe.cpp: STRATA_NVME_KEEPALIVE_US
+
 class Ds41FileBlobs : public Ds41BlobSource {
 public:
     explicit Ds41FileBlobs(std::string gguf);
@@ -257,6 +259,7 @@ private:
     std::string path_;
     int fd_ = -1;
     int dfd_ = -1;               ///< O_DIRECT twin of fd_ (-1 where the filesystem refused it)
+    std::unique_ptr<NvmeKeepAlive> keep_;   ///< STRATA_NVME_KEEPALIVE_US: keeps the drive awake while the tier reads
     size_t scratch_ = 0;         ///< the aligned bounce one read_direct span needs
     Ds41MoeGeom g_;
     size_t max_ = 0;

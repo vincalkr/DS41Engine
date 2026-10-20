@@ -733,7 +733,8 @@ int main(int argc, char ** argv) {
             if (!tok) { ferr = "tier.run failed"; return false; }
             if (dprof) { const double t = now_ms(); dp[3] += t - ta; ta = t; }
             const float * rsum = rdev1 ? nullptr : routed1.data();   // null: already in the routed tensor
-            if (fuse_predict && mc.pf_b > 0 && !mc.cpu_only && l + 1 < n_layer) {
+            // STRATA_SPEC_TOP > 0 runs the fused prediction for its speculative reads even with the DMA prefetch off
+            if (fuse_predict && (mc.pf_b > 0 || spec_top > 0) && !mc.cpu_only && l + 1 < n_layer) {
                 int t16[16];
                 if (spec_top > 0 && spec_ahead > 0) {
                     int ahead[16 * 8];

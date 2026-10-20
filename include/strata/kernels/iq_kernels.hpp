@@ -72,6 +72,10 @@ void weighted_rows_sum(const float* parts, const float* w, int K, int64_t H, int
 /// One decode token's top-k mix on the card: out[i] = sum_k w[k] * parts[k * H + i] in double, k in order (== the
 /// tier's host loop bit for bit); w[k] == 0 skips row k.
 void decode_rows_sum(const float* parts, const float* w, int K, int64_t H, float* out, void* stream);
+/// decode_rows_sum with row k read from src[k] (device memory or pinned host memory the card can read) and the
+/// weights passed by value: no deposit copies and no weights upload.  K <= kRowSrcMax.
+constexpr int kRowSrcMax = 16;
+void decode_rows_sum_src(const float* const* src, const float* w, int K, int64_t H, float* out, void* stream);
 
 /// Grouped experts in the native format: group g's blob at device address grp_ptr[g]; its entries
 /// [grp_start[g], grp_start[g+1]) read token ent_tok[e]'s q8_1 activation (n_embd/32 blocks per token in x_q8_1)

@@ -1,0 +1,121 @@
+base-r1                      sposi          diff=0    decode: 246 tokens in 16.34 s = 14.99 tok/s; experts 39913 hit / 10537 cpu / 0 pcie / 779 file (79.1% VRAM hits), cpu 2573 ms, file 2240 ms; spec reads 0 issued / 0 used;
+decprof                      sposi          diff=5    decode: 246 tokens in 15.49 s = 15.82 tok/s; experts 39947 hit / 10544 cpu / 0 pcie / 783 file (79.1% VRAM hits), cpu 2578 ms, file 2308 ms; spec reads 0 issued / 0 used;
+base-r1                      huge17k        diff=0    decode: 128 tokens in 12.28 s = 10.34 tok/s; experts 11909 hit / 9552 cpu / 0 pcie / 1126 file (55.5% VRAM hits), cpu 2202 ms, file 2805 ms; spec reads 0 issued / 0 used;
+decprof                      huge17k        diff=0    decode: 128 tokens in 11.88 s = 10.69 tok/s; experts 11980 hit / 9509 cpu / 0 pcie / 1131 file (55.7% VRAM hits), cpu 2159 ms, file 3320 ms; spec reads 0 issued / 0 used;
+base-r2                      sposi          diff=4    decode: 246 tokens in 17.26 s = 14.19 tok/s; experts 39894 hit / 10539 cpu / 0 pcie / 783 file (79.1% VRAM hits), cpu 2507 ms, file 2586 ms; spec reads 0 issued / 0 used;
+kernarg-r2                   sposi          diff=0    decode: 246 tokens in 16.15 s = 15.17 tok/s; experts 39983 hit / 10556 cpu / 0 pcie / 785 file (79.1% VRAM hits), cpu 2460 ms, file 2312 ms; spec reads 0 issued / 0 used;
+poll-r2                      sposi          diff=1    decode: 246 tokens in 15.73 s = 15.58 tok/s; experts 39981 hit / 10541 cpu / 0 pcie / 787 file (79.1% VRAM hits), cpu 2507 ms, file 2646 ms; spec reads 0 issued / 0 used;
+blit-r2                      sposi          diff=2    decode: 246 tokens in 21.15 s = 11.58 tok/s; experts 39954 hit / 10537 cpu / 0 pcie / 778 file (79.1% VRAM hits), cpu 2438 ms, file 2684 ms; spec reads 0 issued / 0 used;
+all3-r2                      sposi          diff=2    decode: 246 tokens in 19.56 s = 12.52 tok/s; experts 39954 hit / 10537 cpu / 0 pcie / 778 file (79.1% VRAM hits), cpu 2479 ms, file 2444 ms; spec reads 0 issued / 0 used;
+base-r3                      sposi          diff=1    decode: 246 tokens in 15.78 s = 15.52 tok/s; experts 39887 hit / 10563 cpu / 0 pcie / 791 file (79.1% VRAM hits), cpu 2496 ms, file 2733 ms; spec reads 0 issued / 0 used;
+kernarg-r3                   sposi          diff=2    decode: 246 tokens in 15.83 s = 15.48 tok/s; experts 39946 hit / 10550 cpu / 0 pcie / 790 file (79.1% VRAM hits), cpu 2489 ms, file 2773 ms; spec reads 0 issued / 0 used;
+poll-r3                      sposi          diff=3    decode: 246 tokens in 16.30 s = 15.03 tok/s; experts 39913 hit / 10556 cpu / 0 pcie / 790 file (79.1% VRAM hits), cpu 2476 ms, file 2324 ms; spec reads 0 issued / 0 used;
+blit-r3                      sposi          diff=2    decode: 246 tokens in 20.90 s = 11.72 tok/s; experts 39954 hit / 10537 cpu / 0 pcie / 778 file (79.1% VRAM hits), cpu 2442 ms, file 2703 ms; spec reads 0 issued / 0 used;
+all3-r3                      sposi          diff=2    decode: 246 tokens in 21.56 s = 11.37 tok/s; experts 39952 hit / 10537 cpu / 0 pcie / 778 file (79.1% VRAM hits), cpu 2475 ms, file 2552 ms; spec reads 0 issued / 0 used;
+PROFDONE
+fr-base-r1                   huge17k        diff=0    decode: 128 tokens in 11.50 s = 11.04 tok/s; experts 12017 hit / 9562 cpu / 0 pcie / 1111 file (55.7% VRAM hits), cpu 2261 ms, file 2870 ms; spec reads 0 issued / 0 used;
+fr-ft16-r1                   huge17k        diff=0    decode: 128 tokens in 12.99 s = 9.77 tok/s; experts 12028 hit / 9506 cpu / 0 pcie / 1128 file (55.9% VRAM hits), cpu 2258 ms, file 3090 ms; spec reads 0 issued / 0 used; 
+fr-ft32-r1                   huge17k        diff=0    decode: 128 tokens in 13.93 s = 9.12 tok/s; experts 11934 hit / 9493 cpu / 0 pcie / 1124 file (55.7% VRAM hits), cpu 2137 ms, file 3139 ms; spec reads 0 issued / 0 used; 
+fr-spec4-r1                  huge17k        diff=0    decode: 128 tokens in 11.15 s = 11.39 tok/s; experts 11983 hit / 9564 cpu / 0 pcie / 1130 file (55.6% VRAM hits), cpu 2144 ms, file 2811 ms; spec reads 0 issued / 0 used;
+fr-ft16spec4-r1              huge17k        diff=0    decode: 128 tokens in 12.44 s = 10.21 tok/s; experts 12034 hit / 9535 cpu / 0 pcie / 1124 file (55.8% VRAM hits), cpu 2145 ms, file 3157 ms; spec reads 0 issued / 0 used;
+fr-base-r1                   sposi          diff=2    decode: 246 tokens in 15.63 s = 15.67 tok/s; experts 39946 hit / 10550 cpu / 0 pcie / 790 file (79.1% VRAM hits), cpu 2558 ms, file 2582 ms; spec reads 0 issued / 0 used;
+fr-ft16-r1                   sposi          diff=4    decode: 246 tokens in 16.48 s = 14.87 tok/s; experts 39931 hit / 10558 cpu / 0 pcie / 788 file (79.1% VRAM hits), cpu 2515 ms, file 2448 ms; spec reads 0 issued / 0 used;
+fr-ft32-r1                   sposi          diff=4    decode: 246 tokens in 17.10 s = 14.33 tok/s; experts 39956 hit / 10553 cpu / 0 pcie / 790 file (79.1% VRAM hits), cpu 2301 ms, file 2552 ms; spec reads 0 issued / 0 used;
+fr-spec4-r1                  sposi          diff=1    decode: 246 tokens in 14.88 s = 16.46 tok/s; experts 39984 hit / 10542 cpu / 0 pcie / 784 file (79.1% VRAM hits), cpu 2279 ms, file 2277 ms; spec reads 0 issued / 0 used;
+fr-ft16spec4-r1              sposi          diff=2    decode: 246 tokens in 15.00 s = 16.33 tok/s; experts 39972 hit / 10537 cpu / 0 pcie / 792 file (79.1% VRAM hits), cpu 2314 ms, file 2420 ms; spec reads 0 issued / 0 used;
+FILEREADDONE
+old-hp-base-r1                   huge17k        diff=0    decode: 128 tokens in 11.64 s = 10.91 tok/s; experts 11923 hit / 9532 cpu / 0 pcie / 1125 file (55.6% VRAM hits), cpu 2246 ms, file 3017 ms; spec reads 0 issued / 0 used;
+old-hp-zc-r1                     huge17k        diff=0    decode: 128 tokens in 12.62 s = 10.06 tok/s; experts 12084 hit / 9556 cpu / 0 pcie / 1126 file (55.8% VRAM hits), cpu 2181 ms, file 3109 ms; spec reads 0 issued / 0 used;
+old-hp-fpool16-r1                huge17k        diff=0    decode: 128 tokens in 12.20 s = 10.41 tok/s; experts 12124 hit / 9530 cpu / 0 pcie / 1129 file (56.0% VRAM hits), cpu 2174 ms, file 2770 ms; spec reads 0 issued / 0 used;
+old-hp-spin300-r1                huge17k        diff=0    
+old-hp-all-r1                    huge17k        diff=0    decode: 128 tokens in 12.45 s = 10.20 tok/s; experts 11978 hit / 9542 cpu / 0 pcie / 1105 file (55.7% VRAM hits), cpu 2166 ms, file 3015 ms; spec reads 0 issued / 0 used;
+old-hp-base-r1                   sposi          diff=0    
+old-hp-zc-r1                     sposi          diff=0    
+old-hp-fpool16-r1                sposi          diff=1    decode: 246 tokens in 16.10 s = 15.21 tok/s; experts 39946 hit / 10550 cpu / 0 pcie / 782 file (79.1% VRAM hits), cpu 2417 ms, file 2230 ms; spec reads 0 issued / 0 used;
+old-hp-spin300-r1                sposi          diff=0    
+old-hp-all-r1                    sposi          diff=5    decode: 246 tokens in 15.03 s = 16.30 tok/s; experts 39814 hit / 10556 cpu / 0 pcie / 783 file (79.0% VRAM hits), cpu 2410 ms, file 1901 ms; spec reads 0 issued / 0 used;
+old-hp-base-r2                   huge17k        diff=0    
+old-hp-zc-r2                     huge17k        diff=0    
+old-hp-fpool16-r2                huge17k        diff=0    decode: 128 tokens in 11.52 s = 11.03 tok/s; experts 12112 hit / 9494 cpu / 0 pcie / 1125 file (56.1% VRAM hits), cpu 2137 ms, file 3078 ms; spec reads 0 issued / 0 used;
+old-hp-spin300-r2                huge17k        diff=0    
+old-hp-all-r2                    huge17k        diff=0    
+old-hp-base-r2                   sposi          diff=0    
+old-hp-zc-r2                     sposi          diff=0    
+old-hp-fpool16-r2                sposi          diff=2    decode: 246 tokens in 15.09 s = 16.24 tok/s; experts 39946 hit / 10550 cpu / 0 pcie / 790 file (79.1% VRAM hits), cpu 2429 ms, file 2334 ms; spec reads 0 issued / 0 used;
+old-hp-spin300-r2                sposi          diff=0    
+old-hp-all-r2                    sposi          diff=0    decode: 246 tokens in 15.27 s = 16.04 tok/s; experts 39912 hit / 10551 cpu / 0 pcie / 793 file (79.1% VRAM hits), cpu 2530 ms, file 2399 ms; spec reads 0 issued / 0 used;
+HOSTPATHDONE
+hp-base-r1                   huge17k        diff=0    decode: 128 tokens in 11.59 s = 10.96 tok/s; experts 12024 hit / 9504 cpu / 0 pcie / 1112 file (55.9% VRAM hits), cpu 2140 ms, file 3132 ms; spec reads 0 issued / 0 used;
+hp-zc-r1                     huge17k        diff=0    decode: 128 tokens in 9.41 s = 13.49 tok/s; experts 12102 hit / 9566 cpu / 0 pcie / 1113 file (55.9% VRAM hits), cpu 2166 ms, file 1624 ms; spec reads 0 issued / 0 used; 
+hp-fpool16-r1                huge17k        diff=0    decode: 128 tokens in 11.43 s = 11.11 tok/s; experts 11955 hit / 9475 cpu / 0 pcie / 1135 file (55.8% VRAM hits), cpu 2115 ms, file 3014 ms; spec reads 0 issued / 0 used;
+hp-specpool4-r1              huge17k        diff=0    decode: 128 tokens in 14.47 s = 8.77 tok/s; experts 12018 hit / 9533 cpu / 0 pcie / 1146 file (55.8% VRAM hits), cpu 3173 ms, file 2671 ms; spec reads 8443 issued / 333 u
+hp-specpool2-r1              huge17k        diff=0    decode: 128 tokens in 10.69 s = 11.88 tok/s; experts 12072 hit / 9519 cpu / 0 pcie / 1125 file (55.9% VRAM hits), cpu 2564 ms, file 1371 ms; spec reads 3845 issued / 195 
+hp-spin300-r1                huge17k        diff=0    decode: 128 tokens in 9.41 s = 13.49 tok/s; experts 12025 hit / 9543 cpu / 0 pcie / 1135 file (55.8% VRAM hits), cpu 2241 ms, file 1470 ms; spec reads 0 issued / 0 used; 
+hp-base-r1                   sposi          diff=4    decode: 246 tokens in 14.69 s = 16.68 tok/s; experts 39961 hit / 10541 cpu / 0 pcie / 789 file (79.1% VRAM hits), cpu 2420 ms, file 1368 ms; spec reads 0 issued / 0 used;
+hp-zc-r1                     sposi          diff=2    decode: 246 tokens in 15.39 s = 15.92 tok/s; experts 39938 hit / 10553 cpu / 0 pcie / 795 file (79.1% VRAM hits), cpu 2423 ms, file 2560 ms; spec reads 0 issued / 0 used;
+hp-fpool16-r1                sposi          diff=1    decode: 246 tokens in 13.16 s = 18.61 tok/s; experts 39873 hit / 10575 cpu / 0 pcie / 785 file (79.0% VRAM hits), cpu 2425 ms, file 957 ms; spec reads 0 issued / 0 used; 
+hp-specpool4-r1              sposi          diff=6    decode: 246 tokens in 16.34 s = 14.99 tok/s; experts 39931 hit / 10568 cpu / 0 pcie / 790 file (79.1% VRAM hits), cpu 3178 ms, file 1001 ms; spec reads 6927 issued / 274 
+hp-specpool2-r1              sposi          diff=4    decode: 246 tokens in 16.05 s = 15.27 tok/s; experts 39961 hit / 10544 cpu / 0 pcie / 778 file (79.1% VRAM hits), cpu 2716 ms, file 1307 ms; spec reads 2711 issued / 128 
+hp-spin300-r1                sposi          diff=1    decode: 246 tokens in 13.47 s = 18.20 tok/s; experts 39980 hit / 10544 cpu / 0 pcie / 794 file (79.1% VRAM hits), cpu 2569 ms, file 1025 ms; spec reads 0 issued / 0 used;
+hp-base-r2                   huge17k        diff=0    decode: 128 tokens in 11.63 s = 10.92 tok/s; experts 12064 hit / 9501 cpu / 0 pcie / 1121 file (55.9% VRAM hits), cpu 2130 ms, file 2334 ms; spec reads 0 issued / 0 used;
+hp-zc-r2                     huge17k        diff=0    decode: 128 tokens in 12.04 s = 10.55 tok/s; experts 12031 hit / 9589 cpu / 0 pcie / 1122 file (55.6% VRAM hits), cpu 2142 ms, file 2824 ms; spec reads 0 issued / 0 used;
+hp-fpool16-r2                huge17k        diff=0    decode: 128 tokens in 12.20 s = 10.41 tok/s; experts 11975 hit / 9544 cpu / 0 pcie / 1123 file (55.6% VRAM hits), cpu 2133 ms, file 2852 ms; spec reads 0 issued / 0 used;
+hp-specpool4-r2              huge17k        diff=0    decode: 128 tokens in 13.93 s = 9.12 tok/s; experts 12057 hit / 9527 cpu / 0 pcie / 1135 file (55.9% VRAM hits), cpu 3109 ms, file 2421 ms; spec reads 8486 issued / 331 u
+hp-specpool2-r2              huge17k        diff=0    decode: 128 tokens in 11.46 s = 11.08 tok/s; experts 11982 hit / 9539 cpu / 0 pcie / 1113 file (55.7% VRAM hits), cpu 2884 ms, file 1491 ms; spec reads 3784 issued / 201 
+hp-spin300-r2                huge17k        diff=0    decode: 128 tokens in 9.32 s = 13.62 tok/s; experts 12002 hit / 9535 cpu / 0 pcie / 1109 file (55.7% VRAM hits), cpu 2241 ms, file 1393 ms; spec reads 0 issued / 0 used; 
+hp-base-r2                   sposi          diff=3    decode: 246 tokens in 13.09 s = 18.72 tok/s; experts 39756 hit / 10560 cpu / 0 pcie / 786 file (79.0% VRAM hits), cpu 2311 ms, file 1009 ms; spec reads 0 issued / 0 used;
+hp-zc-r2                     sposi          diff=3    decode: 246 tokens in 13.01 s = 18.83 tok/s; experts 39944 hit / 10562 cpu / 0 pcie / 791 file (79.1% VRAM hits), cpu 2311 ms, file 1024 ms; spec reads 0 issued / 0 used;
+hp-fpool16-r2                sposi          diff=4    decode: 246 tokens in 15.06 s = 16.27 tok/s; experts 39826 hit / 10568 cpu / 0 pcie / 787 file (79.0% VRAM hits), cpu 2313 ms, file 2359 ms; spec reads 0 issued / 0 used;
+hp-specpool4-r2              sposi          diff=2    decode: 246 tokens in 16.00 s = 15.32 tok/s; experts 39865 hit / 10572 cpu / 0 pcie / 785 file (79.0% VRAM hits), cpu 3030 ms, file 1085 ms; spec reads 6966 issued / 273 
+hp-specpool2-r2              sposi          diff=6    decode: 246 tokens in 17.73 s = 13.82 tok/s; experts 39931 hit / 10568 cpu / 0 pcie / 790 file (79.1% VRAM hits), cpu 2735 ms, file 1353 ms; spec reads 2709 issued / 129 
+hp-spin300-r2                sposi          diff=4    decode: 246 tokens in 17.02 s = 14.39 tok/s; experts 39957 hit / 10564 cpu / 0 pcie / 794 file (79.1% VRAM hits), cpu 2591 ms, file 2937 ms; spec reads 0 issued / 0 used;
+HOSTPATHDONE
+hp-base-r3                   huge17k        diff=0    decode: 128 tokens in 9.12 s = 13.93 tok/s; experts 12188 hit / 9555 cpu / 0 pcie / 1096 file (56.1% VRAM hits), cpu 2074 ms, file 1391 ms; spec reads 0 issued / 0 used; 
+hp-spin300-r3                huge17k        diff=0    decode: 128 tokens in 9.38 s = 13.54 tok/s; experts 11994 hit / 9563 cpu / 0 pcie / 1117 file (55.6% VRAM hits), cpu 2285 ms, file 1414 ms; spec reads 0 issued / 0 used; 
+hp-spin1000-r3               huge17k        diff=0    decode: 128 tokens in 13.21 s = 9.61 tok/s; experts 11998 hit / 9545 cpu / 0 pcie / 1123 file (55.7% VRAM hits), cpu 2253 ms, file 3374 ms; spec reads 0 issued / 0 used; 
+hp-spin100-r3                huge17k        diff=0    decode: 128 tokens in 12.47 s = 10.19 tok/s; experts 12005 hit / 9513 cpu / 0 pcie / 1125 file (55.8% VRAM hits), cpu 2236 ms, file 2934 ms; spec reads 0 issued / 0 used;
+hp-base-r3                   sposi          diff=0    decode: 246 tokens in 13.36 s = 18.34 tok/s; experts 39972 hit / 10543 cpu / 0 pcie / 782 file (79.1% VRAM hits), cpu 2438 ms, file 1057 ms; spec reads 0 issued / 0 used;
+hp-spin300-r3                sposi          diff=1    decode: 246 tokens in 16.15 s = 15.17 tok/s; experts 39903 hit / 10563 cpu / 0 pcie / 795 file (79.1% VRAM hits), cpu 2590 ms, file 3111 ms; spec reads 0 issued / 0 used;
+hp-spin1000-r3               sposi          diff=4    decode: 246 tokens in 14.58 s = 16.80 tok/s; experts 39963 hit / 10548 cpu / 0 pcie / 783 file (79.1% VRAM hits), cpu 2585 ms, file 1032 ms; spec reads 0 issued / 0 used;
+hp-spin100-r3                sposi          diff=2    decode: 246 tokens in 15.67 s = 15.64 tok/s; experts 39905 hit / 10537 cpu / 0 pcie / 790 file (79.1% VRAM hits), cpu 2595 ms, file 2595 ms; spec reads 0 issued / 0 used;
+hp-base-r4                   huge17k        diff=0    decode: 128 tokens in 11.63 s = 10.92 tok/s; experts 12004 hit / 9535 cpu / 0 pcie / 1118 file (55.7% VRAM hits), cpu 2143 ms, file 3092 ms; spec reads 0 issued / 0 used;
+hp-spin300-r4                huge17k        diff=0    decode: 128 tokens in 9.51 s = 13.35 tok/s; experts 11978 hit / 9526 cpu / 0 pcie / 1106 file (55.7% VRAM hits), cpu 2318 ms, file 1436 ms; spec reads 0 issued / 0 used; 
+hp-spin1000-r4               huge17k        diff=0    decode: 128 tokens in 12.99 s = 9.77 tok/s; experts 12071 hit / 9478 cpu / 0 pcie / 1104 file (56.0% VRAM hits), cpu 2216 ms, file 3271 ms; spec reads 0 issued / 0 used; 
+hp-spin100-r4                huge17k        diff=0    decode: 128 tokens in 11.26 s = 11.28 tok/s; experts 12015 hit / 9552 cpu / 0 pcie / 1126 file (55.7% VRAM hits), cpu 2190 ms, file 3078 ms; spec reads 0 issued / 0 used;
+hp-base-r4                   sposi          diff=1    decode: 246 tokens in 15.26 s = 16.05 tok/s; experts 39946 hit / 10550 cpu / 0 pcie / 782 file (79.1% VRAM hits), cpu 2325 ms, file 2526 ms; spec reads 0 issued / 0 used;
+hp-spin300-r4                sposi          diff=1    decode: 246 tokens in 15.94 s = 15.37 tok/s; experts 39963 hit / 10562 cpu / 0 pcie / 791 file (79.1% VRAM hits), cpu 2565 ms, file 2884 ms; spec reads 0 issued / 0 used;
+hp-spin1000-r4               sposi          diff=1    decode: 246 tokens in 16.49 s = 14.86 tok/s; experts 39928 hit / 10550 cpu / 0 pcie / 794 file (79.1% VRAM hits), cpu 2445 ms, file 2471 ms; spec reads 0 issued / 0 used;
+hp-spin100-r4                sposi          diff=4    decode: 246 tokens in 14.62 s = 16.76 tok/s; experts 39773 hit / 10576 cpu / 0 pcie / 789 file (79.0% VRAM hits), cpu 2428 ms, file 2192 ms; spec reads 0 issued / 0 used;
+hp-base-r5                   huge17k        diff=0    decode: 128 tokens in 9.17 s = 13.84 tok/s; experts 12054 hit / 9565 cpu / 0 pcie / 1120 file (55.8% VRAM hits), cpu 2064 ms, file 1422 ms; spec reads 0 issued / 0 used; 
+hp-spin300-r5                huge17k        diff=0    decode: 128 tokens in 12.45 s = 10.20 tok/s; experts 12002 hit / 9550 cpu / 0 pcie / 1147 file (55.7% VRAM hits), cpu 2186 ms, file 3017 ms; spec reads 0 issued / 0 used;
+hp-spin1000-r5               huge17k        diff=0    decode: 128 tokens in 9.52 s = 13.34 tok/s; experts 12161 hit / 9507 cpu / 0 pcie / 1123 file (56.1% VRAM hits), cpu 2238 ms, file 1420 ms; spec reads 0 issued / 0 used; 
+hp-spin100-r5                huge17k        diff=0    decode: 128 tokens in 12.53 s = 10.13 tok/s; experts 12054 hit / 9520 cpu / 0 pcie / 1102 file (55.9% VRAM hits), cpu 2141 ms, file 3149 ms; spec reads 0 issued / 0 used;
+hp-base-r5                   sposi          diff=1    decode: 246 tokens in 15.26 s = 16.06 tok/s; experts 39981 hit / 10541 cpu / 0 pcie / 787 file (79.1% VRAM hits), cpu 2321 ms, file 2604 ms; spec reads 0 issued / 0 used;
+hp-spin300-r5                sposi          diff=4    decode: 246 tokens in 17.13 s = 14.30 tok/s; experts 39952 hit / 10549 cpu / 0 pcie / 788 file (79.1% VRAM hits), cpu 2469 ms, file 2767 ms; spec reads 0 issued / 0 used;
+hp-spin1000-r5               sposi          diff=1    decode: 246 tokens in 16.16 s = 15.17 tok/s; experts 39946 hit / 10550 cpu / 0 pcie / 782 file (79.1% VRAM hits), cpu 2479 ms, file 3023 ms; spec reads 0 issued / 0 used;
+hp-spin100-r5                sposi          diff=3    decode: 246 tokens in 13.14 s = 18.64 tok/s; experts 39756 hit / 10560 cpu / 0 pcie / 786 file (79.0% VRAM hits), cpu 2455 ms, file 1024 ms; spec reads 0 issued / 0 used;
+HOSTPATHDONE
+hp-tuned-r1                  huge17k        diff=0    decode: 128 tokens in 9.83 s = 12.92 tok/s; experts 11933 hit / 9537 cpu / 0 pcie / 1110 file (55.6% VRAM hits), cpu 2142 ms, file 1918 ms; spec reads 0 issued / 0 used; 
+hp-tuned-r1                  sposi          diff=3    decode: 246 tokens in 13.92 s = 17.60 tok/s; experts 39899 hit / 10551 cpu / 0 pcie / 790 file (79.1% VRAM hits), cpu 2470 ms, file 1278 ms; spec reads 0 issued / 0 used;
+hp-tuned-r2                  huge17k        diff=0    decode: 128 tokens in 9.18 s = 13.83 tok/s; experts 11992 hit / 9548 cpu / 0 pcie / 1098 file (55.7% VRAM hits), cpu 2057 ms, file 1505 ms; spec reads 0 issued / 0 used; 
+hp-tuned-r2                  sposi          diff=4    decode: 246 tokens in 13.10 s = 18.70 tok/s; experts 39946 hit / 10582 cpu / 0 pcie / 791 file (79.1% VRAM hits), cpu 2314 ms, file 1020 ms; spec reads 0 issued / 0 used;
+hp-tuned-r3                  huge17k        diff=0    decode: 128 tokens in 9.18 s = 13.83 tok/s; experts 11993 hit / 9589 cpu / 0 pcie / 1115 file (55.6% VRAM hits), cpu 2046 ms, file 1466 ms; spec reads 0 issued / 0 used; 
+hp-tuned-r3                  sposi          diff=1    decode: 246 tokens in 13.11 s = 18.69 tok/s; experts 39974 hit / 10567 cpu / 0 pcie / 792 file (79.1% VRAM hits), cpu 2312 ms, file 1031 ms; spec reads 0 issued / 0 used;
+hp-tuned-r4                  huge17k        diff=0    decode: 128 tokens in 9.17 s = 13.85 tok/s; experts 12048 hit / 9632 cpu / 0 pcie / 1114 file (55.6% VRAM hits), cpu 2057 ms, file 1406 ms; spec reads 0 issued / 0 used; 
+hp-tuned-r4                  sposi          diff=4    decode: 246 tokens in 15.97 s = 15.34 tok/s; experts 39768 hit / 10557 cpu / 0 pcie / 782 file (79.0% VRAM hits), cpu 2302 ms, file 1318 ms; spec reads 0 issued / 0 used;
+hp-tuned-r5                  huge17k        diff=0    decode: 128 tokens in 9.26 s = 13.72 tok/s; experts 12174 hit / 9556 cpu / 0 pcie / 1125 file (56.0% VRAM hits), cpu 2062 ms, file 1474 ms; spec reads 0 issued / 0 used; 
+hp-tuned-r5                  sposi          diff=3    decode: 246 tokens in 13.50 s = 18.15 tok/s; experts 39756 hit / 10560 cpu / 0 pcie / 786 file (79.0% VRAM hits), cpu 2288 ms, file 1059 ms; spec reads 0 issued / 0 used;
+HOSTPATHDONE
+hp-gpuhigh-r1                huge17k        diff=0    decode: 128 tokens in 9.53 s = 13.33 tok/s; experts 12074 hit / 9516 cpu / 0 pcie / 1101 file (55.9% VRAM hits), cpu 2055 ms, file 1431 ms; spec reads 0 issued / 0 used; 
+hp-gpuhigh-r1                sposi          diff=0    decode: 246 tokens in 14.11 s = 17.37 tok/s; experts 39972 hit / 10543 cpu / 0 pcie / 782 file (79.1% VRAM hits), cpu 2314 ms, file 1021 ms; spec reads 0 issued / 0 used;
+hp-gpuhigh-r2                huge17k        diff=0    decode: 128 tokens in 9.60 s = 13.23 tok/s; experts 11906 hit / 9544 cpu / 0 pcie / 1112 file (55.5% VRAM hits), cpu 2059 ms, file 1493 ms; spec reads 0 issued / 0 used; 
+hp-gpuhigh-r2                sposi          diff=0    decode: 246 tokens in 14.13 s = 17.34 tok/s; experts 39908 hit / 10556 cpu / 0 pcie / 790 file (79.1% VRAM hits), cpu 2315 ms, file 1027 ms; spec reads 0 issued / 0 used;
+hp-gpuhigh-r3                huge17k        diff=0    decode: 128 tokens in 9.66 s = 13.14 tok/s; experts 11957 hit / 9502 cpu / 0 pcie / 1102 file (55.7% VRAM hits), cpu 2108 ms, file 1434 ms; spec reads 0 issued / 0 used; 
+hp-gpuhigh-r3                sposi          diff=2    decode: 246 tokens in 14.26 s = 17.18 tok/s; experts 39952 hit / 10556 cpu / 0 pcie / 783 file (79.1% VRAM hits), cpu 2332 ms, file 1033 ms; spec reads 0 issued / 0 used;
+hp-gpuhigh-r4                huge17k        diff=0    decode: 128 tokens in 9.77 s = 12.99 tok/s; experts 11956 hit / 9582 cpu / 0 pcie / 1133 file (55.5% VRAM hits), cpu 2094 ms, file 1538 ms; spec reads 0 issued / 0 used; 
+hp-gpuhigh-r4                sposi          diff=3    decode: 246 tokens in 14.56 s = 16.82 tok/s; experts 39921 hit / 10553 cpu / 0 pcie / 784 file (79.1% VRAM hits), cpu 2351 ms, file 1367 ms; spec reads 0 issued / 0 used;
+hp-gpuhigh-r5                huge17k        diff=0    decode: 128 tokens in 9.88 s = 12.86 tok/s; experts 12002 hit / 9494 cpu / 0 pcie / 1107 file (55.8% VRAM hits), cpu 2049 ms, file 1788 ms; spec reads 0 issued / 0 used; 
+hp-gpuhigh-r5                sposi          diff=6    decode: 246 tokens in 15.56 s = 15.75 tok/s; experts 39948 hit / 10564 cpu / 0 pcie / 782 file (79.1% VRAM hits), cpu 2319 ms, file 1011 ms; spec reads 0 issued / 0 used;
+HOSTPATHDONE
+hp-gpuhigh-r6                huge17k        diff=0    decode: 128 tokens in 9.61 s = 13.22 tok/s; experts 12093 hit / 9527 cpu / 0 pcie / 1109 file (55.9% VRAM hits), cpu 2061 ms, file 1523 ms; spec reads 0 issued / 0 used; 
+HOSTPATHDONE

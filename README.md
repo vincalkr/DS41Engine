@@ -123,6 +123,12 @@ decode 14.07 -> 15.58 tok/s on short prose, 9.91 -> 10.82 tok/s at 17K context; 
 the same prompts in another series. With a single card the default stops at startup ("peer device 1 does not
 exist"): use `local/ds41-local-1gpu.json`. `--peer-device` takes one extra card.
 
+Optional, with root: `sudo bash local/power-tune.sh on` keeps the NVMe and the CPUs out of their deep idle states
+(APST, C3) and sets the `performance` governor. Decode reads an expert from the drive every 10-20 ms, and a drive or
+core that dozed off in between doubled each read. Measured on this box (two cards, 5 runs each): 12.11 -> 13.63 tok/s
+at 17K context, 17.17 -> 17.70 on short prose. It costs idle power and does not survive a reboot;
+`sudo bash local/power-tune.sh off` restores the defaults.
+
 `run-v41-gsq.sh` checks that the model and the Engram tables are in `models/`. Python needs pillow, psutil, regex and jinja2
 (`python3 -m venv .venv && .venv/bin/pip install pillow psutil regex jinja2`). Never expose the server beyond
 `127.0.0.1` without `--api-key`. Loading takes about a minute; then `curl -s http://127.0.0.1:8150/v1/models` answers.
