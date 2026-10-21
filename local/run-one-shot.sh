@@ -19,7 +19,7 @@ EXE="${EXE:-$PWD/build-hip-pre/ds41_generate}"
 ARENA="${ARENA_GIB:-60}"
 THREADS="${THREADS:-$(nproc)}"
 EXPERTS="${EXPERTS:-gpu}"
-# 4 KiB pages pin the 60 GiB arena in ~17 s; with THP it takes minutes (see ds41-engine.sh)
+# 4 KiB pages pin the 60 GiB arena in ~17 s; with THP it takes minutes
 export STRATA_NO_LARGEPAGES="${STRATA_NO_LARGEPAGES:-1}"
 export GGML_NO_BACKTRACE="${GGML_NO_BACKTRACE:-1}"
 if [ "$EXPERTS" = cpu ]; then

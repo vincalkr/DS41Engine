@@ -85,7 +85,7 @@ calls a token account for 105 ms - 95.3 of them after a device-to-host readback 
 launch - with 4,238 kernel launches a token.  Decode is therefore **host/sync-bound, not GPU-bound**, and the
 synchronizations are mostly real work being waited for (the experts' DMA and the launch latency), not idle overhead.
 The lever that is left is the number of kernel launches.  The per-layer host handshake itself was investigated to the
-end and closed: see [docs/ds4/V41_PIPELINE_OVERLAP.md](../../docs/ds4/V41_PIPELINE_OVERLAP.md).
+end and closed (its plan, `docs/ds4/V41_PIPELINE_OVERLAP.md`, is in the git history before 2026-10-21).
 
 ## Tried and reverted
 
@@ -166,7 +166,6 @@ is reported instead of being joined over.  Every parameter:
 
 - [docs/ds4/V41_EXACT_FAST.md](../../docs/ds4/V41_EXACT_FAST.md) - exact routing made fast: the current configuration and every measurement behind it.
 - [docs/ds4/AMD_HIP_NOTES.md](../../docs/ds4/AMD_HIP_NOTES.md) - every measurement and every setting on this machine.
-- [docs/ds4/V41_PIPELINE_OVERLAP.md](../../docs/ds4/V41_PIPELINE_OVERLAP.md) - the per-layer host handshake, measured and closed.
 - [docs/ds4/V41_AMD_PEER_TIER.md](../../docs/ds4/V41_AMD_PEER_TIER.md) - the second-card design that was measured and dropped.
 - [HANDOVER.md](../../HANDOVER.md) - the state of the work and how it got here.
 - [local/ds41-local.json](../../local/ds41-local.json) - the configuration these numbers were measured with.

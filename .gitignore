@@ -78,6 +78,7 @@ build-vision-cuda12.bat
 /local/engram/
 /local/prompts/
 /local/*.bin
+!/local/rank-1017.bin
 /local/*.ids
 /.hf-cache/
 /.run/

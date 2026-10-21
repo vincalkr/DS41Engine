@@ -15,7 +15,7 @@ swaps in V4.1's pieces (same shape as ~/AI/Strata-GLM/tools/glm/serve/serve_glm.
   note the LEADING SPACE in the tag names) parsed as DeepSeek's parse_tool_calls does; the `calls` wrapper is
   stripped from the stream.  A value may carry DwarfStar's escape of its own closing tag (ds4_tool_text.h): undone.
 
-  serve_ds41.py --engine strata --config strata-ds41.json --port 8150
+  serve_ds41.py --engine strata --config local/ds41-local.json --port 8150   (./run.sh does this)
 """
 import json
 import os

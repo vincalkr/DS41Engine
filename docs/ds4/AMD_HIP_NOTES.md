@@ -502,7 +502,8 @@ pays on another stack (DSpark is 1.7-2x here) does not pay on this one.
 
 ## The original serve settings, measured on this box (2026-10-16)
 
-`tools/v41/serve/ds41-engine.sh` + `strata-ds41.json` are the engine's original serve settings. Every one that
+`tools/v41/serve/ds41-engine.sh` + `strata-ds41.json` (removed 2026-10-21, in the git history) were the engine's
+original serve settings. Every one that
 differs from ours was measured here through `--serve`, same 5787-token prompt + 64-token reply, fresh server a side:
 
 | setting | author | ours | measured |

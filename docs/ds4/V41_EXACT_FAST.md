@@ -174,7 +174,7 @@ facts question thought 2,167 tokens (133 s) at 2048, 1,156 (76 s) at 1024. The c
 **One card by default** (2026-10-18). On an agent-like session at 25-27K context the second card measured 14.31 /
 15.16 tok/s against 15.51 / 13.47 on card 0 alone - no difference inside the spread - so `local/ds41-local.json` now
 runs on card 0 only (`HIP_VISIBLE_DEVICES=0`, no `--peer-device`, no `STRATA_PEER_*`) and card 1 stays free. The
-two-card chat is `./run-v41-gsq.sh --config local/ds41-local-2gpu.json`.
+two-card chat was `./run-v41-gsq.sh --config local/ds41-local-2gpu.json` (both gone since).
 
 **The rank from the chat's own routing.** The chat config also runs `--dump-routes local/routes-chat`: in `--serve`
 the engine loads the counts already there at start and writes them after every request, so they accumulate across
@@ -275,7 +275,7 @@ configuration they replay: `rocprofv3 --hip-runtime-trace` on the all-VRAM decod
 
 So the graph replay the dense half needs already works; what is left between the kernels at the ceiling is the
 per-layer hand-off to the expert tier (the router ids to the host, the tier's plan and launches, the sum), which a
-graph cannot hold because the plan is made on the host from the ids (`V41_DECODE_OVERLAP_PLAN.md` §5: the miss service
+graph cannot hold because the plan is made on the host from the ids (the decode overlap plan, §5, in the git history before 2026-10-21: the miss service
 is host work keyed on the ids, so the layers cannot run ahead).
 
 ## Where the time goes now

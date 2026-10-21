@@ -1570,7 +1570,7 @@ bool Ds41MoeTier::init(const Ds41MoeGeom& geom, Ds41BlobSource* blobs, const Ds4
     ck(cudaMallocHost(&gp.h_parts, (size_t) kMaxEnt * H4), "h_parts");
     ck(cudaMalloc(&gp.d_meta, kMetaBytes), "d_meta");
     ck(cudaMallocHost((void**) &gp.h_meta, kMetaBytes), "h_meta");
-    // STRATA_DMA_OVERLAP=1 (slice A, docs/ds4/V41_DECODE_OVERLAP_PLAN.md): a separate stream for the demand copies
+    // STRATA_DMA_OVERLAP=1 (slice A of the decode overlap plan, in the git history): a separate stream for the demand copies
     // so a layer's PCIe/file DMA overlaps that layer's resident-expert kernels.  Off by default: unproven until the
     // nsys overlap metric (max concurrent kernels > 1) and repeated forced-token identity both hold.
     if (std::getenv("STRATA_DMA_OVERLAP")) {
@@ -2413,7 +2413,7 @@ bool cpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
 
 #if defined(DS4_MOE_CUDA)
 
-/// STRATA_TIER_GRAPH (slice B, docs/ds4/V41_DECODE_OVERLAP_PLAN.md §3): capture each (site, class) grouped launch
+/// STRATA_TIER_GRAPH (slice B of the decode overlap plan, §3): capture each (site, class) grouped launch
 /// ONCE, over a fixed per-class metadata layout.  native_expert_grouped takes ptr/st/ng/dst/tok as device pointers,
 /// reads the group/entry counts from device memory and launches a grid pinned by its host args, so captured nodes'
 /// parameters never change - only the CONTENTS of the metadata block do, once a token.  The launcher gives every
