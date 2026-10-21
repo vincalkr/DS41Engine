@@ -1497,6 +1497,7 @@ class StrataEngine:
         silence = float(self.silence_s or 0)
         allow = silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S if silence > 0 else 0.0
         heard, read_to = time.monotonic(), 0
+        rate, answering = 0.0, False                      # the prompt's mean reading rate (PP); a token came
         beat = heard
         stall_s = ENGINE_STALL_S or 0.0
         stall_state: dict = {}
@@ -1535,6 +1536,7 @@ class StrataEngine:
                     stall_state.clear()
                 if line.startswith("T "):
                     allow = silence
+                    answering = True
                     if cancel.is_set():
                         return
                     yield int(line[2:])
@@ -1574,6 +1576,12 @@ class StrataEngine:
                 # #481: never an untimed wait here - it holds the request FIFO, and an engine that lost step never
                 # answers.  An engine that honours STOP gets the current allowance in all (a STOP during a prompt
                 # chunk is seen after it); an older one runs on to max_new, so each line only has to come in time.
+                # A STOP while the prompt is read: V4.1's engine reads the whole prompt before it looks at STOP (its
+                # layer-major batches), then answers it and keeps that prompt for the next request, so a client's
+                # retry continues from there.  The allowance covers the rest of the prompt at its measured rate:
+                # ending the engine at engine_silence_s threw away a 198K-token prompt five minutes in.
+                if allow > 0 and not answering and rate > 0 and len(ids) > read_to:
+                    allow = max(allow, PP_SLACK * (len(ids) - read_to) / rate)
                 heard = time.monotonic()
                 while True:
                     left = allow - (time.monotonic() - heard) if allow > 0 else None

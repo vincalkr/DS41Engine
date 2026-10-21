@@ -3936,6 +3936,20 @@ class SilentEngine(unittest.TestCase):
         engine.proc.kill.assert_called_once()
         self.assertFalse(engine.alive())
 
+    def test_a_stop_during_the_prompt_waits_for_the_rest_of_it(self):
+        # V4.1's engine reads its whole prompt before it looks at STOP: 200 of 1000 tokens read at 1000 tok/s, a STOP,
+        # then 0.8 s more of prompt - longer than the 0.3 s silence, inside the 3 x 0.8 s the rest of the prompt needs
+        engine = self.bare(0.3, can_stop=True)
+        engine.lines.put("RESUME 0")
+        engine.lines.put("PP 200 1000 200 1000.0")
+        gen = engine.generate([1] * 1000, 10, {}, threading.Event())
+        self.assertIsNone(next(gen))
+        self.later(engine, 0.8, "DONE 0 1000 1000 0 cancel")
+        gen.close()                                               # the consumer stopped: STOP, then the drain
+        self.assertIn("STOP", engine.proc.stdin.getvalue())
+        engine.proc.kill.assert_not_called()
+        self.assertTrue(engine.alive())
+
     def test_frozen_engine_is_ended_by_the_stall_watchdog(self):
         # #1317 part 2: silent AND no CPU / disk work for the stall window -> ended, long before engine_silence_s
         from serve import server
