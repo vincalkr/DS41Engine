@@ -2646,6 +2646,7 @@ class Service:
         self.last_request_at = None                      # when a request last started or finished
         self.started_at = time.time()
         self.status_lock = threading.Lock()
+        self._req_tl = threading.local()                 # prepare() -> run() on the same handler thread: the effort tag
         self.mcp = None                                  # serve/mcp.py's McpHub when MCP servers are configured
         # sharing the GPU with other programs (all off by default): unload the engine after this many idle seconds,
         # only start it again when this much VRAM is free, and run this command first (e.g. to unload another
@@ -3215,6 +3216,7 @@ class Service:
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
         fetched = self._note_unreadable_tool_images(messages)
+        self._req_tl.effort = self.effort_tag(kwargs)       # the request's lines in the server window carry it
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
@@ -3389,6 +3391,18 @@ class Service:
                     s["phase"] = "tool call complete"
                 s["tail"] = ((s.get("tail") or "") + (ev.text or ""))[-600:]
 
+    @staticmethod
+    def effort_tag(kwargs) -> str:
+        """The request's reasoning effort as the server window shows it in front of the request's lines: "off",
+        DeepSeek-V4.1's named levels for 50 / 75 / 100 ("low", "high", "max"), another number as given, the default
+        (no effort asked) as "high"."""
+        if (kwargs or {}).get("enable_thinking") is False:
+            return "off"
+        e = (kwargs or {}).get("reasoning_effort")
+        if e is None or e == "":
+            return "high"
+        return {50: "low", 75: "high", 100: "max"}.get(e, str(e)) if isinstance(e, int) else str(e)
+
     def _progress(self, last_print, every=1.0, st=None):
         """A progress line in the server window every `every` seconds while a request runs."""
         now = time.time()
@@ -3400,10 +3414,10 @@ class Service:
         if s.get("first_token") is None:
             pr = getattr(self.engine, "progress", None)   # (position reached, prompt tokens): a reused prefix counts
             done = f"{pr[0]:,} of {pr[1]:,}" if pr and pr[1] else f"{s.get('prompt_tokens', 0):,}"   # as read (#29)
-            print(f"[strata] reading the prompt: {done} tokens, {el:.0f} s so far", flush=True)
+            print(f"[{s.get('effort') or 'strata'}] reading the prompt: {done} tokens, {el:.0f} s so far", flush=True)
         else:
             rate = s["generated"] / max(1e-6, now - s["first_token"])
-            print(f"[strata] {s['phase']}: {s['generated']} of max {s.get('max_tokens')} tokens, {rate:.1f} tok/s, "
+            print(f"[{s.get('effort') or 'strata'}] {s['phase']}: {s['generated']} of max {s.get('max_tokens')} tokens, {rate:.1f} tok/s, "
                   f"{el:.0f} s", flush=True)
         return now
 
@@ -3481,7 +3495,8 @@ class Service:
                     with self.status_lock:
                         st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
                                   generated=0, started=time.time(), first_token=None, tool=None, tail="",
-                                  max_tokens=max_new, reasoning_recoveries=0)
+                                  max_tokens=max_new, reasoning_recoveries=0,
+                                  effort=getattr(self._req_tl, "effort", None) or "strata")
                         if par:
                             self.live_reqs[id(st)] = (st, rate)
                             self.status.update(st)
@@ -3728,7 +3743,7 @@ class Service:
                             hit_msg = f", expert cache {hit_rate*100:.1f}% hit" if hit_rate is not None else ""
                             if hit_msg and pcie_share:
                                 hit_msg += f" (+{pcie_share*100:.1f}% of the routed experts over PCIe)"
-                            print(f"[strata] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
+                            print(f"[{st.get('effort') or 'strata'}] done: {n} tokens in {el:.0f} s ({rate:.1f} tok/s) "
                                   f"({finish}, cancel={cancel.is_set()}){hit_msg}", flush=True)
                             if finish == "length" and parser.state in ("reasoning", "rcall"):   # #530
                                 print("[strata] the reply reached max tokens while still thinking, so it has no "
