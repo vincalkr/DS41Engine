@@ -79,5 +79,11 @@ rc=0
     "--engine" "strata" \
     "--config" "$R/local/ds41-local.json" \
     "--port" "8150" "$@" || rc=$?
-sudo -n "$PT" off >/dev/null 2>&1 && echo "run.sh: power-tune off"
+# Another ds41e server may have started meanwhile (a restart, an A/B that stops one and starts the next): it switched
+# power-tune on and still needs it, so it stays on until the last server ends.
+if pgrep -f "[t]ools/v41/serve/serve_ds41.py" >/dev/null 2>&1; then
+    echo "run.sh: another ds41e server is running: power-tune stays on"
+else
+    sudo -n "$PT" off >/dev/null 2>&1 && echo "run.sh: power-tune off"
+fi
 exit "$rc"
