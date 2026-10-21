@@ -1,5 +1,9 @@
 # V4.1 GSQ: exact routing at 10-14 tok/s (2026-10-17)
 
+> 2026-10-21: the scripts of past experiments, the quantization pipeline (`tools/v41/*`), the V4 tools (`tools/ds4/*`)
+> and the September GSQ / Q2 configurations were removed from the tree; the paths this document names for them are
+> in the git history before that date.
+
 The route bias made the model fast and wrong (`HANDOVER.md` §3). This note records how the GSQ was made fast **with
 the model's own routing** (`--route-bias 0 --route-bias-file 0`) on this box: 2x RX 7900 XTX (card 1 behind a PCIe
 4.0 x2 bridge), Ryzen 9 9900X (12 cores / 24 threads), 122 GiB RAM, the GSQ on the Lexar NM1090 PRO (PCIe 5.0 x4).

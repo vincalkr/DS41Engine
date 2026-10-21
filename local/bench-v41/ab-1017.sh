@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# ab-1017.sh - decode speed of the ds4 1017 Q2 (models/ds4-1017, antirez/deepseek-v4.1-flash-gguf) on the default
-# two-card configuration's flags and env, the same prompts as the GSQ's 2026-10-20 runs (local/sweep-prof, hp-tuned:
-# sposi 300 tokens, huge17k 128), REPS (default 5) runs each, unforced (another model: the GSQ's reference tokens do
-# not apply; the first run of each prompt becomes this model's reference).  Results in local/sweep-1017/summary.txt.
+# ab-1017.sh - one-shot decode speed of the default model and two-card configuration's flags and env: Promessi
+# Sposi (300 tokens) and the 17K-token prompt (128 tokens), REPS (default 5) runs each; the first run of each prompt
+# becomes the reference the later ones are forced on.  TAG and RANK select the variant (update-rank.sh uses them).
+# Results in local/sweep-1017/summary.txt.
 cd "$(dirname "$0")/../.."
 S=local/bench-v41/sweep.sh; O=local/sweep-1017
 export ARENA=75 Q2=models/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf RANK=${RANK:-local/rank-q2.bin}

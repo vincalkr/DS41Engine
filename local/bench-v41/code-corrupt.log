@@ -1,8 +1,0 @@
-rep=1.1 run 0: 5 / 5  (98s, 1409 tok)
-rep=1.0 run 0: 5 / 5  (97s, 1420 tok)
-rep=1.1 run 1: 5 / 5  (90s, 1425 tok)
-rep=1.0 run 1: 5 / 5  (107s, 1598 tok)
-rep=1.1 run 2: 5 / 5  (38s, 497 tok)
-rep=1.0 run 2: 5 / 5  (83s, 1315 tok)
-rep=1.1 run 3: 5 / 5  (86s, 1397 tok)
-rep=1.0 run 3: 5 / 5  (92s, 1447 tok)

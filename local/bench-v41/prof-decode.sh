@@ -19,9 +19,9 @@ for n in 16 80; do
     rm -rf $O/trace-$n
     env $E STRATA_FORCE_IDS=$O/ref-sposi.ids bash tools/ds4/memguard.sh 110 82 -- \
         rocprofv3 --kernel-trace --memory-copy-trace --output-format csv -d $O/trace-$n -o run -- \
-        ./build-hip-fused/ds41_generate -m models/V41-GSQ/V41-GSQ.gguf --ids-file local/prompts/sposi.i32 -n $n --temp 0 \
-        --backend cuda --experts gpu --arena-gib 75 --ctx 8192 --kv-q8 --threads 12 --rank local/rank-gsq-mixed.bin \
-        --engram models/engram/layers14:models/engram/layers1 --arena-skip-vram $R > $O/trace-$n.out 2>&1
+        ./build-hip-fused/ds41_generate -m models/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf --ids-file local/prompts/sposi.i32 -n $n --temp 0 \
+        --backend cuda --experts gpu --arena-gib 75 --ctx 8192 --kv-q8 --threads 12 --rank local/rank-q2.bin \
+        --engram models/engram-1017/layers14:models/engram-1017/layers1 --arena-skip-vram $R > $O/trace-$n.out 2>&1
 done
 for r in 2 3; do
     bash $S $O local/prompts/sposi.i32 300 base-r$r "$E" $R
