@@ -14,7 +14,8 @@
 # metadata is the September checkpoint's, byte for byte) and come from the GSQ repo, where they are separate files.
 #
 # Env: CONN=4 (aria2c connections per file), ARIA2=0 (force curl), DRY_RUN=1 (print the plan, change nothing),
-#      SKIP_SHA=1 (skip the 366 GB sha256), HF_TOKEN.
+#      SKIP_SHA=1 (skip the 366 GB sha256), HF_TOKEN, VISION=1 (also the image encoder: DEST/vision-1017, 0.9 GiB,
+#      built from the 1017 checkpoint by tools/v41/vision/make_vision_gguf.py; docs/ds4/V41_VISION.md).
 set -euo pipefail
 export LC_ALL=C LANG=C
 trap 'trap - INT TERM; kill 0 2>/dev/null' INT TERM
@@ -80,5 +81,13 @@ if [ "$(size "$ENG/layers1/engram-L1.safetensors")" -gt 100000000000 ] && [ "$(s
   say "have  both tables"
 elif [ "$DRY_RUN" != 1 ]; then
   "$PY" "$HERE/local/ds4-engram-extract.py" "$Q2/$Q2_FILE" "$ENG"
+fi
+# optional: the image encoder (VISION=1) - the 1017 checkpoint's vision tower as a GGUF, 0.9 GiB of HTTP range reads
+if [ "${VISION:-0}" = 1 ]; then
+  say "=== vision encoder -> $DEST/vision-1017 (VISION=1)"
+  if [ -s "$DEST/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf" ]; then say "have  the vision GGUF"
+  elif [ "$DRY_RUN" != 1 ]; then
+    python3 "$HERE/tools/v41/vision/make_vision_gguf.py" --out "$DEST/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf"
+  fi
 fi
 say "=== done: ./run.sh starts the server on it (local/ds41-local.json)"

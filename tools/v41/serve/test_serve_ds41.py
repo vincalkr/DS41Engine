@@ -190,8 +190,59 @@ def t_http(tok_dir):
             print("---- server output (tail) ----\n" + out[-3000:])
 
 
+def t_images(tok_dir=None):
+    """Image input: the template's placeholder, the span expansion, the preprocessing plan and the SVP1 record."""
+    import io
+    import struct
+    import tempfile
+    from PIL import Image
+    DI = D.DI
+    T = D.Ds41Template()
+    msgs = [{"role": "user", "content": [{"type": "text", "text": "what is this?"}, {"type": "image", "source": "x.png"},
+                                         {"type": "text", "text": "and this?"}, {"type": "image", "source": "y.png"}]}]
+    p = T.render(msgs, None, True, enable_thinking=False)
+    check("template: one placeholder per image", p.count(E.IMAGE_PLACEHOLDER) == 2 and "what is this?" in p, p)
+    check("template: text-only content unchanged", T.render([{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+          None, True) == T.render([{"role": "user", "content": "hi"}], None, True))
+    svc = object.__new__(D.S.Service)
+    ids = [5, D.IMAGE_TOKEN, 6, D.IMAGE_TOKEN, 7]
+    out = D.ds41_expand_image_tokens(svc, ids, [("a", 3), ("b", 2)])
+    check("expansion: each placeholder -> its span", out == [5] + [D.IMAGE_TOKEN] * 3 + [6] + [D.IMAGE_TOKEN] * 2 + [7], out)
+    for bad in ([("a", 3)], [("a", 3), ("b", 2), ("c", 1)]):
+        try:
+            D.ds41_expand_image_tokens(svc, ids, bad)
+            check("expansion: a count mismatch is refused", False)
+        except ValueError:
+            check("expansion: a count mismatch is refused", True)
+    # the plans DeepSeek's image_processor gives (docs/ds4/V41_VISION.md's reference images): (w, h) -> (llm_h, llm_w, bh, bw)
+    for (w, h), want in {(200, 150): (12, 15, 476, 630), (450, 308): (11, 16, 462, 658), (300, 1200): (29, 8, 1204, 308),
+                         (1024, 701): (17, 25, 714, 1036), (2000, 1500): (27, 36, 1134, 1512)}.items():
+        got = DI.plan_image_grid(w, h)
+        check(f"plan {w}x{h}", got == want and DI.num_image_tokens(got[0], got[1]) <= 1024, got)
+    buf = io.BytesIO()
+    Image.new("RGB", (640, 480), (200, 30, 30)).save(buf, format="PNG")
+    with tempfile.TemporaryDirectory() as d:
+        enc = D.Ds41ImageInput({})
+        enc.dir = Path(d)
+        f, n = enc.encode(buf.getvalue())
+        raw = Path(f).read_bytes()
+        magic, vh, vw, lh, lw, pd, key = struct.unpack("<6iQ", raw[:32])
+        check("SVP1 record", magic == DI.SVP1 and pd == 588 and n == DI.num_image_tokens(lh, lw) and key != 0 and
+              len(raw) == 32 + vh * vw * 588 * 4 and (lh, lw) == ((vh + 2) // 3, (vw + 2) // 3), (magic, vh, vw, lh, lw, n))
+        check("SVP1: the same image again comes from the cache", enc.encode(buf.getvalue()) == (f, n))
+    if tok_dir:
+        tokens = json.load(open(tok_dir / "vocab.json"))
+        tokens = [t for t, _ in sorted(tokens.items(), key=lambda kv: kv[1])]
+        tok = D.ST.Tokenizer(tokens, (tok_dir / "merges.txt").read_text(encoding="utf-8").split("\n"),
+                             json.load(open(tok_dir / "token_type.json")))
+        ids = tok.encode(p, parse_special=True)
+        check("tokenizer: the image placeholder is one token, once per image",
+              tok.encode(E.IMAGE_PLACEHOLDER, parse_special=True) == [D.IMAGE_TOKEN] and ids.count(D.IMAGE_TOKEN) == 2)
+
+
 if __name__ == "__main__":
     t_template()
+    t_images(Path(sys.argv[1]) if len(sys.argv) > 1 else None)
     t_effort_kwargs()
     t_parser()
     if len(sys.argv) > 1:

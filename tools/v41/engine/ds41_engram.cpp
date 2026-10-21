@@ -250,10 +250,29 @@ void Ds41Engram::set_token(int64_t pos, int tid) {
     hist_[(size_t) pos] = g_->engram_token_map[(size_t) tid];
 }
 
+// An image row's place in the history (engram.py NgramHashState.DEAD): never a compressed id (those are >= 0).
+static constexpr int64_t kEngramDead = -1;
+
+void Ds41Engram::set_dead(int64_t pos) {
+    if (pos >= (int64_t) hist_.size()) hist_.resize((size_t) pos + 1024, 0);
+    hist_[(size_t) pos] = kEngramDead;
+    has_dead_ = true;
+}
+
 void Ds41Engram::hash(int64_t pos, int e, int64_t * out) const {
     const int64_t N = g_->engram_ngram, H = g_->engram_heads;
     int64_t tok[8];
-    for (int64_t k = 0; k < N; ++k) tok[k] = pos - k >= 0 ? hist_[(size_t) (pos - k)] : g_->engram_pad;
+    if (!has_dead_) {
+        for (int64_t k = 0; k < N; ++k) tok[k] = pos - k >= 0 ? hist_[(size_t) (pos - k)] : g_->engram_pad;
+    } else {
+        // engram.py: `blocked` is cumulative over the shifts - from the first DEAD (or the sequence start) on, this
+        // and every older slot of the n-gram is the pad id
+        bool blocked = false;
+        for (int64_t k = 0; k < N; ++k) {
+            if (pos - k < 0 || hist_[(size_t) (pos - k)] == kEngramDead) blocked = true;
+            tok[k] = blocked ? g_->engram_pad : hist_[(size_t) (pos - k)];
+        }
+    }
     const int64_t * mult = &g_->engram_mult[(size_t) (e * N)];
     int64_t rolling = tok[0] * mult[0];
     for (int64_t i = 1; i < N; ++i) {

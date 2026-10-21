@@ -13,6 +13,7 @@
 //
 // --serve speaks Strata's engine line protocol (~/AI/Strata/serve/server.py StrataEngine, as glm_generate):
 //   in:  GEN <max_new> [temperature=.. top_p=.. top_k=.. min_p=.. seed=..] <ids csv> | STOP | QUIT
+//        GENI <max_new> [k=v ..] <image file> <ids csv>   (--vision: a prompt with images, see VisionInput below)
 //   out: READY <ctx> stop, RESUME <reused>, PP <read> <total> <ms> <tok/s>, T <id>, DONE ..., ERR <text>
 // Conversation reuse: a request that extends what the state has seen continues; one that shares the last prompt
 // restores the snapshot taken at its end (Ds41Dense::snapshot: every other cache is position-indexed); the same prompt
@@ -24,6 +25,7 @@
 // Load the real model only through tools/ds4/memguard.sh (RAM cap + the shared GPU lock).
 #include "ds41_dense.hpp"
 #include "ds41_moe.hpp"
+#include "ds41_vision.hpp"
 #if defined(DS41_HAVE_DSPARK)
 #include "ds41_dspark.hpp"
 #endif
@@ -46,6 +48,8 @@
 #include <functional>
 #include <memory>
 #include <iostream>
+#include <list>
+#include <map>
 #include <mutex>
 #include <random>
 #include <sstream>
@@ -181,6 +185,11 @@ struct Args {
     int  enc_replay = 2560;       // --enc-replay N: the replay window (window_size * (n_layer - cand_layer) = 128*20)
     float skip_miss = 0.0f, skip_file = 0.0f;
     double chunk_prefetch_gib = 0.0;
+    /// --vision F (opt-in): image input through GENI, F = the vision GGUF (tools/v41/vision/make_vision_gguf.py).
+    /// --vision-device N: the GPU that runs the encoder; default the --peer-device (its weights stay there from the
+    /// first image on), else the main card 0 (weights loaded for a request with images, freed after it).
+    std::string vision;
+    int vision_device = -2;
 };
 
 std::vector<int> parse_csv(const std::string & s) {
@@ -202,6 +211,8 @@ bool parse(int argc, char ** argv, Args & a) {
         else if (k == "--backend") a.backend = next();
         else if (k == "--experts") a.experts = next();
         else if (k == "--peer-device") a.peer_device = std::atoi(next().c_str());
+        else if (k == "--vision") a.vision = next();
+        else if (k == "--vision-device") a.vision_device = std::atoi(next().c_str());
         else if (k == "--engram") { std::stringstream ss(next()); std::string d; while (std::getline(ss, d, ':')) a.engram.push_back(d); }
         else if (k == "--slots") { const std::string v = next(); a.slots = v == "auto" ? 0 : std::atoll(v.c_str()); }
         else if (k == "--vram-margin") a.vram_margin_gib = std::atof(next().c_str());
@@ -396,6 +407,154 @@ double log_softmax_at(const float * lg, int nv, int tok) {
 
 }  // namespace
 
+// ---- image input (--vision, opt-in) ---------------------------------------------------------------------------
+// GENI <max_new> [k=v ..] <file> <ids csv>.  <file> holds one record per image, in prompt order:
+//   'SVP1'  int32 {magic, vit_h, vit_w, llm_h, llm_w, 588}, uint64 key, float32 patches[vit_h * vit_w][588]
+//           = DeepSeek's image_processor.load_image patch grid (the server computes it); the engine encodes it
+//   'SVE1'  int32 {magic, n, nx, ny, n_embd}, float32 rows[n][n_embd] = an already encoded span (strata-vision's format)
+// Each image is a run of the image token (129264) in <ids>, n = llm_h * (llm_w + 1) + 2 positions (DeepSeek's span);
+// adjacent images share one run and are split by their row counts.  The key (the server's hash of the image bytes;
+// for SVE1 a hash of the rows) identifies the image: encoded spans are kept by key (STRATA_VISION_CACHE images,
+// default 8), and the prompt reuse compares the keys of image positions as well as the ids.
+struct VisionInput {
+    struct Rec { uint64_t key = 0; Ds41VisionGrid g; int64_t n = 0; std::vector<float> patches, rows; };
+    Ds41Vision enc;
+    bool on = false, resident = false;
+    int device = 0;                       // the ggml GPU device index that runs the encoder
+    ggml_backend_t be = nullptr;          // resident: the encoder's own backend on its card (own stream and pools);
+                                          // on the main card the dense half's backend (main_be), not owned
+    ggml_backend_t main_be = nullptr;
+    size_t cap = 8;
+    std::list<std::pair<uint64_t, std::vector<float>>> cache;   // most recently used first
+
+    static uint64_t fnv(const void * p, size_t n) {
+        uint64_t h = 1469598103934665603ull;
+        const uint8_t * b = (const uint8_t *) p;
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+        return h ? h : 1;
+    }
+    bool read(const std::string & path, int64_t n_embd, int64_t max_rows, std::vector<Rec> & recs, std::string & err) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) { err = "cannot open the image file"; return false; }
+        int64_t total = 0;
+        for (;;) {
+            int32_t magic = 0;
+            f.read((char *) &magic, 4);
+            if (f.gcount() == 0 && f.eof()) break;
+            if (f.gcount() != 4) { err = "short image record"; return false; }
+            Rec r;
+            if (magic == 0x31505653) {   // SVP1
+                int32_t h[5];
+                f.read((char *) h, sizeof(h));
+                f.read((char *) &r.key, 8);
+                r.g.vit_h = h[0]; r.g.vit_w = h[1]; r.g.llm_h = h[2]; r.g.llm_w = h[3];
+                if (!f || h[4] != 588 || h[0] < 1 || h[1] < 1 || h[0] > 4096 || h[1] > 4096 || r.g.llm_h != (h[0] + 2) / 3 ||
+                    r.g.llm_w != (h[1] + 2) / 3 || r.key == 0) { err = "bad image patch record"; return false; }
+                r.n = r.g.span_rows();
+                r.patches.resize((size_t) r.g.patches() * 588);
+                f.read((char *) r.patches.data(), (std::streamsize) (r.patches.size() * 4));
+            } else if (magic == 0x31455653) {   // SVE1
+                int32_t h[4];
+                f.read((char *) h, sizeof(h));
+                if (!f || h[0] < 1 || h[1] < 1 || h[2] < 1 || (int64_t) h[1] * h[2] != h[0] || h[3] != (int32_t) n_embd) {
+                    err = "bad image embeddings record (expected width " + std::to_string(n_embd) + ")";
+                    return false;
+                }
+                r.n = h[0];
+                r.rows.resize((size_t) (r.n * n_embd));
+                f.read((char *) r.rows.data(), (std::streamsize) (r.rows.size() * 4));
+                r.key = fnv(r.rows.data(), r.rows.size() * 4);
+            } else {
+                err = "unknown image record";
+                return false;
+            }
+            if (!f) { err = "short image file"; return false; }
+            total += r.n;
+            if (total > max_rows) { err = "the image file has more rows than the prompt"; return false; }
+            recs.push_back(std::move(r));
+        }
+        if (recs.empty()) { err = "the image file has no records"; return false; }
+        return true;
+    }
+    /// The records onto the image-token runs of `ids`: start[i] = record i's first position, key[p] per position.
+    static bool map(const std::vector<int> & ids, int tok, const std::vector<Rec> & recs, std::vector<int64_t> & start,
+                    std::vector<uint64_t> & key, std::string & err) {
+        key.assign(ids.size(), 0);
+        size_t k = 0;
+        for (size_t i = 0; i < ids.size();) {
+            if (ids[i] != tok) { ++i; continue; }
+            size_t j = i;
+            while (j < ids.size() && ids[j] == tok) ++j;
+            size_t at = i;
+            while (at < j) {
+                if (k >= recs.size()) { err = "the prompt has more image positions than the image file"; return false; }
+                if ((int64_t) (j - at) < recs[k].n) { err = "an image span does not match its record"; return false; }
+                start.push_back((int64_t) at);
+                for (int64_t t = 0; t < recs[k].n; ++t) key[at + (size_t) t] = recs[k].key;
+                at += (size_t) recs[k].n;
+                ++k;
+            }
+            i = j;
+        }
+        if (k != recs.size()) { err = "the image file has more images than the prompt"; return false; }
+        if (k == 0) { err = "GENI prompt has no image tokens"; return false; }
+        return true;
+    }
+    const std::vector<float> * cached(uint64_t key) {
+        for (auto it = cache.begin(); it != cache.end(); ++it)
+            if (it->first == key) { cache.splice(cache.begin(), cache, it); return &cache.front().second; }
+        return nullptr;
+    }
+    void keep(uint64_t key, std::vector<float> rows) {
+        cache.emplace_front(key, std::move(rows));
+        while (cache.size() > cap) cache.pop_back();
+    }
+    ggml_backend_dev_t dev() const {
+        int seen = 0;
+        for (size_t d = 0; d < ggml_backend_dev_count(); ++d) {
+            ggml_backend_dev_t v = ggml_backend_dev_get(d);
+            if (ggml_backend_dev_type(v) == GGML_BACKEND_DEVICE_TYPE_GPU && seen++ == device) return v;
+        }
+        return nullptr;
+    }
+    /// One record's span rows: from the record (SVE1), the cache, or the encoder.  The encoder's device must have room
+    /// for the weights (not loaded yet) + the compute buffer + 256 MiB for hipBLAS' temporaries: a failed allocation
+    /// inside a kernel launch would abort the process, so a card without that room refuses the image instead.
+    bool rows(Rec & r, std::vector<float> & out, std::string & err) {
+        if (!r.rows.empty()) { out = r.rows; return true; }
+        if (const std::vector<float> * c = cached(r.key)) {
+            out = *c;
+            std::fprintf(stderr, "vision: %dx%d patches -> %lld rows from the cache\n", r.g.vit_h, r.g.vit_w, (long long) r.n);
+            return true;
+        }
+        if (!be && !resident) be = main_be;   // a second ggml context on the main card crashed when freed (2026-10-21)
+        if (!be) {
+            ggml_backend_dev_t d = dev();
+            if (!d || !(be = ggml_backend_dev_init(d, nullptr))) { err = "vision: no GPU device " + std::to_string(device); return false; }
+        }
+        size_t fr = 0, tot = 0;
+        ggml_backend_dev_memory(ggml_backend_get_device(be), &fr, &tot);
+        const double need = (enc.loaded() ? 0.0 : 0.97e9) + 100e6 + 24e3 * r.g.patches() + 256.0 * 1048576;
+        if ((double) fr < need) {
+            err = "vision: " + std::to_string((long long) (fr >> 20)) + " MiB free on GPU " + std::to_string(device) +
+                  ", the encoder needs " + std::to_string((long long) (need / 1048576)) + " MiB for this image";
+            return false;
+        }
+        if (!enc.load(be, err)) return false;
+        if (!enc.encode(r.patches.data(), r.g, out, err)) return false;
+        std::fprintf(stderr, "vision: %dx%d patches -> %lld rows in %.0f ms on GPU %d (compute buffer %.0f MiB, %.0f MiB free before)\n",
+                     r.g.vit_h, r.g.vit_w, (long long) r.n, enc.last_ms(), device, enc.compute_bytes() / 1048576.0, fr / 1048576.0);
+        keep(r.key, out);
+        return true;
+    }
+    /// After a request's encodes: the main card's encoder (not resident) gives its weights and buffers back.
+    void done() {
+        if (resident || !be) return;
+        enc.unload();
+        be = nullptr;
+    }
+};
+
 int main(int argc, char ** argv) {
     if (!std::getenv("DS41_GGML_DEBUG"))
         ggml_log_set([](ggml_log_level lv, const char * text, void *) { if (lv != GGML_LOG_LEVEL_DEBUG) std::fputs(text, stderr); }, nullptr);
@@ -474,6 +633,7 @@ int main(int argc, char ** argv) {
     if (enc_skip && PB <= 1) { std::fprintf(stderr, "ds41_generate: --enc-skip needs the layer-major prompt path (--prompt-batch >= 2)\n"); return 2; }
     int64_t ER = enc_skip ? (int64_t) a.enc_replay : 0;
     dc.engram_dirs = a.engram;
+    dc.vision = !a.vision.empty();
     dc.act_quant = a.act_quant;
     // --kv-fp4 / STRATA_KV_FP4=1: the compressed KV + indexer keys packed to their exact FP4 grids (Ds41DenseConfig::kv_fp4)
     dc.kv_fp4 = a.kv_fp4 || (std::getenv("STRATA_KV_FP4") && std::getenv("STRATA_KV_FP4")[0] == '1');
@@ -501,6 +661,21 @@ int main(int argc, char ** argv) {
     }
     if (enc_skip) std::fprintf(stderr, "enc-skip: cut at layer %d (last kv source), replay window %lld (reach %lld)\n", CL, (long long) ER, (long long) reach);
     if (a.engram.empty()) std::fprintf(stderr, "WARNING: no --engram dirs: the Engram add is skipped (not the real model)\n");
+    // --vision: the encoder's GGUF is mapped now; nothing goes to a GPU before the first image (the peer card's store
+    // is built at the first decode and sizes itself from that card's free memory, so it must not see the encoder)
+    VisionInput vis;
+    if (!a.vision.empty()) {
+        if (!a.serve) { std::fprintf(stderr, "ds41_generate: --vision needs --serve (images come through GENI)\n"); return 2; }
+        if (!vis.enc.open(a.vision, err)) { std::fprintf(stderr, "ds41_generate: %s\n", err.c_str()); return 1; }
+        vis.on = true;
+        vis.device = a.vision_device >= 0 ? a.vision_device : (a.peer_device >= 0 ? a.peer_device : 0);
+        vis.resident = vis.device != 0;
+        vis.main_be = be;
+        if (const char * e = std::getenv("STRATA_VISION_CACHE")) vis.cap = (size_t) std::max(0, std::atoi(e));
+        std::fprintf(stderr, "vision: %s on GPU %d (%s), image token %d, %zu encoded images kept\n", a.vision.c_str(), vis.device,
+                     vis.resident ? "resident from the first image on" : "loaded for a request with images, freed after it",
+                     vis.enc.image_token(), vis.cap);
+    }
 
     // ---- routed experts
     Ds41FileBlobs src(a.model);
@@ -1254,6 +1429,10 @@ int main(int argc, char ** argv) {
         auto is_stop = [&](int t) { return std::find(a.stop.begin(), a.stop.end(), t) != a.stop.end() || t == (int) G.eos; };
         const int ctxv = (int) ctx;
         std::vector<int> hist;
+        // per position of hist: the image key (VisionInput) - empty or 0 = text; the reuse compares it with the ids
+        std::vector<uint64_t> hist_key;
+        auto key_at = [](const std::vector<uint64_t> & k, size_t i) -> uint64_t { return i < k.size() ? k[i] : 0; };
+        auto has_key = [](const std::vector<uint64_t> & k) { for (uint64_t v : k) if (v) return true; return false; };
         int snap_len = -1;
         std::vector<float> snap_logits;   // the last prompt row's logits at the snapshot (a repeated prompt samples from them)
         int n_req = 0;
@@ -1296,15 +1475,16 @@ int main(int argc, char ** argv) {
         while (next_line(line)) {
             if (line == "QUIT") break;
             if (line == "STOP" || line.empty()) continue;
-            if (line.rfind("GEN ", 0) != 0) { std::printf("ERR unsupported command\n"); std::fflush(stdout); continue; }
+            const bool geni = line.rfind("GENI ", 0) == 0;   // GENI: a prompt with images (--vision)
+            if (!geni && line.rfind("GEN ", 0) != 0) { std::printf("ERR unsupported command\n"); std::fflush(stdout); continue; }
             std::istringstream ss(line);
-            std::string w, csv;
+            std::string w, csv, img_file;
             int max_new = 0, tk = 0;
             float temp = a.temp, top_p = 1.0f, min_p = 0.0f;
             ss >> w >> max_new;
             while (ss >> w) {
                 const size_t eq = w.find('=');
-                if (eq == std::string::npos) { csv = w; continue; }
+                if (eq == std::string::npos) { if (geni && img_file.empty()) img_file = w; else csv = w; continue; }
                 const std::string k = w.substr(0, eq), v = w.substr(eq + 1);
                 if (k == "temperature") temp = (float) std::atof(v.c_str());
                 else if (k == "top_p") top_p = (float) std::atof(v.c_str());
@@ -1323,14 +1503,26 @@ int main(int argc, char ** argv) {
                 std::fflush(stdout);
                 continue;
             }
+            // images: the records, their positions and the per-position keys (ikey stays empty for GEN)
+            std::vector<VisionInput::Rec> irecs;
+            std::vector<int64_t> istart;
+            std::vector<uint64_t> ikey;
+            if (geni) {
+                std::string verr;
+                if (!vis.on) verr = "image input needs --vision";
+                else if (img_file.empty() || csv.empty()) verr = "GENI needs an image file and the ids";
+                else if (vis.read(img_file, n_embd, (int64_t) ids.size(), irecs, verr))
+                    VisionInput::map(ids, vis.enc.image_token(), irecs, istart, ikey, verr);
+                if (!verr.empty()) { std::printf("ERR %s\n", verr.c_str()); std::fflush(stdout); continue; }
+            }
             size_t lcp = 0;
-            while (lcp < hist.size() && lcp < ids.size() && hist[lcp] == ids[lcp]) ++lcp;
+            while (lcp < hist.size() && lcp < ids.size() && hist[lcp] == ids[lcp] && key_at(hist_key, lcp) == key_at(ikey, lcp)) ++lcp;
             bool unparked = false;
             int reuse_override = -1;   // a partial unpark: resume at the longest common prefix (see below)
             size_t lp_show = 0;        // how far this request actually continues the PARKED conversation (logged)
             if (dense.parked()) {   // does this request continue the parked conversation (better than the live one)?
                 size_t lp = 0;
-                while (lp < park_hist.size() && lp < ids.size() && park_hist[lp] == ids[lp]) ++lp;
+                while (lp < park_hist.size() && lp < ids.size() && park_hist[lp] == ids[lp] && key_at(ikey, lp) == 0) ++lp;   // a park is text only
                 lp_show = lp;
                 // STRATA_SERVE_PARK_PARTIAL (default on): a request that continues MOST of the parked conversation is
                 // worth restoring, not only one that continues ALL of it.  A chat template that re-renders its tail -
@@ -1346,6 +1538,7 @@ int main(int argc, char ** argv) {
                     std::fprintf(stderr, "serve: unparked the %zu-token conversation at lcp %zu (partial: re-feeds from there)\n",
                                  park_hist.size(), lp);
                     hist = park_hist;
+                    hist_key.clear();
                     snap_len = -1;        // the tail under the park's end is re-fed, so no snapshot survives this
                     reuse_override = (int) lp;
                     lcp = lp;
@@ -1356,6 +1549,7 @@ int main(int argc, char ** argv) {
                 } else if (lp == park_hist.size() && lp > lcp && dense.unpark()) {
                     std::fprintf(stderr, "serve: unparked the %zu-token conversation\n", park_hist.size());
                     hist = park_hist;
+                    hist_key.clear();
                     snap_len = (int) park_hist.size();
                     snap_logits = park_logits;
                     lcp = lp;
@@ -1373,22 +1567,25 @@ int main(int argc, char ** argv) {
             else if (!unparked && !hist.empty() && lcp == hist.size() && lcp < ids.size()) reused = (int) lcp;
             else if (snap_len > 0 && lcp >= (size_t) snap_len && (size_t) snap_len == ids.size() && dense.restore()) {
                 hist.resize((size_t) snap_len);   // the same prompt again (regenerate): its end state + saved logits
+                if (hist_key.size() > (size_t) snap_len) hist_key.resize((size_t) snap_len);
                 reused = snap_len;
                 last_logits = snap_logits;
             } else if (snap_len > 0 && lcp >= (size_t) snap_len && (size_t) snap_len < ids.size() && dense.restore()) {
                 hist.resize((size_t) snap_len);
+                if (hist_key.size() > (size_t) snap_len) hist_key.resize((size_t) snap_len);
                 reused = snap_len;
             } else {
                 // an unrelated request: park the conversation it would overwrite (see STRATA_SERVE_PARK)
                 const int64_t rows = (int64_t) ids.size() + (max_new > 0 ? max_new : park_max) + 64;
                 if (park_on && !dense.parked() && snap_len >= park_min && hist.size() >= (size_t) snap_len && rows <= park_max
-                    && dense.park(rows)) {
+                    && !has_key(hist_key) && dense.park(rows)) {   // a conversation with images is not parked (keys)
                     park_hist.assign(hist.begin(), hist.begin() + snap_len);
                     park_logits = snap_logits;
                     park_rows = rows;
                     std::fprintf(stderr, "serve: parked the %d-token conversation (%lld positions saved)\n", snap_len, (long long) rows);
                 }
                 hist.clear();
+                hist_key.clear();
                 snap_len = -1;
             }
             std::fprintf(stderr, "serve: reuse lcp=%zu park=%zu lp=%zu hist=%zu snap=%d prompt=%zu -> reused=%d\n", lcp,
@@ -1409,7 +1606,11 @@ int main(int argc, char ** argv) {
             }
 #endif
             int dh = delta - sp_tail;   // the part the passes / batch feed
-            bool by_step = defer_vram && dh >= 1 && dh <= step_max;
+            // an image that is fed (its span reaches past the reuse): the layer-major batch, with the VRAM cache closed
+            // (the main card's encoder needs that room; the passes would also route its rows with the decode biases)
+            bool img_new = false;
+            for (size_t i = 0; i < istart.size(); ++i) img_new = img_new || istart[i] + irecs[i].n > reused;
+            bool by_step = defer_vram && dh >= 1 && dh <= step_max && !img_new;
             // STRATA_SERVE_BATCH_TAIL (default on, =0 the old way): a turn that runs as a layer-major batch anyway takes
             // its DSpark tail INTO the batch and the seed rows are read off the batch's state (bcap_vh) - the tail as
             // 16-token exact passes was half of every turn (s11 2026-10-15: +273 tokens 33.5 s = batch 17.1 + tail 15.8).
@@ -1446,6 +1647,33 @@ int main(int argc, char ** argv) {
                 info_vram();
                 bias_now = a.bias_prompt > 0;
                 apply_bias();
+            }
+            // the fed images' span rows (cache or encoder) -> the dense half, by absolute position
+            std::vector<float> vrows;
+            std::vector<int64_t> vpos;
+            if (img_new) {
+                std::string verr;
+                std::vector<float> r;
+                const double tv0 = now_ms();
+                for (size_t i = 0; i < irecs.size() && verr.empty(); ++i) {
+                    if (istart[i] + irecs[i].n <= reused) continue;
+                    if (!vis.rows(irecs[i], r, verr)) break;
+                    for (int64_t t = std::max<int64_t>(0, reused - istart[i]); t < irecs[i].n; ++t) {
+                        vpos.push_back(istart[i] + t);
+                        vrows.insert(vrows.end(), r.begin() + (size_t) (t * n_embd), r.begin() + (size_t) ((t + 1) * n_embd));
+                    }
+                }
+                vis.done();
+                if (!verr.empty()) {
+                    std::printf("ERR %s\n", verr.c_str());
+                    std::fflush(stdout);
+                    hist.clear();
+                    hist_key.clear();
+                    snap_len = -1;
+                    continue;
+                }
+                dense.set_vision(vrows.data(), vpos.data(), (int) vpos.size());
+                std::fprintf(stderr, "vision: %zu image rows ready in %.2f s\n", vpos.size(), (now_ms() - tv0) / 1000.0);
             }
             tier.rebalance_begin_prompt();
             tier.reset_stats();
@@ -1577,14 +1805,17 @@ int main(int argc, char ** argv) {
                 }
             }
             tail_keep = 0;
+            dense.clear_vision();   // the prompt is fed (decode positions are text)
             if (!ok) {
                 std::printf("ERR prefill failed: %s\n", ferr.c_str());
                 std::fflush(stdout);
                 hist.clear();
+                hist_key.clear();
                 snap_len = -1;
                 continue;
             }
             hist = ids;
+            hist_key = ikey;
             if (total > reused && dense.snapshot(total)) { snap_len = total; snap_logits = last_logits; }
             if (const char * dd = std::getenv("STRATA_SERVE_DUMP")) {   // exactness checks: request N's last-row logits
                 char nb[32];
@@ -1703,6 +1934,7 @@ int main(int argc, char ** argv) {
             if (std::strcmp(finish, "error") == 0) {
                 std::fprintf(stderr, "serve: decode failed: %s\n", ferr.c_str());
                 hist.clear();
+                hist_key.clear();
                 snap_len = -1;
                 finish = "length";
             }

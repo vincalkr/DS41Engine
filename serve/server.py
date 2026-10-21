@@ -3211,6 +3211,31 @@ class Service:
                     content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
         return fetched
 
+    def expand_image_tokens(self, ids: list[int], encoded: list) -> list[int]:
+        """The rendered prompt's image markers -> one token per image token (`encoded`: (file, tokens) per image, in
+        prompt order).  A model's server shim with another image layout replaces this (tools/v41/serve/serve_ds41.py)."""
+        pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
+        start = self.tok.encode(VISION_START, parse_special=True)[0]
+        # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
+        # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
+        # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
+        literal = self.tok.encode(IMAGE_PAD, parse_special=False)
+        out, k = [], 0
+        for j, t in enumerate(ids):
+            if t == pad and j > 0 and ids[j - 1] == start:
+                # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
+                if k == len(encoded):
+                    raise ValueError("the prompt and its images do not match")
+                out += [pad] * encoded[k][1]
+                k += 1
+            elif t == pad:
+                out += literal
+            else:
+                out.append(t)
+        if k != len(encoded):
+            raise ValueError("the prompt and its images do not match")
+        return out
+
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
@@ -3226,8 +3251,6 @@ class Service:
             if self.vision is None:
                 raise ValueError("this server was started without the vision encoder (run setup again and choose "
                                  "'vision'), so it cannot read images")
-            pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
-            start = self.tok.encode(VISION_START, parse_special=True)[0]
             # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
             # for as long as urlopen waited.
             images = [fetched[src] if src in fetched else Vision.download(src) if src.startswith(("http://", "https://"))
@@ -3239,25 +3262,7 @@ class Service:
             with self.fifo:
                 encoded = (self.vision.encode_all(images) if hasattr(self.vision, "encode_all")
                            else [self.vision.encode(src) for src in images])
-            # one <|image_pad|> per image -> one per image token.  Only the markers the template writes for an image
-            # (right after <|vision_start|>) are images: the same text inside a message (an agent reading these docs,
-            # #150) is kept as plain text, or it took an image's place and the counts no longer matched.
-            literal = self.tok.encode(IMAGE_PAD, parse_special=False)
-            out, k = [], 0
-            for j, t in enumerate(ids):
-                if t == pad and j > 0 and ids[j - 1] == start:
-                    # more pairs than images: text parts that cut both markers apart (the literal marks keep whole ones text)
-                    if k == len(encoded):
-                        raise ValueError("the prompt and its images do not match")
-                    out += [pad] * encoded[k][1]
-                    k += 1
-                elif t == pad:
-                    out += literal
-                else:
-                    out.append(t)
-            if k != len(encoded):
-                raise ValueError("the prompt and its images do not match")
-            ids = out
+            ids = self.expand_image_tokens(ids, encoded)
         ctx = self.engine.max_context
         if ctx <= 0:
             if getattr(self.engine, "starting", False):   # #344: (re)starting, not a prompt that is too long

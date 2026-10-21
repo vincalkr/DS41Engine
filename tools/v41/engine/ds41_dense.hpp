@@ -56,6 +56,10 @@ struct Ds41DenseConfig {
     /// --serve: start with max_pass (S) state columns and let set_columns() grow them for a layer-major batch and give
     /// them back after it (the prompt_batch columns are ~2.6 GiB at 8192 - expert slots while decoding).
     bool    elastic_cols = false;
+    /// --vision (opt-in): image input.  Requires blk.N.exp_probs_b_vl.bias in every layer.  A pass that holds image
+    /// rows (set_vision) routes them with exp_probs_b_vl and shuts the Engram gate there (model.py Gate / Engram);
+    /// every other pass builds exactly the graphs it builds without the flag, and nothing is allocated until an image.
+    bool    vision = false;
 };
 
 class Ds41Dense {
@@ -172,6 +176,13 @@ public:
     bool read_sel(int il, std::vector<int> & sel, std::vector<float> & mask, int * K);
     /// The x state after begin (+ the Engram add of the layer `il`, when il is an Engram layer) - gate tap.
     const std::string & last_error() const;
+    /// Image input (cfg.vision): the request's image span rows by absolute position - `rows` n_rows * n_embd floats,
+    /// `pos` the n_rows ascending positions.  A pass overwrites those positions' embeddings with the rows, routes them
+    /// with exp_probs_b_vl, shuts the Engram gate there and marks them DEAD in the n-gram history (model.py).  The
+    /// arrays must stay alive until clear_vision(); the positions the request reuses are simply never fed.
+    bool vision() const;
+    void set_vision(const float * rows, const int64_t * pos, int n_rows);
+    void clear_vision();
     /// A loaded weight on the backend (nullptr if absent) - for sharing the trunk head with the DSpark draft stack.
     ggml_tensor * weight(const std::string & name) const;
 

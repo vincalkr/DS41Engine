@@ -126,11 +126,21 @@ def _text(content):
     return "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") in ("text", "input_text", None))
 
 
+def _content(content):
+    """A message's content for DeepSeek's encoder: text, or - when it holds images (the server's {"type": "image",
+    "source"} items) - text and image blocks in order; the encoder writes one <｜deepseek_image｜> per image block
+    (dsv41_encoding.process_image_messages), in the order images_of() lists the sources."""
+    if isinstance(content, list) and any(isinstance(p, dict) and p.get("type") == "image" for p in content):
+        return [{"type": "image", "source": p.get("source") or "image"} if p.get("type") == "image" else {"type": "text", "text": p.get("text", "")}
+                for p in content if isinstance(p, dict) and p.get("type") in ("image", "text", "input_text", None)]
+    return _text(content)
+
+
 def to_encoder_messages(messages, tools):
     out = []
     for m in messages:
         m = dict(m)
-        m["content"] = _text(m.get("content"))
+        m["content"] = _content(m.get("content"))
         if m.get("tool_calls"):
             calls = []
             for c in m["tool_calls"]:
@@ -309,6 +319,94 @@ F.OutputParser.__init__ = _op_init_ds41
 F.OutputParser.feed = _op_feed_ds41
 F.OutputParser.finish = _op_finish_ds41
 S.OutputParser = F.OutputParser
+
+# ---- images (opt-in: a "vision" section in the config and --vision <gguf> in the engine's args)
+# The engine encodes the images itself (ds41_generate --vision: the ViT on the second card, or on card 0 for the
+# request).  So the server's encoder process is replaced by the preprocessing alone: DeepSeek's image_processor
+# (tools/v41/vision/ds41_image.py, bit-identical patches) writes one SVP1 record per image, and the server's existing
+# path does the rest - the FIFO, the combined file, the GENI line.  Each <｜deepseek_image｜> the template writes
+# becomes its image's whole span: llm_h * (llm_w + 1) + 2 image tokens.
+sys.path.insert(0, str(V41 / "vision"))
+import hashlib as _hashlib   # noqa: E402
+import shutil as _shutil   # noqa: E402
+import threading as _threading   # noqa: E402
+
+import ds41_image as DI   # noqa: E402
+
+
+class Ds41ImageInput(S.Vision):
+    """Stands in for S.Vision (the strata-vision process): no process, the patch grid computed here."""
+
+    def __init__(self, cfg: dict, log=None, env=None, lazy: bool = False):
+        self.dir = self.work_dir()
+        self.lock = _threading.Lock()
+        self.cache = {}
+        self.proc, self.stopped = None, False
+        self.max_tokens = int(cfg.get("max_tokens") or DI.MAX_TOKENS)
+
+    def alive(self) -> bool:
+        return True
+
+    def unload(self):
+        pass
+
+    def restart(self):
+        pass
+
+    def close(self):
+        pass
+
+    def encode(self, source, keep=()):
+        """-> (SVP1 record file, image tokens) for one image; cached by the image's bytes."""
+        data = self.normalize(source if isinstance(source, bytes) else self.load(source))
+        digest = _hashlib.sha256(data).digest()
+        name = digest[:16].hex()
+        with self.lock:
+            if name in self.cache:
+                self.cache[name] = self.cache.pop(name)
+                return self.cache[name]
+            try:
+                patches, vh, vw, lh, lw = DI.load_patches(data, self.max_tokens)
+            except Exception as e:  # noqa: BLE001 - an unreadable picture is the client's 400, not a crash
+                raise ValueError(f"the image could not be read ({e})") from None
+            key = int.from_bytes(digest[16:24], "little") or 1
+            out = self.dir / f"{name}.svp"
+            out.write_bytes(DI.svp1_record(patches, vh, vw, lh, lw, key))
+            self.cache[name] = (out, DI.num_image_tokens(lh, lw))
+            held = {str(p) for p in keep} | {str(out)}
+            for old in list(self.cache):
+                if len(self.cache) <= 64:
+                    break
+                if str(self.cache[old][0]) not in held:
+                    self.cache.pop(old)[0].unlink(missing_ok=True)
+            return self.cache[name]
+
+    def shutdown(self):
+        _shutil.rmtree(self.dir, ignore_errors=True)
+
+
+S.Vision = Ds41ImageInput
+IMAGE_TOKEN = 129264   # <｜deepseek_image｜> (config.json image_token_id; vocab.json agrees)
+
+
+def ds41_expand_image_tokens(self, ids, encoded):
+    """Every <｜deepseek_image｜> the template wrote -> that image's span of image tokens (prompt order).  A user's
+    literal placeholder never gets here: DeepSeek's encoder refuses it in a message's text."""
+    out, k = [], 0
+    for t in ids:
+        if t != IMAGE_TOKEN:
+            out.append(t)
+            continue
+        if k == len(encoded):
+            raise ValueError("the prompt and its images do not match")
+        out += [IMAGE_TOKEN] * encoded[k][1]
+        k += 1
+    if k != len(encoded):
+        raise ValueError("the prompt and its images do not match")
+    return out
+
+
+S.Service.expand_image_tokens = ds41_expand_image_tokens
 
 # ---- full text log (llama.cpp-style): every request's thinking / answer / tool calls as they are generated, so a run
 # can be watched (`tail -f`) and checked afterwards (loops, what it was thinking).  STRATA_TEXT_LOG=<path> (default

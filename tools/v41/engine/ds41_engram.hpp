@@ -37,6 +37,9 @@ public:
     int64_t row_dim() const { return dim_; }                    ///< 256
     /// Record token `tid` at position `pos` (history for the hashes; positions may be rewritten).
     void set_token(int64_t pos, int tid);
+    /// Position `pos` is an image row (model.py NgramHashState.DEAD): it takes no part in any n-gram and stops the
+    /// look-back of the positions after it, so no n-gram spans an image.
+    void set_dead(int64_t pos);
     /// Hash ids of the n-grams ending at `pos` for Engram slot `e` (0 = layer 1, 1 = layer 14): out[cols].
     void hash(int64_t pos, int e, int64_t * out) const;
     /// Rows for tokens at positions pos0..pos0+n-1, every Engram slot: out[e] = n * cols * dim floats (token-major).
@@ -76,6 +79,7 @@ private:
     uint64_t cache_hits_ = 0, cache_miss_ = 0;
     std::mutex cache_mu_;
     std::vector<int64_t> hist_;      // compressed ids by position
+    bool has_dead_ = false;          // set_dead was ever called: hash() checks for DEAD positions (text never does)
     std::vector<int64_t> offsets_;   // [slot * cols + col] bucket range start
     int64_t cols_ = 0, dim_ = 0;
     uint64_t bytes_ = 0, reads_ = 0;
