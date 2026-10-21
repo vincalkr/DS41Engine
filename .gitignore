@@ -96,3 +96,16 @@ build-vision-cuda12.bat
 /local/sweep-*/*
 !/local/sweep-*/summary.txt
 !/local/sweep-*/ref-*.ids
+
+# Measurement and debugging output stays local (2026-10-21): rank builds' merged stats, evaluation runs (only each
+# run's score.json is kept), logit / hidden-state dumps, profiler CSVs, attempt patches, core dumps
+/local/*.stats/
+/local/eval-lucebox/*/*
+!/local/eval-lucebox/*/score.json
+/local/eval-lucebox/eval.out
+*.dump
+*.f32
+/local/**/*.csv
+/local/*.patch
+core
+core.[0-9]*
