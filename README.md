@@ -46,7 +46,7 @@ sizes); the settings carry over to the current one.
 | `STRATA_SERVE_STEP_MAX=96` (from 256): agent turns of 97-256 new tokens go to the layer-major batch | time to first token on a +171 / +256-token turn 9.7-9.8 -> 6.3-6.8 s / 12.9-14.4 -> 6.0-9.4 s |
 | `--kv-q8`, `STRATA_PRESTAGE_GIB=1.5` | 8-bit KV: last-row top-5 identical (cosine 0.999); prestage +5.8% prompt |
 | second card, its store disjoint from the RAM arena (`STRATA_PEER_DISJOINT`, `STRATA_ARENA_EVICT_PEER`) | NVMe reads -42%; short prose 14.07 -> 15.58, 17K 9.91 -> 10.82 tok/s |
-| `local/power-tune.sh on` (root: NVMe APST off, CPU C3 off, `performance` governor) | a file read 2.0 -> 1.4 ms; 17K 12.11 -> 13.63 tok/s, every run fast (before: 2 of 5) |
+| `local/power-tune.sh on` (root: NVMe APST off, CPU C3 off, `performance` governor) | a file read 2.0 -> 1.4 ms; 17K 12.11 -> 13.63 tok/s, every run fast (before: 2 of 5); through the server on the 1017 Q2: short answers 18.69 -> 20.69, at ~25.5K context 16.20 -> 19.55 tok/s |
 
 ## Where the time goes
 
@@ -117,7 +117,8 @@ exist"): use `./run-1gpu.sh`. `--peer-device` takes one extra card.
 Optional, with root: `sudo bash local/power-tune.sh on` keeps the NVMe and the CPUs out of their deep idle states
 (APST, C3) and sets the `performance` governor. Decode reads an expert from the drive every 10-20 ms, and a drive or
 core that dozed off in between doubled each read. Measured on this box (two cards, 5 runs each): 12.11 -> 13.63 tok/s
-at 17K context, 17.17 -> 17.70 on short prose. It costs idle power and does not survive a reboot;
+at 17K context, 17.17 -> 17.70 on short prose; through the server on the 1017 Q2 (2026-10-21) 18.69 -> 20.69 tok/s on
+short answers and 16.20 -> 19.55 at ~25.5K context. It costs idle power and does not survive a reboot;
 `sudo bash local/power-tune.sh off` restores the defaults.
 
 `run.sh` checks that the model and the Engram tables are in `models/` and uses `.venv` (or any python3 with

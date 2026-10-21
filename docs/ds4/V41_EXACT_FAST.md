@@ -446,6 +446,19 @@ run of five is still slow, and not because of the reads: its file and CPU time a
 and the rest is 50.2 ms against 39.7-41.3 - a second source of spread, in the dense half or the host. The settings
 cost idle power and do not survive a reboot; `local/power-tune.sh off` restores the boot values.
 
+**Through the server, the ds4 1017 Q2 (2026-10-21).** `local/bench-v41/serve-bench.py`: the same requests to the
+running server (300-token answers at temperature 0, thinking off; 3 short, then a ~25.5K-token document and 3 answers
+after it), each state from a freshly started server:
+
+| | `power-tune.sh off` | `power-tune.sh on` | |
+| --- | --- | --- | ---: |
+| short answer | 16.81 19.15 20.12 = 18.69 tok/s | 18.99 21.31 21.76 = **20.69** | +11% |
+| at ~25.5K context | 15.83 16.34 16.42 = 16.20 tok/s | 19.46 19.55 19.64 = **19.55** | +21% |
+| the 25,552-token prompt, fresh | 373.0 tok/s | 349.4 tok/s | one run each |
+
+A run on a warm server (the same requests repeated after an `off` series) gave 20.54 / 19.84: the gain is the
+settings', not the warmer cache.
+
 **The cards' clock level `high`** (`local/gpu-perf.sh high`, on top of `power-tune.sh on`, 5 runs each) is slower:
 17K 13.23 13.14 12.99 12.86 13.22 = 13.09 tok/s against 13.63 at `auto`, Sposi 17.37 17.34 17.18 16.82 15.75 = 16.89
 against 17.70 (the rest of the token 44.5 -> 47.5 and 42.4 -> 45.1 ms; the first 17K run overlapped another session's
