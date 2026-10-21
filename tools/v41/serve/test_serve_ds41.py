@@ -151,6 +151,24 @@ def t_tokenizer(tok_dir):
               quoted in tok.decode(ids), (n(E.IMAGE_PLACEHOLDER), n(E.USER_SP_TOKEN), n(E.ASSISTANT_SP_TOKEN)))
     except ValueError as e:
         check("markers quoted in a message are text (no 400, no extra turn)", False, e)
+    # the thinking budget's wrap-up: the next turn (the client sends the reply back, re-tokenized) must continue what
+    # the engine holds at least to the wrap-up pass's snapshot, or the engine re-reads the whole conversation
+    from serve import frontend as F
+    tools = [{"name": "read", "description": "read a file", "parameters": {"type": "object", "properties": {}}}]
+    for name, thought in (("a word", "the model ctx and its metadata"), ("';'", "the model ctx and its metadata;")):
+        msgs = [{"role": "user", "content": "what is new?"}]
+        prompt = svc.encode_prompt(msgs, tools, {"enable_thinking": True})
+        gen = tok.encode(thought)
+        extra = tok.encode(S.REASONING_WRAP_UP, parse_special=True)
+        snap = svc.continue_prompt(prompt, gen, extra, S.REASONING_WRAP_UP)
+        held = snap + tok.encode("Sì: ecco.") + tok.encode(E.eos_token, parse_special=True)
+        evs = F.OutputParser(thinking=True, tools=tools, stream_tools=True).feed(thought + S.REASONING_WRAP_UP + "Sì: ecco.")
+        back = msgs + [{"role": "assistant", "reasoning_content": "".join(e.text for e in evs if e.kind == "reasoning"),
+                        "content": "".join(e.text for e in evs if e.kind == "content")}, {"role": "user", "content": "e poi?"}]
+        ids = svc.encode_prompt(back, tools, {"enable_thinking": True})
+        lcp = next((i for i, (x, y) in enumerate(zip(held, ids)) if x != y), min(len(held), len(ids)))
+        check(f"budget wrap-up after {name}: the next turn continues the engine's history", lcp >= len(snap),
+              (lcp, len(snap), len(held)))
 
 
 def free_port():

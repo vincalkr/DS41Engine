@@ -208,9 +208,11 @@ S.Service.__init__ = _svc_init_ds41
 # ---- the #123 thinking budget must close V4.1's thinking, not Qwen's </think>
 # serve/server.py holds Qwen's markers ("</think>"); both wrap-up texts go through tok.encode(..., parse_special=True),
 # so putting the model's own end-of-thinking token there is what actually closes the thinking and lets it answer.
-S.REASONING_CLOSE = "\n" + E.thinking_end_token + "\n\n"
-S.REASONING_WRAP_UP = ("\n\nI have thought about this long enough; time to give my answer.\n"
-                       + E.thinking_end_token + "\n\n")
+# Nothing after it: DeepSeek's encoder writes the answer right after </think> when the client sends the turn back, and
+# Qwen's "\n\n" there (the reply's content drops it) made every turn after a budget wrap-up re-read the whole
+# conversation (the engine held "</think>\n\n", the next turn "</think>" and the answer).
+S.REASONING_CLOSE = "\n" + E.thinking_end_token
+S.REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n" + E.thinking_end_token
 
 # ---- tool calls: DSML
 CALLS_OPEN = f"<{E.dsml_token}{E.tool_calls_block_name}>"           # <｜DSML｜ calls>

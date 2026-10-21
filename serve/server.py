@@ -3170,6 +3170,24 @@ class Service:
         tail = "" if off else EFFORT_TURN.format(EFFORT_TEXT.get(effort, EFFORT_TEXT["medium"]))
         return history + tail + full[len(mine):]
 
+    def continue_prompt(self, prompt: list[int], seg: list[int], extra: list[int], text: str) -> list[int]:
+        """The next pass's prompt after the server writes `text` (`extra`: its tokens - a thinking wrap-up, the close
+        of a thinking that stopped) behind this pass's generated `seg`: prompt + seg + extra, unless the text joined
+        at that boundary tokenizes differently.  ";" then "\\n\\n" is one token, ";\\n\\n": the client's next turn is
+        the text re-tokenized, so the engine would hold two tokens where that turn has one, match only up to there
+        and re-read the whole conversation (a 177K-token agent session re-read from zero).  Then the last generated
+        tokens are re-encoded with the text: the engine re-reads this pass from its snapshot, and the next turn
+        continues it."""
+        for k in range(min(4, len(seg)), min(8, len(seg)) + 1):
+            try:                                    # a cut inside a multi-byte character: take one more token
+                tail = b"".join(self.tok.token_bytes(t) for t in seg[-k:]).decode("utf-8") \
+                    if hasattr(self.tok, "token_bytes") else self.tok.decode(seg[-k:])
+            except (UnicodeDecodeError, KeyError, IndexError):
+                continue
+            joined = self.tok.encode(tail + text, parse_special=True)
+            return prompt + seg + extra if joined == seg[-k:] + extra else prompt + seg[:-k] + joined
+        return prompt + seg + extra
+
     def encode_prompt(self, messages, tools, kwargs) -> list[int]:
         """The request's prompt: the template rendered and tokenized.  #537: a <think> / </think> written inside a
         message's text is encoded as the text it is, not as the model's reasoning markers (the template's own are).
@@ -3642,7 +3660,7 @@ class Service:
                                     self._note(n, evs, st, rate)
                                     for ev in evs:
                                         yield "event", ev
-                                prompt = prompt + seg + extra
+                                prompt = self.continue_prompt(prompt, seg, extra, REASONING_CLOSE)
                                 finish = "length"
                                 continue
                         if not (wrap or opens) or cancel.is_set():
@@ -3675,7 +3693,7 @@ class Service:
                         if stops is not None and stops.hit is not None:
                             finish = "stop"
                             break
-                        prompt = prompt + seg + extra
+                        prompt = self.continue_prompt(prompt, seg, extra, text)
                     if cancel.is_set():
                         finish = "cancel"
                     elif looped:
