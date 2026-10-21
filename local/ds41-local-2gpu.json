@@ -68,7 +68,10 @@
  "log": "local/serve-engine.log",
  "port": 8150,
  "backend": "hip",
- "gpu": 0,
+ "gpu": [
+  0,
+  1
+ ],
  "sampling": {
   "temperature": 0.8,
   "top_p": 0.95,
