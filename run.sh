@@ -62,7 +62,7 @@ if [ -z "$CFG" ]; then
         CFG="$R/local/$base-vision.json"
     else
         CFG="$R/local/$base.json"
-        echo "run.sh: no vision encoder in models/vision-1017 (VISION=1 local/fetch-model.sh): text only"
+        echo "run.sh: no vision encoder in models/vision-1017 (local/fetch-model.sh builds it): text only"
     fi
 fi
 echo "run.sh: config $CFG, cards ${GPU:-as the config says}"

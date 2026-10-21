@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # fetch-model.sh [DEST] - DeepSeek-V4.1-Flash-1017 as antirez/ds4's Q2 (IQ2_XXS gate/up, Q2_K down, imatrix) into the
-# layout the default configuration (local/ds41-local.json) reads:
+# layout ./run.sh's configurations read:
 #
 #   DEST/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf   366 GB (from antirez/deepseek-v4.1-flash-gguf)
 #   DEST/ds4-1017/tokenizer/{vocab.json,merges.txt,token_type.json,chat_template.jinja}
 #   DEST/engram-1017/layers1/engram-L1.safetensors     the two Engram tables, extracted from the GGUF
 #   DEST/engram-1017/layers14/engram-L14.safetensors   (local/ds4-engram-extract.py, 101 GB each) + their index
+#   DEST/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf   0.9 GiB, the image encoder, built from the 1017
+#                                                           checkpoint by tools/v41/vision/make_vision_gguf.py
 #
 # DEST defaults to <repo>/models.  Needs curl, python3 with numpy (the extraction), and aria2c for a fast download.
 # Space: 366 GB for the GGUF + 203 GB for the tables = ~570 GB, all of it kept (the engine reads the GGUF's weights
@@ -14,8 +16,8 @@
 # metadata is the September checkpoint's, byte for byte) and come from the GSQ repo, where they are separate files.
 #
 # Env: CONN=4 (aria2c connections per file), ARIA2=0 (force curl), DRY_RUN=1 (print the plan, change nothing),
-#      SKIP_SHA=1 (skip the 366 GB sha256), HF_TOKEN, VISION=1 (also the image encoder: DEST/vision-1017, 0.9 GiB,
-#      built from the 1017 checkpoint by tools/v41/vision/make_vision_gguf.py; docs/ds4/V41_VISION.md).
+#      SKIP_SHA=1 (skip the 366 GB sha256), HF_TOKEN, VISION=0 (no image encoder: ./run.sh then runs text only;
+#      docs/ds4/V41_VISION.md).
 set -euo pipefail
 export LC_ALL=C LANG=C
 trap 'trap - INT TERM; kill 0 2>/dev/null' INT TERM
@@ -82,12 +84,12 @@ if [ "$(size "$ENG/layers1/engram-L1.safetensors")" -gt 100000000000 ] && [ "$(s
 elif [ "$DRY_RUN" != 1 ]; then
   "$PY" "$HERE/local/ds4-engram-extract.py" "$Q2/$Q2_FILE" "$ENG"
 fi
-# optional: the image encoder (VISION=1) - the 1017 checkpoint's vision tower as a GGUF, 0.9 GiB of HTTP range reads
-if [ "${VISION:-0}" = 1 ]; then
-  say "=== vision encoder -> $DEST/vision-1017 (VISION=1)"
+# the image encoder (VISION=0 skips it) - the 1017 checkpoint's vision tower as a GGUF, 0.9 GiB of HTTP range reads
+if [ "${VISION:-1}" != 0 ]; then
+  say "=== vision encoder -> $DEST/vision-1017"
   if [ -s "$DEST/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf" ]; then say "have  the vision GGUF"
   elif [ "$DRY_RUN" != 1 ]; then
-    python3 "$HERE/tools/v41/vision/make_vision_gguf.py" --out "$DEST/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf"
+    "$PY" "$HERE/tools/v41/vision/make_vision_gguf.py" --out "$DEST/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf"
   fi
 fi
-say "=== done: ./run.sh starts the server on it (local/ds41-local.json)"
+say "=== done: ./run.sh starts the server on it"

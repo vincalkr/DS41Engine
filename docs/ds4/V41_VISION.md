@@ -1,12 +1,12 @@
 # V4.1 image input
 
-Images need the vision GGUF. With it in `models/vision-1017`, `./run.sh` starts the vision configuration
+Images need the vision GGUF, which `local/fetch-model.sh` builds (`VISION=0` skips it). With it in `models/vision-1017`, `./run.sh` starts the vision configuration
 (`local/ds41-local-vision.json`, two cards; `--gpu 0` or `--gpu 1`: `local/ds41-local-1gpu-vision.json`); without
 it, the text-only ones (`local/ds41-local.json`, `local/ds41-local-1gpu.json`). Text runs as fast either way (see
 "Text-only speed": 21.01 / 19.60 tok/s with the vision configuration, 20.39 / 19.77 without).
 
 ```sh
-VISION=1 local/fetch-model.sh                          # or: python3 tools/v41/vision/make_vision_gguf.py
+local/fetch-model.sh                                   # or: python3 tools/v41/vision/make_vision_gguf.py
 ./run.sh                                               # two cards: the encoder on card 1
 ./run.sh --gpu 0                                       # one card: the encoder on card 0, for the request
 python3 tools/v41/vision/check_images.py picture.jpg   # ask the running server about a picture

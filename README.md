@@ -32,7 +32,7 @@ KL 0.269. Every number and how it was measured: [docs/ds4/V41_EXACT_FAST.md](doc
 | GPU | RX 7900 XT / XTX (`gfx1100`); a second 24 GB card is used as an expert tier when present |
 | RAM | 128 GB class (the engine holds ~89 GB with the 75 GiB arena) |
 | CPU | x86-64 with AVX2 (AVX-512 used when present) |
-| disk | ~570 GB on an NVMe for `models/` (366 GB GGUF + 203 GB Engram tables) |
+| disk | ~570 GB on an NVMe for `models/` (366 GB GGUF + 203 GB Engram tables + 0.9 GiB vision encoder) |
 | tools | `cmake` >= 3.24, gcc, Python 3, curl, `aria2c` (faster downloads) |
 
 ## Quick start
@@ -45,7 +45,7 @@ local/fetch-model.sh                                                  # the mode
 ```
 
 - `local/fetch-model.sh` downloads the GGUF with `aria2c` (4 connections, `CONN`), checks its sha256, extracts the two
-  Engram tables from it and fetches the tokenizer tables; `DRY_RUN=1` prints the plan.
+  Engram tables from it, fetches the tokenizer tables and builds the vision encoder; `DRY_RUN=1` prints the plan.
 - `./build.sh` builds the vendored ggml (`third_party/llama.cpp/ggml`) into `third_party/llama.cpp/build-hip`, then the
   engine into `build-hip-fused`; `ROCM`, `GFX`, `JOBS`, `REBUILD_GGML=1` from the environment.
 - `./run.sh` uses cards 0 and 1; `./run.sh --gpu 0` (or `--gpu 1`) one card, `--gpu 0,1` both. The number of cards
@@ -59,12 +59,9 @@ as `reasoning_effort`, `reasoning.effort` (OpenAI) or `output_config.effort` / `
 
 ## Images (optional)
 
-The model reads pictures (OpenAI `image_url`, Anthropic `image` blocks) once the vision encoder is there; `./run.sh`
-then starts the vision configuration, and text runs as fast as without it.
-
-```sh
-VISION=1 local/fetch-model.sh                        # + the 1017 vision encoder (0.9 GiB) into models/vision-1017
-```
+The model reads pictures (OpenAI `image_url`, Anthropic `image` blocks). `local/fetch-model.sh` builds the 1017 vision
+encoder (0.9 GiB) into `models/vision-1017` and `./run.sh` starts the vision configuration; text runs as fast as
+without it. `VISION=0 local/fetch-model.sh` leaves it out, and `./run.sh` then runs text only.
 
 The encoder runs in the engine on the second card (0.2-5 s an image, exact against DeepSeek's code); a picture
 costs 189-1014 prompt tokens. The September encoder (antirez's `DeepSeek-V4.1-Flash-Vision.gguf`) does not match the
