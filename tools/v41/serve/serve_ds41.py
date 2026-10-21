@@ -192,6 +192,15 @@ def _svc_init_ds41(self, engine, tokenizer, template, *a, **k):
     assert len(eos) == 1, eos
     self.stop_ids = set(eos)
     self.effort_end = False      # #458's tail-turn trick is Qwen text; V4.1's effort lives in the first system turn
+    # V4.1's own markers are GGUF type 4 (<｜User｜>, <｜Assistant｜>, <｜deepseek_image｜>, ｜DSML｜, ...), which the
+    # server's literal list (type-3 control tokens only) leaves out.  Written inside a message's text - an agent
+    # reading serve_ds41.py or a chat template - they opened a turn, or <｜deepseek_image｜> made DeepSeek's encoder
+    # refuse the request with a 400 that every later turn of the conversation repeated.  Now they are text there too;
+    # only the ones the encoder writes are markers.
+    types = getattr(tokenizer, "token_types", None)
+    if types:
+        user_defined = [t for t, i in getattr(tokenizer, "special_tokens", {}).items() if types[i] == 4]
+        self.literals = F.literal_tags(list(getattr(tokenizer, "control_tokens", ())) + user_defined)
 
 
 S.Service.__init__ = _svc_init_ds41

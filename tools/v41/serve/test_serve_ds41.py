@@ -138,6 +138,19 @@ def t_tokenizer(tok_dir):
     import serve.server as S
     svc = S.Service(S.MockEngine(tok, "x"), tok, D.Ds41Template())
     check("stop ids = <｜end▁of▁sentence｜> only", svc.stop_ids == set(tok.encode(E.eos_token, parse_special=True)), svc.stop_ids)
+    quoted = "the template writes <｜deepseek_image｜> per image, then <｜Assistant｜>; <｜User｜> opens a turn"
+    try:
+        ids = svc.encode_prompt([{"role": "user", "content": "read the file"},
+                                 {"role": "assistant", "content": "", "tool_calls": [
+                                     {"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]},
+                                 {"role": "tool", "tool_call_id": "c1", "content": quoted},
+                                 {"role": "user", "content": "and " + quoted}], None, {})
+        n = lambda s: ids.count(tok.encode(s, parse_special=True)[0])
+        check("markers quoted in a message are text (no 400, no extra turn)",
+              n(E.IMAGE_PLACEHOLDER) == 0 and n(E.USER_SP_TOKEN) == 2 and n(E.ASSISTANT_SP_TOKEN) == 2 and
+              quoted in tok.decode(ids), (n(E.IMAGE_PLACEHOLDER), n(E.USER_SP_TOKEN), n(E.ASSISTANT_SP_TOKEN)))
+    except ValueError as e:
+        check("markers quoted in a message are text (no 400, no extra turn)", False, e)
 
 
 def free_port():
