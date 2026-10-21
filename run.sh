@@ -52,7 +52,32 @@ if [ -n "$missing" ]; then
     exit 1
 fi
 
-exec "$PY" "$R/tools/v41/serve/serve_ds41.py" \
-     "--engine" "strata" \
-     "--config" "$R/local/ds41-local.json" \
-     "--port" "8150" "$@"
+# local/power-tune.sh for as long as the server runs (+11% short answers, +21% at ~25K context, measured 2026-10-21):
+# only when local/install-power-tune.sh has been run once with sudo (a root-owned copy and a sudo rule for it alone);
+# otherwise nothing changes.  DS41_POWER_TUNE=0 leaves the machine's settings alone.
+PT=/usr/local/sbin/ds41e-power-tune
+tuned=0
+if [ "${DS41_POWER_TUNE:-1}" != 0 ] && [ -x "$PT" ] && sudo -n "$PT" on >/dev/null 2>&1; then
+    tuned=1
+    echo "run.sh: power-tune on (NVMe APST off, CPU C3 off, performance governor); off again when the server ends"
+elif [ "${DS41_POWER_TUNE:-1}" != 0 ] && [ ! -x "$PT" ]; then
+    echo "run.sh: power-tune not installed (sudo local/install-power-tune.sh switches it on and off with the server)"
+fi
+
+if [ "$tuned" = 0 ]; then
+    exec "$PY" "$R/tools/v41/serve/serve_ds41.py" \
+         "--engine" "strata" \
+         "--config" "$R/local/ds41-local.json" \
+         "--port" "8150" "$@"
+fi
+# The server runs in the foreground (Ctrl+C reaches it as before); this shell waits and switches power-tune off
+# however the server ends.  A no-op INT/TERM/HUP trap keeps the shell alive until then (an ignored signal would be
+# inherited by the server).
+trap ':' INT TERM HUP
+rc=0
+"$PY" "$R/tools/v41/serve/serve_ds41.py" \
+    "--engine" "strata" \
+    "--config" "$R/local/ds41-local.json" \
+    "--port" "8150" "$@" || rc=$?
+sudo -n "$PT" off >/dev/null 2>&1 && echo "run.sh: power-tune off"
+exit "$rc"

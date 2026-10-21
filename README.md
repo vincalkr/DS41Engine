@@ -118,8 +118,10 @@ Optional, with root: `sudo bash local/power-tune.sh on` keeps the NVMe and the C
 (APST, C3) and sets the `performance` governor. Decode reads an expert from the drive every 10-20 ms, and a drive or
 core that dozed off in between doubled each read. Measured on this box (two cards, 5 runs each): 12.11 -> 13.63 tok/s
 at 17K context, 17.17 -> 17.70 on short prose; through the server on the 1017 Q2 (2026-10-21) 18.69 -> 20.69 tok/s on
-short answers and 16.20 -> 19.55 at ~25.5K context. It costs idle power and does not survive a reboot;
-`sudo bash local/power-tune.sh off` restores the defaults.
+short answers and 16.20 -> 19.55 at ~25.5K context. It costs idle power, so it is best on only while the server runs:
+`sudo local/install-power-tune.sh` (once) installs a root-owned copy and a sudo rule for it alone, and from then on
+`./run.sh` switches it on at start and off when the server ends (`DS41_POWER_TUNE=0 ./run.sh` leaves the settings
+alone; `sudo local/install-power-tune.sh uninstall` removes it). By hand: `sudo local/power-tune.sh on|off`.
 
 `run.sh` checks that the model and the Engram tables are in `models/` and uses `.venv` (or any python3 with
 the packages of `requirements.txt`). Never expose the server beyond
