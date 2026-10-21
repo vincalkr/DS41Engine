@@ -12,7 +12,6 @@
 # and the tables' rows).  Resumable: a file counts as complete when its size matches the Hugging Face API's; the GGUF
 # is checked against its sha256 (the API's LFS id) once.  The tokenizer tables are V4.1's (the GGUF's tokenizer
 # metadata is the September checkpoint's, byte for byte) and come from the GSQ repo, where they are separate files.
-# The September GSQ (the default before 2026-10-20): local/fetch-model-gsq.sh.
 #
 # Env: CONN=4 (aria2c connections per file), ARIA2=0 (force curl), DRY_RUN=1 (print the plan, change nothing),
 #      SKIP_SHA=1 (skip the 366 GB sha256), HF_TOKEN.
