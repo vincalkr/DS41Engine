@@ -9,8 +9,9 @@
 # 2. local/bench-v41/ab-1017.sh: the rank in use (local/ds41-local.json's --rank) and the candidate, interleaved, REPS
 #    runs each (default 3) at 17K context and on Promessi Sposi, the default configuration's flags
 # 3. the candidate is applied only if neither prompt's mean is more than 2% slower and the two means together are at
-#    least 1% faster (single runs here spread by 5-10%): it is copied to local/rank-1017.bin and the three default
-#    configurations (local/ds41-local.json, -2gpu, -1gpu) get --rank local/rank-1017.bin.  Otherwise nothing changes.
+#    least 1% faster (single runs here spread by 5-10%): it is copied to local/rank-1017.bin and the five
+#    configurations (local/ds41-local.json, -2gpu, -1gpu, -vision, -1gpu-vision) get --rank local/rank-1017.bin.
+#    Otherwise nothing changes.
 # 4. the decision is appended to local/sweep-1017/summary.txt.
 #
 # A running server (127.0.0.1:8150) is stopped for the measurement and started again afterwards with
@@ -74,7 +75,8 @@ if [ "${verdict%% *}" = APPLY ]; then
     cp "$CAND" local/rank-1017.bin
     python3 - <<'EOF'
 import json
-for f in ("local/ds41-local.json", "local/ds41-local-2gpu.json", "local/ds41-local-1gpu.json"):
+for f in ("local/ds41-local.json", "local/ds41-local-2gpu.json", "local/ds41-local-1gpu.json",
+          "local/ds41-local-vision.json", "local/ds41-local-1gpu-vision.json"):
     c = json.load(open(f)); a = c["args"]; a[a.index("--rank") + 1] = "local/rank-1017.bin"
     json.dump(c, open(f, "w"), indent=1); open(f, "a").write("\n")
 EOF

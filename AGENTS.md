@@ -8,9 +8,10 @@ It holds DeepSeek only: the Qwen engine, its installer and the other models' cod
 
 ## Running it
 
-- `./run.sh` starts the server on `127.0.0.1:8150` with `local/ds41-local.json` (two cards, the same as
-  `local/ds41-local-2gpu.json`; `./run-1gpu.sh` for one card). Never expose it beyond `127.0.0.1`
-  without `--api-key`.
+- `./run.sh` starts the server on `127.0.0.1:8150` on cards 0 and 1 with `local/ds41-local-vision.json`
+  (`local/ds41-local.json` without the vision encoder); `--gpu 0` / `--gpu 1` one card
+  (`local/ds41-local-1gpu-vision.json`, or `-1gpu.json`), `--config FILE` any other. Never expose it beyond
+  `127.0.0.1` without `--api-key`.
 - The model files live in `models/` inside this folder (`local/fetch-model.sh` puts them there); keep it that way.
   The default model (2026-10-20) is DeepSeek-V4.1-Flash-1017 as antirez/ds4's Q2 (`models/ds4-1017`, Engram in
   `models/engram-1017`). The September GSQ it replaced is backed up on the USB SSD

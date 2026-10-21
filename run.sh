@@ -1,7 +1,12 @@
 #!/bin/sh
-# DeepSeek-V4.1-Flash (GSQ) on two RX 7900 XTX (gfx1100, ROCm/HIP); one card: ./run-1gpu.sh.
-# The model layout, the settings and the measured numbers: local/ds41-local.json and docs/ds4/.
-# Extra arguments are passed to the server, for example:  ./run.sh --port 8151
+# DeepSeek-V4.1-Flash-1017 on RX 7900 XTX (gfx1100, ROCm/HIP).
+#   ./run.sh                 two cards (0 and 1, card 1 as the expert tier), images on
+#   ./run.sh --gpu 1         one card (0 or 1)
+#   ./run.sh --gpu 0,1       two cards, as the default
+# --gpu picks the configuration: local/ds41-local-vision.json for two cards, local/ds41-local-1gpu-vision.json for
+# one; without the vision encoder in models/vision-1017 the text-only ones (local/ds41-local.json,
+# local/ds41-local-1gpu.json).  --config FILE uses that file instead.  Other arguments go to the server, for
+# example:  ./run.sh --port 8151.  The settings and the measured numbers: docs/ds4/.
 # The repository root is wherever this script lives, so the launcher works from a clone anywhere.
 R=$(cd "$(dirname "$0")" && pwd) || exit 1
 cd "$R" || exit 1
@@ -27,11 +32,43 @@ if [ -z "$PY" ]; then
 fi
 echo "run.sh: STRATA_HOME=$STRATA_HOME, python $PY"
 
-# The model files the configuration names (-m, --engram, its tokenizer) must be there.  --config in the arguments
-# replaces the default, as the server takes the last one.
-CFG="$R/local/ds41-local.json"
-prev=""
-for a in "$@"; do [ "$prev" = "--config" ] && CFG="$a"; prev="$a"; done
+# --gpu and --config are taken out of the arguments; the rest go to the server as they are.
+GPU=""; CFG=""
+n=$#
+while [ "$n" -gt 0 ]; do
+    a=$1; shift; n=$((n - 1))
+    case $a in
+        --gpu|--config)
+            [ "$n" -gt 0 ] || { echo "run.sh: $a needs a value" >&2; exit 1; }
+            [ "$a" = --gpu ] && GPU=$1 || CFG=$1
+            shift; n=$((n - 1)); continue ;;
+        --gpu=*) GPU=${a#--gpu=}; continue ;;
+        --config=*) CFG=${a#--config=}; continue ;;
+    esac
+    set -- "$@" "$a"
+done
+case ${GPU:-0,1} in
+    *[!0-9,]*|,*|*,|*,,*) echo "run.sh: --gpu takes card numbers: 0, 1 or 0,1 (got '$GPU')" >&2; exit 1 ;;
+esac
+cards=$(echo "${GPU:-0,1}" | tr ',' '\n' | wc -l)
+if [ -z "$CFG" ]; then
+    [ -n "$GPU" ] || GPU=0,1
+    case $cards in
+        1) base=ds41-local-1gpu ;;
+        2) base=ds41-local ;;
+        *) echo "run.sh: one or two cards (--gpu 0, --gpu 1, --gpu 0,1), not '$GPU'" >&2; exit 1 ;;
+    esac
+    if [ -s "$R/models/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf" ]; then
+        CFG="$R/local/$base-vision.json"
+    else
+        CFG="$R/local/$base.json"
+        echo "run.sh: no vision encoder in models/vision-1017 (VISION=1 local/fetch-model.sh): text only"
+    fi
+fi
+echo "run.sh: config $CFG, cards ${GPU:-as the config says}"
+set -- --config "$CFG" ${GPU:+--gpu "$GPU"} "$@"
+
+# The model files the configuration names (-m, --engram, its tokenizer) must be there.
 missing=$("$PY" - "$CFG" "$R" <<'EOF'
 import json, os, sys
 cfg, root = sys.argv[1], sys.argv[2]
@@ -67,7 +104,6 @@ fi
 if [ "$tuned" = 0 ]; then
     exec "$PY" "$R/tools/v41/serve/serve_ds41.py" \
          "--engine" "strata" \
-         "--config" "$R/local/ds41-local.json" \
          "--port" "8150" "$@"
 fi
 # The server runs in the foreground (Ctrl+C reaches it as before); this shell waits and switches power-tune off
@@ -77,7 +113,6 @@ trap ':' INT TERM HUP
 rc=0
 "$PY" "$R/tools/v41/serve/serve_ds41.py" \
     "--engine" "strata" \
-    "--config" "$R/local/ds41-local.json" \
     "--port" "8150" "$@" || rc=$?
 # Another ds41e server may have started meanwhile (a restart, an A/B that stops one and starts the next): it switched
 # power-tune on and still needs it, so it stays on until the last server ends.

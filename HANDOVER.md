@@ -21,7 +21,7 @@ latest state is in the update notes below and in `docs/ds4/V41_EXACT_FAST.md`). 
 
 >
 > **Update 2026-10-20 (evening):** the model is now DeepSeek-V4.1-Flash-1017 as antirez/ds4's Q2 (`models/ds4-1017`,
-> Engram tables extracted from its GGUF into `models/engram-1017`), started with `./run.sh` (`./run-1gpu.sh` for one
+> Engram tables extracted from its GGUF into `models/engram-1017`), started with `./run.sh` (`./run.sh --gpu 0` for one
 > card; the old `run-v41-gsq*.sh` names are gone). Quality and speed in
 > [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), "The ds4 1017 Q2 as the model". What follows below is
 > the history of the September GSQ.

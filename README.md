@@ -48,12 +48,27 @@ local/fetch-model.sh                                                  # the mode
   Engram tables from it and fetches the tokenizer tables; `DRY_RUN=1` prints the plan.
 - `./build.sh` builds the vendored ggml (`third_party/llama.cpp/ggml`) into `third_party/llama.cpp/build-hip`, then the
   engine into `build-hip-fused`; `ROCM`, `GFX`, `JOBS`, `REBUILD_GGML=1` from the environment.
-- `./run.sh` uses two cards (`local/ds41-local.json`); `./run-1gpu.sh` one card (`local/ds41-local-1gpu.json`).
-  Extra arguments go to the server (`./run.sh --port 8151`). Loading takes about a minute; the web chat and monitor
+- `./run.sh` uses cards 0 and 1; `./run.sh --gpu 0` (or `--gpu 1`) one card, `--gpu 0,1` both. The number of cards
+  picks the configuration: `local/ds41-local-vision.json` / `local/ds41-local-1gpu-vision.json` when the vision
+  encoder is in `models/vision-1017`, otherwise `local/ds41-local.json` / `local/ds41-local-1gpu.json`;
+  `--config FILE` uses that file. Other arguments go to the server (`./run.sh --port 8151`). Loading takes about a minute; the web chat and monitor
   are at `http://127.0.0.1:8150/`, the API at `/v1`. Never expose the server beyond `127.0.0.1` without `--api-key`.
 
 Reasoning effort follows DeepSeek's encoder: `low` (50), `high` (75, default), `max` (100), a number 1-100, or `none`;
 as `reasoning_effort`, `reasoning.effort` (OpenAI) or `output_config.effort` / `thinking` (Anthropic).
+
+## Images (optional)
+
+The model reads pictures (OpenAI `image_url`, Anthropic `image` blocks) once the vision encoder is there; `./run.sh`
+then starts the vision configuration, and text runs as fast as without it.
+
+```sh
+VISION=1 local/fetch-model.sh                        # + the 1017 vision encoder (0.9 GiB) into models/vision-1017
+```
+
+The encoder runs in the engine on the second card (0.2-5 s an image, exact against DeepSeek's code); a picture
+costs 189-1014 prompt tokens. The September encoder (antirez's `DeepSeek-V4.1-Flash-Vision.gguf`) does not match the
+1017 model. Details and measurements: [docs/ds4/V41_VISION.md](docs/ds4/V41_VISION.md).
 
 ## Power-tune (optional, root)
 
@@ -86,7 +101,7 @@ python3 local/cfg.py arg --arena-gib 50      # pinned RAM for experts: 75 GiB on
 
 The arena is the biggest lever after the cards: an expert that is in neither VRAM nor the arena is read from the
 NVMe. `--vram-margin` (0.5 GiB) is the VRAM left free beside the expert cache; raise it if another program uses the
-card. With one card use `./run-1gpu.sh` (the two-card default stops at startup: "peer device 1 does not exist").
+card. With one card use `./run.sh --gpu 0` (the two-card default stops at startup: "peer device 1 does not exist").
 
 ## Development
 

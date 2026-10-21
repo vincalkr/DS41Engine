@@ -44,7 +44,6 @@ td.log
 /run-*.bat
 /run-*.sh
 !/run.sh
-!/run-1gpu.sh
 /strata-*.json
 /strata-*.log
 /build-strata.bat
