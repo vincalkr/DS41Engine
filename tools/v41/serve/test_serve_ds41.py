@@ -69,7 +69,7 @@ def t_template():
 def t_effort_kwargs():
     for v, want in (("high", {"reasoning_effort": 75}), ("max", {"reasoning_effort": 100}), ("25", {"reasoning_effort": 25}),
                     ("none", {"enable_thinking": False}), ("0", {"enable_thinking": False}), (False, {"enable_thinking": False}),
-                    ("medium", {"reasoning_effort": 62}), (None, {})):
+                    ("medium", {"reasoning_effort": 75}), (None, {})):
         check(f"effort_kwargs({v!r})", D.effort_kwargs(v) == want, D.effort_kwargs(v))
     try:
         D.effort_kwargs("turbo"); check("effort_kwargs rejects unknown", False)

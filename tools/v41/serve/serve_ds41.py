@@ -8,7 +8,8 @@ swaps in V4.1's pieces (same shape as ~/AI/Strata-GLM/tools/glm/serve/serve_glm.
 - chat template: DeepSeek's own encoder (dsv41_encoding.encode_messages), not Jinja
 - reasoning effort: V4.1's numeric 1-100 ("Reasoning Effort: N" system prefix).  Names as DwarfStar's server
   (antirez/ds4 ds4_server.c parse_reasoning_effort_name + ds4_deepseek41_reasoning_effort_text): high / xhigh = 75,
-  max = 100, a number 1-100 as given, none / 0 = thinking off; low = 50 (DeepSeek's encoder), medium = 62
+  max = 100, a number 1-100 as given, none / 0 = thinking off; low = 50 (DeepSeek's encoder; ds4 renders it as 75),
+  minimal / medium = 75
 - end of turn: <｜end▁of▁sentence｜>
 - tool calls: DSML (`<｜DSML｜ invoke name="X">` + `<｜DSML｜ parameter name="K" string="true|false">V</｜DSML｜ parameter>`,
   note the LEADING SPACE in the tag names) parsed as DeepSeek's parse_tool_calls does; the `calls` wrapper is
@@ -61,13 +62,13 @@ ST.Tokenizer = Ds41Tokenizer
 
 # ---- reasoning effort: client spellings -> template kwargs (reasoning_effort = an int 1-100, or thinking off)
 # The model's own levels are the three the encoder knows (dsv41_encoding.REASONING_EFFORT_MAPPINGS: low 50,
-# high 75, max 100, default high); the clients' extra spellings fold onto those, no invented budgets.
-# Faithful to the reference implementation (DwarfStar ds4.h:29, ds4.c:44201-44208): DeepSeek-V4.1 renders the
-# effort as "Reasoning Effort: N (range 1-100, ...)", with HIGH pinned to 75 and MAX to 100; the low/medium names
-# belong to Qwen3.8 and "other models render them as HIGH". A numeric 1-100 is also accepted and rendered as given,
-# which is the only way to ask for something between the two named levels.
+# high 75, max 100, default high), and they are rendered as the encoder renders them; the clients' extra spellings
+# (minimal, medium, xhigh) fold onto high, no invented budgets.
+# DeepSeek-V4.1 renders the effort as "Reasoning Effort: N (range 1-100, ...)". DwarfStar (ds4.h:29,
+# ds4.c:44201-44208) pins HIGH to 75 and MAX to 100 and renders low/medium as HIGH; here low follows DeepSeek's own
+# encoder (50) instead (2026-10-21). A numeric 1-100 is also accepted and rendered as given.
 EFFORT = {"none": 0, "off": 0, "disabled": 0, "false": 0,
-          "minimal": 75, "low": 75, "medium": 75,
+          "minimal": 75, "low": 50, "medium": 75,
           "high": 75, "xhigh": 75, "max": 100, "maximum": 100}
 
 
