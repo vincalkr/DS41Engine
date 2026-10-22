@@ -484,4 +484,14 @@ if __name__ == "__main__":
         if v in ("--config", "--tokenizer", "--mcp-config"):
             sys.argv[i + 1] = os.path.abspath(sys.argv[i + 1])
     os.chdir(str(STRATA))
+    # the config's "env" reaches the engine only (child_env): its STRATA_TEXT_LOG (local/v41-text.log) is read here too,
+    # relative to this repository, unless the server's own environment sets one
+    if "STRATA_TEXT_LOG" not in os.environ:
+        cfgs = [sys.argv[i + 1] for i, v in enumerate(sys.argv[:-1]) if v == "--config"]
+        try:
+            tl = (json.load(open(cfgs[-1])).get("env") or {}).get("STRATA_TEXT_LOG") if cfgs else None
+        except (OSError, ValueError):
+            tl = None
+        if tl:
+            _TEXT_LOG = tl if tl == "0" or os.path.isabs(tl) else str(STRATA / tl)
     sys.exit(S.main())
