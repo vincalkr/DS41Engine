@@ -57,7 +57,7 @@ if pgrep -f "[s]erve_ds41.py" >/dev/null || pgrep -x ds41_generate >/dev/null; t
     echo "ram-bench: the server or an engine is running: stop it for --decode" >&2; exit 1
 fi
 echo "=== $TAG: decode (the default two-card flags)"
-export ARENA=75 NOFORCE=1
+export ARENA=75 NOFORCE=1   # 75 GiB, as the fclk-current baseline was measured (the chat config has 80)
 R="--route-bias 0 --route-bias-file 0 --arena-adapt --vram-margin 0.5 --pf-b 0 --pcie 0 --peer-device 1"
 E="STRATA_NO_LARGEPAGES=1 STRATA_PF_NO_DUMMY=1 STRATA_VRAM_BG=1 STRATA_DENSE_NOCONT=1 STRATA_DENSE_ALIAS=1 STRATA_DENSE_REQUANT=q6_K STRATA_PRESTAGE_GIB=1.5 HIP_VISIBLE_DEVICES=0,1 STRATA_PEER_GIB=22 STRATA_PEER_ADAPT=1 STRATA_PEER_ADAPT_INFLIGHT=8 STRATA_PEER_ADAPT_WIN=16 STRATA_PEER_DISJOINT=1 STRATA_ARENA_EVICT_PEER=1"
 for r in $(seq 1 "${REPS:-3}"); do

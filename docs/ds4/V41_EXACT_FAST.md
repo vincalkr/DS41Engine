@@ -697,6 +697,23 @@ two-card flags, power-tune on, 200 tokens (`local/sweep-dspark/summary.txt`):
 experts of every drafted token from RAM and the NVMe. The chat stays single-step. (The drafted text first differs from
 the single-step one after 24-177 tokens: the verify pass's batch shapes, as any GPU run here.)
 
+## The RAM arena: 80 GiB (2026-10-22)
+
+`local/bench-v41/ab-arena.sh`: the default two-card flags, power-tune on, 70 / 75 / 80 / 85 GiB in a rotating order, two
+rounds (`local/sweep-arena/summary.txt`); tok/s, and the file-tier wait of the run:
+
+| `--arena-gib` | Promessi Sposi, 300 tokens | 17K context, 128 tokens | file ms (Sposi / 17K) |
+| --- | --- | --- | --- |
+| 70 | 19.61 / 16.80 | 12.50 / 13.78 | 1352-1460 / 1481-1735 |
+| 75 (until now) | 19.61 / 17.32 | 14.11 / 14.12 | 1101-1157 / 1269-1320 |
+| **80** | 18.37 / 18.48 | **14.96 / 15.24** | 949-955 / 980-1020 |
+| 85 | 18.68 / 20.78 | 14.95 / 15.67 | 708-743 / 869-880 |
+
+At 17K both runs of 80 and 85 beat both runs of 75 (+7% / +9%) and the file-tier wait falls at every step; short prose
+stays inside its spread. On one card with the September GSQ (2026-10-15) 80 and 85 were worse than 75: the second
+card's disjoint store and the adaptive arena changed that. The configurations now set 80: the engine holds ~94 GiB and
+~15-17 GB stay free beside it (85 would leave ~10-12 with the conversation pool full).
+
 ## enc-skip and the candidate fast-path, measured (2026-10-22)
 
 `local/bench-v41/ab-cand-encskip.sh`: the default two-card flags, one-shot runs alternated, 3 each, power-tune on.

@@ -19,7 +19,7 @@
   "--prompt-batch",
   "8192",
   "--arena-gib",
-  "75",
+  "80",
   "--engram",
   "models/engram-1017/layers14:models/engram-1017/layers1",
   "--route-bias",

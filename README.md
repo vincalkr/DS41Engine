@@ -6,7 +6,7 @@ Linux - ROCm/HIP - MIT</p>
 A C++/HIP inference engine for DeepSeek-V4.1-Flash and an OpenAI- and Anthropic-compatible server with a web chat
 and monitor. The model is DeepSeek-V4.1-Flash-1017 as [antirez/ds4](https://github.com/antirez/ds4)'s Q2
 (`DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf`); every expert the model routes to is computed (no route bias),
-wherever it is: card 0's VRAM, the second card, a 75 GiB pinned RAM arena, or read from the NVMe.
+wherever it is: card 0's VRAM, the second card, an 80 GiB pinned RAM arena, or read from the NVMe.
 
 ## Performance
 
@@ -30,7 +30,7 @@ KL 0.269. Every number and how it was measured: [docs/ds4/V41_EXACT_FAST.md](doc
 | --- | --- |
 | OS, GPU stack | Linux, ROCm (7.14 here) with `hipcc`, hipBLAS and `/opt/rocm/lib/llvm/bin/clang++` |
 | GPU | RX 7900 XT / XTX (`gfx1100`); a second 24 GB card is used as an expert tier when present |
-| RAM | 128 GB class (the engine holds ~89 GB with the 75 GiB arena) |
+| RAM | 128 GB class (the engine holds ~94 GB with the 80 GiB arena) |
 | CPU | x86-64 with AVX2 (AVX-512 used when present) |
 | disk | ~570 GB on an NVMe for `models/` (366 GB GGUF + 203 GB Engram tables + 0.9 GiB vision encoder) |
 | tools | `cmake` >= 3.24, gcc, Python 3, curl, `aria2c` (faster downloads) |
@@ -100,7 +100,7 @@ it against the one in use (~25 minutes, the server stopped meanwhile) and applie
 
 ```sh
 python3 local/cfg.py arg --threads 8         # the CPU's physical cores (12 here)
-python3 local/cfg.py arg --arena-gib 50      # pinned RAM for experts: 75 GiB on 122 GiB here, keep ~45 GiB free beside it
+python3 local/cfg.py arg --arena-gib 50      # pinned RAM for experts: 80 GiB on 122 GiB here, keep ~40 GiB free beside it
 ```
 
 The arena is the biggest lever after the cards: an expert that is in neither VRAM nor the arena is read from the
