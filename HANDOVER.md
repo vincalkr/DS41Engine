@@ -25,6 +25,17 @@ latest state is in the update notes below and in `docs/ds4/V41_EXACT_FAST.md`). 
 > card; the old `run-v41-gsq*.sh` names are gone). Quality and speed in
 > [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), "The ds4 1017 Q2 as the model". What follows below is
 > the history of the September GSQ.
+>
+> **Update 2026-10-21/22:** `./run.sh` picks the cards with `--gpu` (0, 1 or 0,1) and starts the vision configuration
+> when the encoder is in `models/vision-1017` (images: [docs/ds4/V41_VISION.md](docs/ds4/V41_VISION.md)). The serve loop
+> now keeps conversations in a 4 GiB pinned pool (`--conversation-cache-mib`): two conversations taking turns went from
+> 36.9 to 6.9 s a turn. Its partial resume is exact (it gave KL 1.2-1.4 and a wrong top-1 before). The server no longer
+> ends the engine when a STOP arrives during a long prompt, and the turn after a thinking-budget wrap-up reuses the
+> cache. Measured and not taken: the candidate fast-path (`STRATA_CAND_FAST=1`, the same speed) and DSpark with the 1017
+> drafter (slower than single-step on code and prose: a verify pass costs almost as much as decoding its tokens one
+> by one). enc-skip, on since 2026-10-11, is worth +39% / +61% / +74% prompt speed at 8K / 17K / 25.5K. Decode is near
+> this machine's ceiling (VRAM full, RAM bandwidth at ~47-50 of 52-54 GB/s); every number in
+> [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
 
 ## 0. TL;DR
 
