@@ -282,6 +282,20 @@ It only moves data (no arithmetic), so the tokens are unchanged. One request a s
 direction; 1.5 (the author's value) beats 3.0 here. With `STRATA_HIP_WMMA=1` the served prompt on this box goes from
 ~220 to ~245 tok/s on a 5787-token prompt (both opt-ins are in `local/ds41-local.json`).
 
+## Flash attention at head size 512: the tile kernel, and why WMMA cannot be switched on (2026-10-22)
+
+V4.1's attention heads are 512 wide, so ggml runs `flash_attn_tile<512, 512, ...>` (`rocprofv3`), not the WMMA MMA
+kernel RDNA3 has for heads up to 256. Two things keep it there, and only the first is a selection rule:
+- `ggml_cuda_get_best_fattn_kernel` (`fattn.cu`) allows AMD WMMA only for `Q->ne[0] <= 256` and more than 16 columns;
+  at head 512 the heads are grouped at most 8 (`ncols2_max`), and every query here is its own batch (it attends its
+  own window + top-k compressed rows), so a launch has 8 columns.
+- the kernel itself (`fattn-mma-f16.cuh`) compiles no device code for AMD WMMA when `ncols1*ncols2 < 16 || DKQ > 256`.
+  Selecting it anyway (a switch tried on 2026-10-22) aborts: "HIP kernel flash_attn_ext_f16 has no device code".
+
+So the WMMA path would need kernel work (head 512 compiled for gfx1100 within its registers / shared memory, the head
+grouping raised to 16), for a gain on the prompt only (flash attention was 22% of a 5.8K prompt's kernel time; decode
+waits on the CPU tier). Not pursued; ggml is unchanged.
+
 ## `STRATA_HIP_WMMA` does not apply to this engine (and a measurement that was noise)
 
 There is an int8-KV prompt-attention path on matrix cores in `src/kernels/cuda/qsa_prompt_attn.cu`
