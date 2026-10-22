@@ -1450,6 +1450,11 @@ int main(int argc, char ** argv) {
         std::vector<float> park_logits;
         int64_t park_rows = 0;            // positions saved: a request writing past this invalidates the park
         bool cache_open = !defer_vram;   // deferred: the arena only until the first decode
+        // STRATA_SERVE_DSPARK leaves the live state DIRTY when its last verify pass rejected drafts: the ratio-2
+        // compressor state ring then holds the rejected positions' states, so a request that continues the live
+        // history at an odd position (its group's first half is the last accepted token) must re-feed that token -
+        // the same rule as the in-request refeed (`dirty && (P + 1) & 1`).  Indras-Mirror/Xolotl#18.
+        bool live_dirty = false;
 #if defined(DS41_HAVE_DSPARK)
         // STRATA_SERVE_DSPARK: DSpark's window (main_hidden of the last <= 128 positions) is seeded by running a
         // request's last min(128, new) prompt tokens through pass_v instead of the passes / batch (no extra work), and
@@ -1529,19 +1534,25 @@ int main(int argc, char ** argv) {
                 // or an EMPTY assistant turn, as the s13 harness produces - leaves lp just under park_hist.size(), and
                 // requiring an exact prefix threw away a 21,349-token cache over a 27-token difference: run8/run15 both
                 // logged "reuse lcp=27 hist=0 snap=-1 prompt=23531 -> reused=0" and re-read the whole prompt.
-                // Positional caches make a partial resume safe: unpark() restores positions [0, park_size) and the
-                // forward pass then re-feeds from lp, overwriting the stale tail (that is the documented fix: "resume
-                // at the longest common prefix even when it is below the snapshot").
+                // unpark() restores positions [0, park_size) of the position-indexed caches, but two caches are not
+                // positional: the window ring at the park's end P holds positions [P - RAW, P) (RAW = SWA + 16) and the
+                // ratio-2 compressor state P - 2, P - 1.  A resume at s < P reads the window [s - SWA + 1, s) from the
+                // ring and, at an odd s, the state of s - 1: exact only for an even s with P - s <= RAW - SWA = 16, and
+                // only after restore() (the live rings are the side request's).  Resuming at any lp with the side
+                // request's rings gave KL 2.1 against a fresh prefill, top-1 wrong, 20 positions back
+                // (Indras-Mirror/Xolotl#18, CPU, real model); anything further back is now a full prefill.
                 static const bool park_partial = !(std::getenv("STRATA_SERVE_PARK_PARTIAL") && std::getenv("STRATA_SERVE_PARK_PARTIAL")[0] == '0');
                 const size_t lp_min = (size_t) std::max<int64_t>(park_min, (int64_t) park_hist.size() * 3 / 4);
-                if (park_partial && lp < park_hist.size() && lp >= lp_min && lp > lcp && dense.unpark()) {
-                    std::fprintf(stderr, "serve: unparked the %zu-token conversation at lcp %zu (partial: re-feeds from there)\n",
-                                 park_hist.size(), lp);
+                const size_t ps = lp & ~(size_t) 1;
+                if (park_partial && lp < park_hist.size() && lp >= lp_min && ps > lcp && park_hist.size() - ps <= 16
+                    && dense.unpark() && dense.restore()) {
+                    std::fprintf(stderr, "serve: unparked the %zu-token conversation at %zu (lcp %zu; partial: re-feeds from there)\n",
+                                 park_hist.size(), ps, lp);
                     hist = park_hist;
                     hist_key.clear();
                     snap_len = -1;        // the tail under the park's end is re-fed, so no snapshot survives this
-                    reuse_override = (int) lp;
-                    lcp = lp;
+                    reuse_override = (int) ps;
+                    lcp = ps;
                     unparked = true;
 #if defined(DS41_HAVE_DSPARK)
                     dsp_next = -1;        // DSpark's window holds the side request's states
@@ -1564,7 +1575,15 @@ int main(int argc, char ** argv) {
             }
             int reused = 0;
             if (reuse_override >= 0) reused = reuse_override;   // a partial unpark: positions [0, lp) are the parked one's
-            else if (!unparked && !hist.empty() && lcp == hist.size() && lcp < ids.size()) reused = (int) lcp;
+            else if (!unparked && !hist.empty() && lcp == hist.size() && lcp < ids.size()) {
+                reused = (int) lcp;
+                if (live_dirty && (reused & 1)) {   // re-feed the last accepted token (its group's ratio-2 state)
+                    --reused;
+                    hist.resize((size_t) reused);
+                    if (hist_key.size() > (size_t) reused) hist_key.resize((size_t) reused);
+                    std::fprintf(stderr, "serve: the live state is dirty (DSpark) at an odd position: resuming at %d\n", reused);
+                }
+            }
             else if (snap_len > 0 && lcp >= (size_t) snap_len && (size_t) snap_len == ids.size() && dense.restore()) {
                 hist.resize((size_t) snap_len);   // the same prompt again (regenerate): its end state + saved logits
                 if (hist_key.size() > (size_t) snap_len) hist_key.resize((size_t) snap_len);
@@ -1590,7 +1609,20 @@ int main(int argc, char ** argv) {
             }
             std::fprintf(stderr, "serve: reuse lcp=%zu park=%zu lp=%zu hist=%zu snap=%d prompt=%zu -> reused=%d\n", lcp,
                          park_hist.size(), lp_show, hist.size(), snap_len, ids.size(), reused);
-            if (reused > 0) { std::printf("RESUME %d\n", reused); std::fflush(stdout); }
+            live_dirty = false;
+            if (reused > 0) {
+                // the Engram hashes of the first new positions read the 3 tokens before `reused` from the history, which
+                // is kept by position: an unrelated request since (a parked conversation's side request) wrote its own
+                // tokens there.  The reused prefix is this prompt's own, so write it back (a no-op when unchanged).
+                const int h0 = std::max(0, reused - 3);
+                uint8_t dead[3] = { 0, 0, 0 };
+                for (int i = h0; i < reused; ++i) dead[i - h0] = key_at(ikey, (size_t) i) != 0;   // an image position
+                if (!dense.set_engram_history(h0, reused - h0, ids.data() + h0, dead)) {
+                    std::printf("ERR Engram: %s\n", dense.last_error().c_str()); std::fflush(stdout); continue;
+                }
+                std::printf("RESUME %d\n", reused);
+                std::fflush(stdout);
+            }
             const int total = (int) ids.size();
             // a long prompt runs layer-major without the VRAM cache (its pass / chunk buffers need that VRAM) and with
             // the prompt's routing (no decode bias).  A short one (<= step_max new tokens: a chat / agent turn's tool
@@ -1913,6 +1945,7 @@ int main(int argc, char ** argv) {
                 }
                 dsp_next = P + 1;   // the ring holds every position <= P (the last emitted token is not fed)
                 if (std::strcmp(finish, "error") == 0) dsp_next = -1;
+                live_dirty = dirty;   // the last pass rejected drafts: the ratio-2 state ring holds rejected positions
                 sv_pass += rq_pass; sv_acc += rq_acc;
             }
 #endif

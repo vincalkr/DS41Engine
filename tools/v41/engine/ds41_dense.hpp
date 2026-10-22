@@ -162,6 +162,11 @@ public:
     bool unpark();
     void drop_park();
     bool parked() const;
+    /// Engram history: the n-gram hash of a pass's first positions reads the tokens before it from the history, which
+    /// is kept BY POSITION - another request that wrote those positions since (a parked conversation's side request)
+    /// leaves its own tokens there.  Rewrite [pos0, pos0 + n) with tids (DEAD where dead[i] != 0: an image position).
+    /// A no-op without Engram; false only when a pending Engram read failed.
+    bool set_engram_history(int64_t pos0, int n, const int * tids, const uint8_t * dead);
     /// Debug / gate taps: the hc state after the last finish (n * hc * n_embd floats, token-major) and the pre mix.
     bool read_state(std::vector<float> & x, std::vector<float> & pre);
     /// The hc state of state columns [c0, c0 + n) (token-major, n * hc * n_embd floats) - a layer-major batch's columns

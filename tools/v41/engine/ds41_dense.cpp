@@ -1854,6 +1854,18 @@ void Ds41Dense::drop_park() {
 
 bool Ds41Dense::parked() const { return p_->parked_pos >= 0; }
 
+bool Ds41Dense::set_engram_history(int64_t pos0, int n, const int * tids, const uint8_t * dead) {
+    Impl & im = *p_;
+    if (!im.engram.enabled() || n <= 0) return true;
+    if (!engram_ready(im)) return false;        // a still-pending read hashes the history: let it finish first
+    for (int i = 0; i < n; ++i) {
+        if (pos0 + i < 0) continue;
+        if (dead && dead[i]) im.engram.set_dead(pos0 + i);
+        else im.engram.set_token(pos0 + i, tids[i]);
+    }
+    return true;
+}
+
 bool Ds41Dense::read_sel(int il, std::vector<int> & sel, std::vector<float> & mask, int * K) {
     Impl & im = *p_;
     const auto & L = im.ly[(size_t) il];

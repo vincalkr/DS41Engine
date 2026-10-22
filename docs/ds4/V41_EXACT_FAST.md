@@ -624,6 +624,30 @@ against 1,080. One session's routing fits that session's kind of text and costs 
 `local/update-rank.sh` does the rebuild, this measurement and the decision in one go (apply only if neither prompt is
 >2% slower and the two together >=1% faster); on these runs it answers KEEP, and APPLY with the two ranks swapped.
 
+## Conversation reuse after a side request is exact (2026-10-22)
+
+The serve loop keeps one conversation through an unrelated request (park / unpark). Its partial resume, at the
+longest common prefix below the parked end, re-fed from there with the side request's window ring and ratio-2
+compressor state still live, and never wrote the Engram history back. The fix from Indras-Mirror/Xolotl#18: a
+partial resume only at an even position at most 16 below the parked end (`RAW - SWA`), after `restore()`; anything
+further back is a full prefill; on every resume the 3 Engram history positions before it are rewritten with the
+prompt's own tokens; after a DSpark decode that rejected drafts, a continuation at an odd position re-feeds one token.
+
+`tools/v41/engine/check_conv_reuse.py --backend gpu --tail 20` (card 0, exact routing, ctx 8192): each reused request
+against a fresh prefill of the same prompt, last-row logits and the last 20 prompt rows. On this GPU a fresh prefill
+of the same prompt twice differs by KL 0.006-0.016 (the engine is not bit-reproducible), so KL is the measure:
+
+| scenario | before | after |
+| --- | --- | --- |
+| resume 20 back (220 of 240) | resume 220: KL 1.39, rows top-1 4/20, 2nd token differs | full prefill: KL 0.003, same tokens |
+| then 8 back of the re-parked one | resume 220: KL 1.17, **top-1 wrong** (3608 vs 764) | full prefill: KL 0.004, same tokens |
+| resume 8 back (232 of 240) | - | resume 232: KL 0.0035, rows top-1 19/20, same tokens |
+| full unpark after a longer side request | KL 0.004 | KL 0.007 (the Engram history case: no difference visible at GPU noise) |
+| a growing dialogue, regenerate | - | KL 0.002-0.02, same tokens |
+
+The cost: a partial resume more than 16 positions back is now a full prefill. In `local/serve-engine.log` (2026-10-21,
+the agent sessions) 19 conversations were parked, 4 fully unparked and none resumed partially.
+
 ## Reproduce
 
 ```
