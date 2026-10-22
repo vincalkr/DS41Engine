@@ -134,6 +134,15 @@
             <div class="st-progress"><div class="st-progress__bar" id="cc-mem-bar" style="width:0%"></div></div></div>
         </div>
         <dl class="facts" id="cc-facts"></dl>
+        <div class="cc-disk" id="cc-disk" hidden>
+          <div class="bar-row"><span>Saved on disk</span><span class="muted" id="cc-disk-text">&ndash;</span></div>
+          <div class="st-progress"><div class="st-progress__bar" id="cc-disk-bar" style="width:0%"></div></div>
+          <dl class="facts" id="cc-disk-facts"></dl>
+        </div>
+        <div class="cc-actions">
+          <button type="button" class="st-btn st-btn--danger" id="cc-clear-btn"
+                  title="Forget every kept conversation: the RAM pool, the files on disk and the current one">Clear conversation memory</button>
+        </div>
         <p class="muted small cc-note" id="cc-note"></p>
       </div>
 

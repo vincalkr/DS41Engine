@@ -111,3 +111,6 @@ core
 core.[0-9]*
 /local/ram-bench/*
 !/local/ram-bench/summary.txt
+/local/conv-cache/
+/local/sweep-disk/*
+!/local/sweep-disk/summary.txt

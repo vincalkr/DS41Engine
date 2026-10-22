@@ -188,6 +188,11 @@ public:
         int ratio = 0;
     };
     void pool_regions(bool snap, std::vector<PoolRegion> & streams, std::vector<PoolRegion> & regions) const;
+    /// The same state as tensors (ds41_conv_disk.hpp copies it with ggml_backend_tensor_get / set): the position-indexed
+    /// streams in pool_regions' order (row r holds positions [r * ratio, (r + 1) * ratio), `rows` without the spare
+    /// row) and the snapshot rings (raw_snap, st_kv_snap, st_sc_snap of every layer).
+    struct StreamTensor { ggml_tensor * t; size_t row_bytes; int64_t rows; int ratio; };
+    void conv_tensors(std::vector<StreamTensor> & streams, std::vector<ggml_tensor *> & snap_regions) const;
     /// Debug / gate taps: the hc state after the last finish (n * hc * n_embd floats, token-major) and the pre mix.
     bool read_state(std::vector<float> & x, std::vector<float> & pre);
     /// The hc state of state columns [c0, c0 + n) (token-major, n * hc * n_embd floats) - a layer-major batch's columns

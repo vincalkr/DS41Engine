@@ -26,6 +26,7 @@
 #include "ds41_dense.hpp"
 #include "ds41_moe.hpp"
 #include "ds41_conv_reuse.hpp"
+#include "ds41_conv_disk.hpp"
 #include "ds41_vision.hpp"
 #if defined(DS41_HAVE_DSPARK)
 #include "ds41_dspark.hpp"
@@ -195,6 +196,10 @@ struct Args {
     /// for conversations saved at their turn boundary (0, the default = the single park of STRATA_SERVE_PARK), at most
     /// --conversation-cache-slots of them
     int conv_mib = 0, conv_slots = 64;
+    /// --conversation-disk DIR (opt-in): conversations also kept on disk at every turn boundary, so a restarted engine
+    /// resumes them (ds41_conv_disk.hpp); --conversation-disk-gib N: the most they may take there (default 32)
+    std::string conv_disk;
+    double conv_disk_gib = 32.0;
 };
 
 std::vector<int> parse_csv(const std::string & s) {
@@ -219,6 +224,8 @@ bool parse(int argc, char ** argv, Args & a) {
         else if (k == "--vision") a.vision = next();
         else if (k == "--conversation-cache-mib") a.conv_mib = std::max(0, std::atoi(next().c_str()));
         else if (k == "--conversation-cache-slots") a.conv_slots = std::max(1, std::atoi(next().c_str()));
+        else if (k == "--conversation-disk") a.conv_disk = next();
+        else if (k == "--conversation-disk-gib") a.conv_disk_gib = std::max(0.0, std::atof(next().c_str()));
         else if (k == "--vision-device") a.vision_device = std::atoi(next().c_str());
         else if (k == "--engram") { std::stringstream ss(next()); std::string d; while (std::getline(ss, d, ':')) a.engram.push_back(d); }
         else if (k == "--slots") { const std::string v = next(); a.slots = v == "auto" ? 0 : std::atoll(v.c_str()); }
@@ -1480,6 +1487,29 @@ int main(int argc, char ** argv) {
                 return 1;
             }
         }
+        // ---- conversations on disk (--conversation-disk DIR, opt-in; ds41_conv_disk.hpp): every turn boundary of the
+        // live conversation is written there after its answer, and a request resumes from a record when that is the
+        // longest prefix of its prompt - after a restart the engine has no live state and an empty pool, so this is
+        // what gives a long session back in about a second instead of a full prefill.
+        Ds41ConvDisk disk;
+        if (!a.conv_disk.empty() && !pool_on) {
+            std::fprintf(stderr, "ds41_generate: --conversation-disk needs the conversation pool (--conversation-cache-mib N)\n");
+            return 1;
+        }
+        if (!a.conv_disk.empty()) {
+            std::string derr;
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            const std::string model_id = fs::path(a.model).filename().string() + ":" + std::to_string(fs::file_size(a.model, ec));
+            if (!disk.init(a.conv_disk, (size_t) (a.conv_disk_gib * 1073741824.0), dense, model_id, derr)) {
+                std::fprintf(stderr, "ds41_generate: conversation disk: %s\n", derr.c_str());
+                return 1;
+            }
+        }
+        auto disk_line = [&](const char * what, long long tokens, double ms) {   // read by serve/server.py (ConvCacheLog)
+            std::fprintf(stderr, "strata serve: conversation disk: %s %lld tokens in %.1f ms; records=%zu bytes=%zu budget=%zu dir=%s\n",
+                         what, tokens, ms, disk.records(), disk.bytes(), disk.budget(), disk.dir().c_str());
+        };
         auto save_live = [&](const char * why) {   // the live conversation's turn boundary into the pool
             if (!pool_on || snap_len < std::max(1, park_min) || hist.size() < (size_t) snap_len) return;
             const double t0 = now_ms();
@@ -1509,9 +1539,11 @@ int main(int argc, char ** argv) {
         std::printf("INFO ctx=%d experts_vram=%lld arena_experts=%lld", ctxv, (long long) tier.resident(),
                     (long long) tier.arena_experts());
         if (pool_on) std::printf(" conversation_cache_mib=%d conversation_cache_slots=%d", a.conv_mib, a.conv_slots);
+        if (disk.enabled()) std::printf(" conversation_disk_gib=%.0f", a.conv_disk_gib);
         std::printf("\n");
         if (pool_on) std::fprintf(stderr, "serve: conversation pool %d MiB (%s), %d slots, records >= %d tokens\n", a.conv_mib,
                                   pool.kind(), a.conv_slots, std::max(1, park_min));
+        if (disk.enabled()) disk_line("loaded", 0, 0.0);
         std::printf("READY %d stop\n", ctxv);
         std::fflush(stdout);
         std::fprintf(stderr, "serve: ready (ctx %d, prefill chunk %d)\n", ctxv, NP);
@@ -1519,6 +1551,22 @@ int main(int argc, char ** argv) {
         while (next_line(line)) {
             if (line == "QUIT") break;
             if (line == "STOP" || line.empty()) continue;
+            if (line == "CONVCLEAR") {   // the Monitor's "Clear": every kept conversation goes, the next prompt is read anew
+                const double t0 = now_ms();
+                const size_t np = pool_on ? pool.clear() : 0;
+                const size_t nd = disk.enabled() ? disk.clear() : 0;
+                dense.drop_park();
+                park_hist.clear();
+                hist.clear();
+                hist_key.clear();
+                snap_len = -1;
+                live_dirty = false;
+                std::fprintf(stderr, "strata serve: conversation cache: cleared %zu tokens; parked=0 bytes=0 evictions=0\n", np);
+                if (disk.enabled()) disk_line("cleared", (long long) nd, now_ms() - t0);
+                std::printf("CLEARED %zu %zu\n", np, nd);
+                std::fflush(stdout);
+                continue;
+            }
             const bool geni = line.rfind("GENI ", 0) == 0;   // GENI: a prompt with images (--vision)
             if (!geni && line.rfind("GEN ", 0) != 0) { std::printf("ERR unsupported command\n"); std::fflush(stdout); continue; }
             std::istringstream ss(line);
@@ -1575,7 +1623,39 @@ int main(int argc, char ** argv) {
                 if (exact && !m.has_logits) pr = 0;                      // nothing to sample the first token from
                 if (!exact && pr >= (int64_t) ids.size()) pr = 0;        // a partial resume must feed something
                 lp_show = (size_t) m.lcp;
-                if (pr > live) {
+                // a record on disk (--conversation-disk): only a boundary that is a prefix of the prompt
+                int di = -1;
+                int64_t dn = 0;
+                if (disk.enabled() && (di = disk.best(ids.data(), ikey.data(), ikey.size(), (int64_t) ids.size())) >= 0) {
+                    dn = disk.boundary(di);
+                    if (dn == (int64_t) ids.size() && !disk.has_logits(di)) dn = 0;   // nothing to sample from
+                }
+                if (dn > live && dn > pr) {
+                    save_live("switch");
+                    std::vector<float> dlog;
+                    std::string derr;
+                    const double t0 = now_ms();
+                    if (disk.restore(dense, di, dlog, derr)) {
+                        dense.rearm((int) dn);
+                        dense.restore();
+                        hist.assign(ids.begin(), ids.begin() + dn);
+                        hist_key.assign(ikey.begin(), ikey.begin() + std::min<size_t>(ikey.size(), (size_t) dn));
+                        snap_len = (int) dn;
+                        snap_logits = dlog;
+                        live_dirty = false;
+                        reuse_override = (int) dn;
+                        if (dn == (int64_t) ids.size()) last_logits = dlog;
+                        lcp = (size_t) dn;
+                        unparked = true;
+#if defined(DS41_HAVE_DSPARK)
+                        dsp_next = -1;
+#endif
+                        disk_line("restored", (long long) dn, now_ms() - t0);
+                    } else {
+                        std::fprintf(stderr, "strata serve: conversation disk: restore failed (%s)\n", derr.c_str());
+                        hist.clear(); hist_key.clear(); snap_len = -1; lcp = 0;   // the device may hold part of it
+                    }
+                } else if (pr > live) {
                     save_live("switch");
                     ConvRestore rs;
                     std::string perr;
@@ -2073,6 +2153,17 @@ int main(int argc, char ** argv) {
             std::printf("DONE %d %d %.1f %.1f %s 0 0 %d %lld %lld 0 %lld 0 %d\n", gen, total, prompt_ms, dec_ms, finish, reused,
                         (long long) st.hits, (long long) st.lookups(), (long long) st.file_tier, total - reused);
             std::fflush(stdout);
+            // after DONE (the client has its answer): this turn's boundary to disk.  The snapshot tensors still hold
+            // the prompt's end and the rows before it are final (the decode only wrote positions past it); only the
+            // rows a record of this conversation does not have yet are copied, the files are written in the background.
+            if (disk.enabled() && snap_len >= std::max(1, park_min) && hist.size() >= (size_t) snap_len &&
+                std::strcmp(finish, "error") != 0) {
+                const double t0 = now_ms();
+                std::string derr;
+                if (disk.save(dense, hist.data(), hist_key.data(), std::min(hist_key.size(), (size_t) snap_len), snap_len,
+                              snap_logits.empty() ? nullptr : snap_logits.data(), snap_logits.size(), derr))
+                    disk_line("saved", snap_len, now_ms() - t0);
+            }
             if (g_routes.on()) {   // after DONE: the client already has its answer
                 std::string rerr;
                 if (!g_routes.write(rerr)) std::fprintf(stderr, "routes: %s\n", rerr.c_str());

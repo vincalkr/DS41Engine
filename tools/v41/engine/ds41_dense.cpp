@@ -1903,6 +1903,18 @@ void Ds41Dense::pool_regions(bool snap, std::vector<PoolRegion> & streams, std::
     }
 }
 
+void Ds41Dense::conv_tensors(std::vector<StreamTensor> & streams, std::vector<ggml_tensor *> & snap_regions) const {
+    const Impl & im = *p_;
+    streams.clear();
+    snap_regions.clear();
+    for (const auto & L : im.ly)
+        for (ggml_tensor * t : { L.comp, L.idxk })
+            if (t) streams.push_back({ t, (size_t) t->nb[1], t->ne[1] - 1, (int) L.ratio });
+    for (const auto & L : im.ly)
+        for (ggml_tensor * t : { L.raw_snap, L.st_kv_snap, L.st_sc_snap })
+            if (t) snap_regions.push_back(t);
+}
+
 bool Ds41Dense::set_engram_history(int64_t pos0, int n, const int * tids, const uint8_t * dead) {
     Impl & im = *p_;
     if (!im.engram.enabled() || n <= 0) return true;

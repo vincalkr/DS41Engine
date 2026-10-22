@@ -11,7 +11,8 @@ prefill of the same prompt as closely as the batch-shape noise of a known-good c
 The prompts are token runs of README.md / HANDOVER.md / docs/ds4/V41_EXACT_FAST.md, tokenized with the server's
 tokenizer (models/ds4-1017/tokenizer); --model and --engram default to the 1017 Q2 and its tables in models/.
 
-Scenarios: abc (three conversations in turn - with --extra "--conversation-cache-mib N" the pool resumes them),
+Scenarios: disk (two turns, the engine restarted with the same --conversation-disk directory, then the same prompt
+and one more turn), abc (three conversations in turn - with --extra "--conversation-cache-mib N" the pool resumes them),
 park_partial (the STRATA_SERVE_PARK_PARTIAL resume 20 positions back, then 8 back), park16 (a partial
 resume 8 back, within the window ring, then 21 back), engram_hist (a side request longer than the parked
 conversation's end overwrites the Engram history), single (one growing text dialogue, a regenerate and a re-render).
@@ -160,6 +161,12 @@ def build_steps(sc, out, tokenizer_json):
         b0 = BOS + B[:259]                         # the side request is LONGER than the parked conversation
         steps = [("A 240", a0, 2, "", None), ("B side 260 (longer)", b0, 2, "", None),
                  ("A + 20 (full unpark)", a0 + A[239:259], 2, "", None)]
+    elif sc == "disk":                             # --conversation-disk: a conversation survives an engine restart
+        a0 = BOS + A[:299]
+        a1 = a0 + A[299:319]
+        steps = [("A 300", a0, 2, "", None), ("A +20", a1, 2, "", None), ("RESTART", None, 0, "", None),
+                 ("after restart: A +20 again (exact)", a1, 2, "", None),
+                 ("after restart: A +40", a1 + A[319:339], 2, "", None)]
     elif sc == "abc":                              # three conversations in turn, A and B share a system prompt
         sys_p = BOS + A[:119]
         convs = {"A": sys_p + B[:60], "B": sys_p + C[:60], "C": BOS + C[300:420]}
@@ -226,15 +233,26 @@ def main():
         env.setdefault("HIP_VISIBLE_DEVICES", "0")
         env.setdefault("STRATA_NO_LARGEPAGES", "1")
     gpu_env = {} if cpu else {"HIP_VISIBLE_DEVICES": "0", "STRATA_NO_LARGEPAGES": "1"}
-    eng = Engine(a.bin, common, env, out, "test", cpu=cpu)
+    test_args = list(common)
+    if sc == "disk":
+        import shutil
+        shutil.rmtree(out / "conv-disk", ignore_errors=True)
+        test_args += ["--conversation-cache-mib", "2048", "--conversation-disk", str(out / "conv-disk")]
+    eng = Engine(a.bin, test_args, env, out, "test", cpu=cpu)
     res = []
     try:
         for label, ids, mx, keys, emb in steps:
+            if ids is None:                          # RESTART: the same flags, a new process
+                eng.close()
+                eng = Engine(a.bin, test_args, env, out, f"test{len(res)}", cpu=cpu)
+                continue
             r = eng.gen(ids, mx, keys, emb)
+            r["eng"] = eng
             res.append(r)
             print(f"[test] {label}: prompt {len(ids)} resume {r['resume']} tokens {r['tokens']} {r['sec']:.1f} s", flush=True)
     finally:
         eng.close()
+    steps = [st for st in steps if st[1] is not None]
     summary = {"scenario": sc, "bin": str(a.bin), "env": env, "steps": []}
     for (label, ids, *_), r in zip(steps, res):
         summary["steps"].append({"label": label, "prompt": len(ids), "resume": r["resume"], "tokens": r["tokens"],
@@ -249,7 +267,7 @@ def main():
                 f = ref.gen(ids, mx, keys, emb)
                 if r["logits"] is not None and f["logits"] is not None:
                     st.update(cmp(f["logits"], r["logits"]))
-                rt, ft = tail_of(eng, r), tail_of(ref, f)
+                rt, ft = tail_of(r["eng"], r), tail_of(ref, f)
                 if rt is not None and ft is not None:
                     k = min(len(rt), len(ft))
                     rows = [cmp(ft[-k + i], rt[-k + i]) for i in range(k)]

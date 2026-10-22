@@ -119,6 +119,10 @@ main { flex: 1; min-height: 0; display: flex; }
 .cc-bars { display: grid; grid-template-columns: 1fr 1fr; gap: var(--st-s-2) var(--st-s-6); }
 .cc-bars[hidden] { display: none; }
 .cc-note { margin: 0; }
+.cc-disk { display: flex; flex-direction: column; gap: var(--st-s-2); }
+.cc-disk[hidden] { display: none; }
+.cc-disk .facts dd { overflow-wrap: anywhere; }
+.cc-actions { display: flex; justify-content: flex-end; }
 .cc-note:empty { display: none; }
 .mcp-card { display: flex; flex-direction: column; gap: var(--st-s-3); }
 .cfg-form { display: grid; grid-template-columns: minmax(180px, max-content) minmax(0, 1fr); gap: var(--st-s-3) var(--st-s-4);

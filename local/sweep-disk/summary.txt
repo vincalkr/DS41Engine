@@ -1,0 +1,11 @@
+turn 0: prompt 25500 resumed 0 prompt 65.24 s request 86.9 s
+turn 1: prompt 25700 resumed 25500 prompt 4.13 s request 7.8 s
+engine restarted
+turn 3: prompt 25900 resumed 25700 prompt 6.47 s request 25.9 s
+disk0: loaded 0 tokens in 0.0 ms
+disk0: saved 25500 tokens in 10.6 ms
+disk0: saved 25700 tokens in 1.2 ms
+disk1: loaded 0 tokens in 0.0 ms
+disk1: restored 25700 tokens in 51.1 ms
+disk1: saved 25900 tokens in 1.9 ms
+on disk: 47.8 MB

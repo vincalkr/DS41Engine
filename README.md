@@ -71,8 +71,10 @@ costs 189-1014 prompt tokens. The September encoder (antirez's `DeepSeek-V4.1-Fl
 
 The engine keeps every conversation a request does not continue in a 4 GiB pool of pinned RAM
 (`--conversation-cache-mib`, ~380 MB for a 200K-token session) and resumes the one a request continues: two
-conversations taking turns, 17K and 25.5K tokens, went from 36.9 to 6.9 s a turn
-([docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), "The conversation pool").
+conversations taking turns, 17K and 25.5K tokens, went from 36.9 to 6.9 s a turn. They are also saved in
+`local/conv-cache` (`--conversation-disk`, up to 32 GiB), so a restarted server resumes a 25.7K-token session in 6.5 s
+instead of reading it again (~65 s). The Monitor shows the folder and its size, and a button clears them all
+([docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), "The conversation pool", "Conversations on disk").
 
 ## Power-tune (optional, root)
 

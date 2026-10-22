@@ -38,6 +38,8 @@ latest state is in the update notes below and in `docs/ds4/V41_EXACT_FAST.md`). 
 > Later on 2026-10-22: the arena went from 75 to 80 GiB (+7% at 17K context, measured with `ab-arena.sh`); the route
 > bias was measured again (+21% / +76%, not taken: it changes the answers); and with power-tune on the RAM reads
 > ~61 GB/s while the CPU experts use ~44, so the CPU tier, not the RAM, is the limit there (an open lever).
+> Conversations are also kept on disk (`--conversation-disk local/conv-cache`): a restarted server resumes them in
+> about a second; the Monitor shows the folder, the space and a button that clears them.
 
 ## 0. TL;DR
 

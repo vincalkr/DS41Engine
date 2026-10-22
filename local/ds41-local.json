@@ -39,7 +39,11 @@
   "--dump-routes",
   "local/routes-1017",
   "--conversation-cache-mib",
-  "4096"
+  "4096",
+  "--conversation-disk",
+  "local/conv-cache",
+  "--conversation-disk-gib",
+  "32"
  ],
  "env": {
   "STRATA_NO_LARGEPAGES": "1",

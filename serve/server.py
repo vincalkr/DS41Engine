@@ -488,6 +488,10 @@ class ConvCacheLog:
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    CLEARED = re.compile(r"conversation cache: cleared ")
+    # --conversation-disk: "conversation disk: <event> N tokens in X ms; records=R bytes=B budget=G dir=PATH"
+    DISK = re.compile(r"conversation disk: (loaded|saved|restored|cleared) (\d+) tokens in [\d.]+ ms; records=(\d+) "
+                      r"bytes=(\d+) budget=(\d+) dir=(.*)$")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -496,12 +500,14 @@ class ConvCacheLog:
 
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
-                      "last_tokens": None, "last_at": None}
+                      "last_tokens": None, "last_at": None,
+                      "disk": {"enabled": False, "dir": None, "records": 0, "bytes": 0, "budget": 0, "saves": 0,
+                               "restores": 0, "last_event": None, "last_tokens": None, "last_at": None}}
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
         if not path or start is None:
-            return dict(self.state)
+            return self.view()
         if self.key != (path, start):                   # another start of the engine: its cache starts empty
             self.key, self.pos = (path, start), start
             self.reset()
@@ -515,12 +521,26 @@ class ConvCacheLog:
                 f.seek(self.pos)
                 data = f.read(size - self.pos)
         except OSError:
-            return dict(self.state)
+            return self.view()
         end = data.rfind(b"\n") + 1                     # whole lines only: the rest is read next time
         self.pos += end
         now = time.time()
         for line in data[:end].decode("utf-8", "replace").splitlines():
+            if "conversation disk:" in line:
+                m = self.DISK.search(line)
+                if m:
+                    d = self.state["disk"]
+                    d.update(enabled=True, records=int(m.group(3)), bytes=int(m.group(4)), budget=int(m.group(5)),
+                             dir=m.group(6).strip())
+                    if m.group(1) in ("saved", "restored", "cleared"):
+                        if m.group(1) != "cleared":
+                            d["saves" if m.group(1) == "saved" else "restores"] += 1
+                        d["last_event"], d["last_tokens"], d["last_at"] = m.group(1), int(m.group(2)), now
+                continue
             if "conversation cache:" not in line:
+                continue
+            if self.CLEARED.search(line):
+                self.state.update(parked=0, bytes=0, last_event="cleared", last_tokens=0, last_at=now)
                 continue
             m = self.EVENT.search(line)
             if m:
@@ -535,7 +555,10 @@ class ConvCacheLog:
             m = self.DROPPED.search(line)
             if m:
                 self.state["parked"] = int(m.group(1))
-        return dict(self.state)
+        return self.view()
+
+    def view(self) -> dict:
+        return {**self.state, "disk": dict(self.state["disk"])}
 
 
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
@@ -549,6 +572,31 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,
             "last_prompt": last.get("prompt_tokens") if last else None}
+
+
+def conversation_disk_dir(args: list, cwd: str | None) -> str | None:
+    """The engine's --conversation-disk directory (absolute), from its arguments; None when it has none."""
+    if "--conversation-disk" not in args:
+        return None
+    i = args.index("--conversation-disk")
+    if i + 1 >= len(args):
+        return None
+    d = args[i + 1]
+    return os.path.normpath(d if os.path.isabs(d) else os.path.join(cwd or os.getcwd(), d))
+
+
+def clear_conversation_disk(path: str | None) -> int:
+    """Delete the saved conversations (the rec-* folders ds41_conv_disk.hpp writes) under path: the engine is not
+    running, so nothing writes there.  -> how many were removed."""
+    if not path or not os.path.isdir(path):
+        return 0
+    n = 0
+    for name in os.listdir(path):
+        p = os.path.join(path, name)
+        if name.startswith("rec-") and os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p, ignore_errors=True)
+            n += 1
+    return n
 
 
 _BTRACE = bool(os.environ.get("STRATA_BATCH_TRACE"))
@@ -1652,6 +1700,32 @@ class StrataEngine:
             pass
         return EngineSilent(f"{what}; the server ended the engine")
 
+    def conv_clear(self, timeout_s: float = 120.0) -> dict:
+        """The Monitor's "Clear": `CONVCLEAR` between requests (the caller holds the service FIFO) - the V4.1 engine
+        drops its kept conversations (the pool, the files of --conversation-disk, the live one) and answers
+        `CLEARED <pool records> <disk records>`.  EngineDied when it ended or answered nothing in timeout_s."""
+        try:
+            self.proc.stdin.write("CONVCLEAR\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        end = time.monotonic() + timeout_s
+        while True:
+            try:
+                line = self.lines.get(timeout=max(0.1, end - time.monotonic()))
+            except queue.Empty:
+                raise EngineDied("the engine did not answer CONVCLEAR") from None
+            if line is None:
+                raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+            if line.startswith("CLEARED"):
+                f = line.split()
+                return {"pool": int(f[1]) if len(f) > 1 and f[1].isdigit() else 0,
+                        "disk": int(f[2]) if len(f) > 2 and f[2].isdigit() else 0}
+            if line.startswith("ERR"):
+                raise ValueError(line[4:].strip() or "the engine refused CONVCLEAR")
+            if time.monotonic() > end:
+                raise EngineDied("the engine did not answer CONVCLEAR")
+
     def session_file(self, action: str, path: str) -> dict:
         """Disk sessions: `SAVE <path>` / `RESTORE <path>` between requests (the caller holds the service FIFO).
         -> {"tokens", "bytes", "ms"}.  SessionRefused (kind, published) when the engine refused or failed the file and
@@ -2673,6 +2747,29 @@ class Service:
 
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
+
+    def clear_conversations(self) -> dict:
+        """POST /conversation-cache/clear (the Monitor's button): every conversation the engine keeps - the pool in
+        RAM, the files of --conversation-disk and the live one - goes, so the next prompt is read from the start.
+        Waits for the request in flight; with the engine not loaded, the saved files are deleted here."""
+        spawn = getattr(self.engine, "spawn", None)
+        disk_dir = (self.conv_log.state.get("disk") or {}).get("dir") or (
+            conversation_disk_dir(spawn[1], spawn[2]) if spawn else None)
+        with self.status_lock:
+            self.status["queued"] += 1
+        waiting = True
+        try:
+            with self.fifo:
+                with self.status_lock:
+                    self.status["queued"] -= 1
+                waiting = False
+                if self.loaded() and hasattr(self.engine, "conv_clear"):
+                    return {"status": "cleared", **self.engine.conv_clear(), "dir": disk_dir}
+                return {"status": "cleared", "pool": 0, "disk": clear_conversation_disk(disk_dir), "dir": disk_dir}
+        finally:
+            if waiting:
+                with self.status_lock:
+                    self.status["queued"] -= 1
 
     def slot_action(self, slot: str, action: str, filename) -> tuple[int, dict]:
         """llama-server's POST /slots/{id}?action=save|restore {"filename": ...}: the conversation the engine holds,
@@ -4663,6 +4760,16 @@ def make_handler(svc: Service):
                 return
             # the same for the slot files: else any site could overwrite a saved conversation or replace the live one
             if path.startswith("/slots/") and not self._own_page("conversations can be saved or restored"):
+                return
+            if path == "/conversation-cache/clear":         # the Monitor's button: forget every kept conversation
+                if not self._own_page("the kept conversations can be cleared"):
+                    return
+                try:
+                    self._json(200, svc.clear_conversations())
+                except EngineDied as e:
+                    self._json(503, {"error": {"type": "server_error", "message": str(e)}})
+                except ValueError as e:
+                    self._json(400, {"error": {"type": "invalid_request_error", "message": str(e)}})
                 return
             if path == "/unload":                            # give the GPU back now (between requests)
                 try:

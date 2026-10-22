@@ -249,10 +249,75 @@ class ConversationCacheCard(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
 
+    DISK_SAVE = ("strata serve: conversation disk: saved 30000 tokens in 4.2 ms; records=2 bytes=120000000 "
+                 "budget=34359738368 dir=/data/conv cache\n")
+
+    def test_the_disk_and_clear_lines(self):
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("", encoding="utf-8")
+            c = ConvCacheLog()
+            self.assertFalse(c.poll(str(log), 0)["disk"]["enabled"])
+            with open(log, "a", encoding="utf-8") as f:
+                f.write("strata serve: conversation disk: loaded 0 tokens in 0.0 ms; records=1 bytes=60000000 "
+                        "budget=34359738368 dir=/data/conv cache\n" + self.PARK + self.DISK_SAVE +
+                        "strata serve: conversation disk: restored 30000 tokens in 812.5 ms; records=2 bytes=120000000 "
+                        "budget=34359738368 dir=/data/conv cache\n")
+            st = c.poll(str(log), 0)
+            dk = st["disk"]
+            self.assertEqual((dk["enabled"], dk["records"], dk["bytes"], dk["budget"], dk["dir"]),
+                             (True, 2, 120000000, 34359738368, "/data/conv cache"))    # a folder name with a space
+            self.assertEqual((dk["saves"], dk["restores"], dk["last_event"], dk["last_tokens"]), (1, 1, "restored", 30000))
+            with open(log, "a", encoding="utf-8") as f:
+                f.write("strata serve: conversation cache: cleared 3 tokens; parked=0 bytes=0 evictions=0\n"
+                        "strata serve: conversation disk: cleared 2 tokens in 3.0 ms; records=0 bytes=0 "
+                        "budget=34359738368 dir=/data/conv cache\n")
+            st = c.poll(str(log), 0)
+            self.assertEqual((st["parked"], st["bytes"], st["last_event"]), (0, 0, "cleared"))
+            self.assertEqual((st["disk"]["records"], st["disk"]["bytes"], st["disk"]["last_event"]), (0, 0, "cleared"))
+
+    def test_clear_with_the_engine_not_loaded(self):
+        # the engine is not running: the server deletes the saved conversations itself (only the rec-* folders)
+        import tempfile
+        from serve.server import clear_conversation_disk, conversation_disk_dir
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("rec-1-1", "rec-2-2"):
+                (Path(d) / name).mkdir()
+                (Path(d) / name / "meta.txt").write_text("x")
+            (Path(d) / "notes.txt").write_text("keep")
+            self.assertEqual(conversation_disk_dir(["-m", "x", "--conversation-disk", "conv"], d), str(Path(d) / "conv"))
+            self.assertIsNone(conversation_disk_dir(["-m", "x"], d))
+            self.assertEqual(clear_conversation_disk(d), 2)
+            self.assertEqual(sorted(p.name for p in Path(d).iterdir()), ["notes.txt"])
+            self.assertEqual(clear_conversation_disk(str(Path(d) / "missing")), 0)
+
+    def test_the_clear_endpoint(self):
+        tok = ByteTokenizer()
+        engine = MockEngine(tok, "Hello.", max_context=4096)
+        svc = Service(engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+        httpd = serve(svc, port=0)
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            req = urllib.request.Request(base + "/conversation-cache/clear", data=b"{}", method="POST",
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                self.assertEqual(json.loads(r.read())["status"], "cleared")
+            form = urllib.request.Request(base + "/conversation-cache/clear", data=b"x=1", method="POST",
+                                          headers={"Content-Type": "application/x-www-form-urlencoded"})
+            with self.assertRaises(urllib.error.HTTPError) as cm:   # a plain form from another site cannot clear
+                urllib.request.urlopen(form, timeout=10)
+            self.assertEqual(cm.exception.code, 415)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
     def test_the_card_is_on_the_page(self):
         web = Path(__file__).parent / "web"
         html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
-        for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note"):
+        for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note", "cc-disk", "cc-disk-text",
+                   "cc-disk-bar", "cc-disk-facts", "cc-clear-btn"):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
 

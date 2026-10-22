@@ -41,7 +41,11 @@
   "--vision",
   "models/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf",
   "--conversation-cache-mib",
-  "4096"
+  "4096",
+  "--conversation-disk",
+  "local/conv-cache",
+  "--conversation-disk-gib",
+  "32"
  ],
  "env": {
   "STRATA_NO_LARGEPAGES": "1",

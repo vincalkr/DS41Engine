@@ -282,6 +282,7 @@ public:
         return true;
     }
     bool fence(std::string * err = nullptr) { return pool_.fence(err); }
+    size_t clear() { return pool_.clear(false); }
     size_t size() const { return pool_.stats().records; }
     size_t bytes() const { return pool_.stats().used_bytes; }
     size_t evictions() const { return pool_.stats().evictions; }
@@ -335,6 +336,7 @@ public:
         return DS41_STORE_CALL(restore(d, m, from, out, err));
     }
     bool fence(std::string * err = nullptr) { return DS41_STORE_CALL(fence(err)); }
+    size_t clear() { return DS41_STORE_CALL(clear()); }
     size_t size() const { return DS41_STORE_CALL(size()); }
     size_t bytes() const { return DS41_STORE_CALL(bytes()); }
     size_t evictions() const { return DS41_STORE_CALL(evictions()); }

@@ -223,10 +223,41 @@ function renderConvCache(c) {
     ["Parked / restored", c.enabled ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? ` · ${fmt(c.evictions)} evicted` : ""}` : null],
     ["Last switch", c.enabled ? event : null],
   ]);
+  const d = c.disk || {};
+  $("cc-disk").hidden = !d.enabled;
+  if (d.enabled) {
+    $("cc-disk-text").textContent = `${gb(d.bytes)} / ${gb(d.budget)} GB · ${fmt(d.records)} conversation${d.records === 1 ? "" : "s"}`;
+    $("cc-disk-bar").style.width = pct(d.bytes, d.budget);
+    const dev = d.last_event ? `${d.last_event[0].toUpperCase() + d.last_event.slice(1)} ${d.last_event === "cleared" ? "" : `${fmt(d.last_tokens)} tokens, `}${since(d.last_at)}` : null;
+    facts($("cc-disk-facts"), [
+      ["Folder", d.dir],
+      ["Saved / resumed", `${fmt(d.saves)} / ${fmt(d.restores)} since the engine started`],
+      ["Last", dev],
+    ]);
+  }
   $("cc-note").textContent = c.enabled
-    ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
+    ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full." +
+      (d.enabled ? " Saved on disk, they also survive a restart of the server." : "")
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
 }
+
+// the "Clear conversation memory" button: POST /conversation-cache/clear (waits for a request in flight)
+$("cc-clear-btn").onclick = async () => {
+  if (!confirm("Forget every kept conversation (the RAM pool, the files on disk and the current one)? The next request reads its whole prompt again.")) return;
+  const btn = $("cc-clear-btn");
+  btn.disabled = true;
+  try {
+    const r = await fetch("conversation-cache/clear", {method: "POST", headers: headers(true), body: "{}"});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error((j.error && j.error.message) || `HTTP ${r.status}`);
+    toast("success", "Conversation memory cleared",
+          `${fmt(j.pool || 0)} in RAM and ${fmt(j.disk || 0)} on disk removed.`);
+  } catch (e) {
+    toast("error", "Could not clear the conversation memory", String(e.message || e));
+  } finally {
+    btn.disabled = false;
+  }
+};
 
 function renderTotals(t) {
   if (!t || !t.requests) return "";

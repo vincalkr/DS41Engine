@@ -701,6 +701,31 @@ two-card flags, power-tune on, 200 tokens (`local/sweep-dspark/summary.txt`):
 experts of every drafted token from RAM and the NVMe. The chat stays single-step. (The drafted text first differs from
 the single-step one after 24-177 tokens: the verify pass's batch shapes, as any GPU run here.)
 
+## Conversations on disk (2026-10-22)
+
+`--conversation-disk DIR` (`tools/v41/engine/ds41_conv_disk.hpp`, with the pool; the four configurations set
+`local/conv-cache` and `--conversation-disk-gib 32`): after every answer the live conversation's turn boundary is
+written there - the rows the pool keeps (every stream's rows `[0, n / ratio)`) and the snapshot rings - and a request
+resumes from a record when that is the longest prefix of its prompt. After a restart the engine has no live state and
+an empty pool, so this is what gives a long session back. A conversation that goes on only writes its new rows; the
+files are written in the background; `meta.txt` is written last, so a crash leaves the last whole boundary; records of
+another model or cache layout are skipped at start. The Monitor shows the folder, the space used and a button that
+clears the pool, the files and the live conversation (`POST /conversation-cache/clear`, the engine's `CONVCLEAR`).
+
+`tools/v41/engine/check_conv_reuse.py --backend gpu --scenario disk` (two turns, the engine restarted, the same prompt
+and one more turn): the same prompt resumes all 320 positions from disk at KL 0.0036 against a fresh prefill, the next
+turn 320 of 340 at KL 0.009, the fresh tokens both times. `local/bench-v41/disk-restart.py` (two-card flags, power-tune
+on, `local/sweep-disk/summary.txt`):
+
+| turn | resumed | prompt |
+| --- | ---: | ---: |
+| 25,500 tokens from scratch | 0 | 65.24 s |
+| +200 | 25,500 | 4.13 s |
+| the engine restarted, +200 | **25,700 from disk** (restore 51 ms) | **6.47 s** (a full read: ~65 s) |
+
+A save costs 1-11 ms on the engine's thread after the answer; 47.8 MB on disk for 25.9K positions (~1.9 KB a position,
+~380 MB for a 200K session).
+
 ## Route bias, measured again (2026-10-22)
 
 The same two-card flags, power-tune on, one run each (`local/sweep-routebias/summary.txt`), not adopted (the route
