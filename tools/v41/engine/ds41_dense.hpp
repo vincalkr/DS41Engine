@@ -170,7 +170,7 @@ public:
     /// A conversation's reusable device state at its snapshot, as regions of the device tensors: the snapshot rings
     /// (window K/V, ratio-2 compressor state) + rows [0, positions] of every compressed-KV / indexer-key cache and their
     /// spare rows - exactly what park() copies.  A conversation store saves them right after snapshot(); writing them
-    /// back and rearm(pos) + restore() resumes that conversation at pos.  (Indras-Mirror/Xolotl#19, #20)
+    /// back and rearm(pos) + restore() resumes that conversation at pos.
     struct StateRegion { ggml_tensor * t; size_t off, bytes; };
     std::vector<StateRegion> state_regions(int64_t positions) const;
     /// The snapshot tensors now hold position `pos`'s state (a conversation store wrote them): restore() resumes there.

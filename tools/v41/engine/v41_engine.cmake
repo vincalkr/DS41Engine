@@ -191,7 +191,7 @@ if(TARGET ggml AND TARGET ggml-base)
     add_executable(v41_sidecar_requant ${CMAKE_CURRENT_SOURCE_DIR}/tools/v41/v41_sidecar_requant.cpp)
     target_link_libraries(v41_sidecar_requant PRIVATE ggml ggml-base)
 endif()
-# --conversation-cache-mib: the conversation pool's storage (ds41_conv_pool.hpp, Indras-Mirror/Xolotl#19 / #20).  The CPU
+# --conversation-cache-mib: the conversation pool's storage (ds41_conv_pool.hpp).  The CPU
 # test always (compiled without DS41_POOL_CUDA: no device call at all); the engine's copy uses the CUDA runtime API,
 # which strata_hip_runtime renames to HIP on AMD (the same source serves both builds, as ds41_moe does).
 add_executable(test_ds41_conv_pool ${_v41_dir}/test_ds41_conv_pool.cpp ${_v41_dir}/ds41_conv_pool.cpp)

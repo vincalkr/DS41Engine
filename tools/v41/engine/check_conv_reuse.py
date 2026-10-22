@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Conversation-reuse exactness check for ds41_generate --serve (CPU backend, real model).
-From Indras-Mirror/Xolotl#18 (the exact-resume fix), with this repository's tokenizer and texts.
 
 Each scenario sends a sequence of GEN / GENI requests to one engine (the engine under test) and the same prompts,
 each as a FRESH prefill, to a second engine (park off, a 1-token reset request between prompts).  Every request's

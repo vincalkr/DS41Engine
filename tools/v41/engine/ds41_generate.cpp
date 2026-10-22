@@ -191,7 +191,7 @@ struct Args {
     /// first image on), else the main card 0 (weights loaded for a request with images, freed after it).
     std::string vision;
     int vision_device = -2;
-    /// --serve's conversation pool (opt-in, Indras-Mirror/Xolotl#20): --conversation-cache-mib N of pinned host memory
+    /// --serve's conversation pool (opt-in): --conversation-cache-mib N of pinned host memory
     /// for conversations saved at their turn boundary (0, the default = the single park of STRATA_SERVE_PARK), at most
     /// --conversation-cache-slots of them
     int conv_mib = 0, conv_slots = 64;
@@ -1460,7 +1460,7 @@ int main(int argc, char ** argv) {
         // STRATA_SERVE_DSPARK leaves the live state DIRTY when its last verify pass rejected drafts: the ratio-2
         // compressor state ring then holds the rejected positions' states, so a request that continues the live
         // history at an odd position (its group's first half is the last accepted token) must re-feed that token -
-        // the same rule as the in-request refeed (`dirty && (P + 1) & 1`).  Indras-Mirror/Xolotl#18.
+        // the same rule as the in-request refeed (`dirty && (P + 1) & 1`).
         bool live_dirty = false;
         // ---- the conversation pool (--conversation-cache-mib N, opt-in; 0 = the single park above).  One park keeps one
         // conversation, and only when the NEXT request's prompt + max tokens fit STRATA_SERVE_PARK_MAX: an agent client
@@ -1470,7 +1470,7 @@ int main(int argc, char ** argv) {
         // request resumes from whichever holds the longest prefix of it - the live state or a pool record (ties: the
         // live one, no copy).  A position matches when its token AND its image key do (hist_key / ikey), so image
         // prompts are saved too.  STRATA_SERVE_PARK_MIN is the smallest conversation worth a record.
-        // Indras-Mirror/Xolotl#19 (the pinned store) and #20 (this loop); STRATA_CONV_POOL=host: a synchronous host store.
+        // The store: ds41_conv_pool (pinned slabs); STRATA_CONV_POOL=host: a synchronous host store.
         const bool pool_on = park_on && a.conv_mib > 0;
         Ds41ConvStore pool;
         if (pool_on) {
@@ -1617,8 +1617,9 @@ int main(int argc, char ** argv) {
                 // ratio-2 compressor state P - 2, P - 1.  A resume at s < P reads the window [s - SWA + 1, s) from the
                 // ring and, at an odd s, the state of s - 1: exact only for an even s with P - s <= RAW - SWA = 16, and
                 // only after restore() (the live rings are the side request's).  Resuming at any lp with the side
-                // request's rings gave KL 2.1 against a fresh prefill, top-1 wrong, 20 positions back
-                // (Indras-Mirror/Xolotl#18, CPU, real model); anything further back is now a full prefill.
+                // request's rings gave KL 1.39 against a fresh prefill 20 positions back, and KL 1.17 with the wrong
+                // top-1 on the next resume (check_conv_reuse.py park_partial, 2026-10-22); anything further back is now
+                // a full prefill.
                 static const bool park_partial = !(std::getenv("STRATA_SERVE_PARK_PARTIAL") && std::getenv("STRATA_SERVE_PARK_PARTIAL")[0] == '0');
                 const size_t lp_min = (size_t) std::max<int64_t>(park_min, (int64_t) park_hist.size() * 3 / 4);
                 const size_t ps = lp & ~(size_t) 1;

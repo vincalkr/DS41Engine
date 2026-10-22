@@ -628,7 +628,7 @@ against 1,080. One session's routing fits that session's kind of text and costs 
 
 The serve loop keeps one conversation through an unrelated request (park / unpark). Its partial resume, at the
 longest common prefix below the parked end, re-fed from there with the side request's window ring and ratio-2
-compressor state still live, and never wrote the Engram history back. The fix from Indras-Mirror/Xolotl#18: a
+compressor state still live, and never wrote the Engram history back. The fix: a
 partial resume only at an even position at most 16 below the parked end (`RAW - SWA`), after `restore()`; anything
 further back is a full prefill; on every resume the 3 Engram history positions before it are rewritten with the
 prompt's own tokens; after a DSpark decode that rejected drafts, a continuation at an odd position re-feeds one token.
@@ -650,7 +650,7 @@ the agent sessions) 19 conversations were parked, 4 fully unparked and none resu
 
 ## The conversation pool (2026-10-22)
 
-`--conversation-cache-mib N` (Indras-Mirror/Xolotl#19 / #20, ported): every conversation a request does not continue is
+`--conversation-cache-mib N`: every conversation a request does not continue is
 saved at its turn boundary (the snapshot rings + every position-indexed row before it, its tokens and image keys) in
 pinned host RAM, and a request resumes from whichever holds the longest prefix of its prompt, the live state or a pool
 record. The single park it replaces kept one conversation, and only when the next request's prompt + max tokens fit
