@@ -1,0 +1,12 @@
+pool=0     turn 0 A: prompt 17349 resumed 0 prompt 46.94 s request 71.4 s
+pool=0     turn 1 B: prompt 25500 resumed 0 prompt 63.52 s request 73.4 s
+pool=0     turn 2 A: prompt 17549 resumed 17349 prompt 4.52 s request 7.4 s
+pool=0     turn 3 B: prompt 25700 resumed 0 prompt 63.26 s request 66.1 s
+pool=0     turn 4 A: prompt 17749 resumed 17549 prompt 4.29 s request 7.0 s
+pool=0     turn 5 B: prompt 25900 resumed 0 prompt 64.23 s request 66.9 s
+pool=8192  turn 0 A: prompt 17349 resumed 0 prompt 47.15 s request 67.5 s
+pool=8192  turn 1 B: prompt 25500 resumed 0 prompt 65.20 s request 71.1 s
+pool=8192  turn 2 A: prompt 17549 resumed 17349 prompt 4.49 s request 7.3 s
+pool=8192  turn 3 B: prompt 25700 resumed 25500 prompt 4.18 s request 6.9 s
+pool=8192  turn 4 A: prompt 17749 resumed 17549 prompt 4.27 s request 6.9 s
+pool=8192  turn 5 B: prompt 25900 resumed 25700 prompt 4.06 s request 6.5 s

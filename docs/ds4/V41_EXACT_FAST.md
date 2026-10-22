@@ -648,6 +648,38 @@ of the same prompt twice differs by KL 0.006-0.016 (the engine is not bit-reprod
 The cost: a partial resume more than 16 positions back is now a full prefill. In `local/serve-engine.log` (2026-10-21,
 the agent sessions) 19 conversations were parked, 4 fully unparked and none resumed partially.
 
+## The conversation pool (2026-10-22)
+
+`--conversation-cache-mib N` (Indras-Mirror/Xolotl#19 / #20, ported): every conversation a request does not continue is
+saved at its turn boundary (the snapshot rings + every position-indexed row before it, its tokens and image keys) in
+pinned host RAM, and a request resumes from whichever holds the longest prefix of its prompt, the live state or a pool
+record. The single park it replaces kept one conversation, and only when the next request's prompt + max tokens fit
+65,536 positions: a 148K-token side request on 2026-10-21 dropped a 197K-token session, whose next turn re-read it all.
+The engine's default is 0 (the single park); the four configurations set 4096.
+
+`tools/v41/engine/check_conv_reuse.py --backend gpu` against fresh prefills (card 0, the GPU's KL noise is 0.006-0.016):
+
+| scenario | without the pool | with the pool |
+| --- | --- | --- |
+| `abc`: A B C A B C A (A and B share a system prompt) | B2, C2 re-read (21.7 s, 15.5 s) | B2, C2 resume 196 / 137 (1.8 s, 1.5 s), restore ~2 ms; KL 0.00007-0.047, top-1 right everywhere |
+| `single`: a growing dialogue, regenerate | - | the same decisions, tokens and KL as without the pool |
+| `park16`: 8 back, then 21 back | 21 back: full prefill | 21 back: resume 230 from the record's boundary at 240 (10 below it), KL 0.005 |
+
+`local/bench-v41/pool-turns.py`: the two-card flags, ctx 65536, power-tune on; two conversations taking turns, A the
+17K prompt and B 25.5K tokens of another text, each turn ~200 new tokens, 16 decoded:
+
+| turn | without the pool | with the pool (8192 MiB) |
+| --- | --- | --- |
+| 0 A, 1 B (first reads) | 71.4 s, 73.4 s | 67.5 s, 71.1 s |
+| 2 A | 7.4 s (the park) | 7.3 s |
+| 3 B | 66.1 s (re-read) | 6.9 s |
+| 4 A | 7.0 s | 6.9 s |
+| 5 B | 66.9 s (re-read) | 6.5 s |
+| mean of turns 2-5 | 36.9 s | **6.9 s** |
+
+A record is ~1.9 KB a position (`--kv-q8`): 49 MB for 25.5K tokens, ~380 MB for a 200K session; a save is queued in
+0.1-0.3 ms, a restore takes 4-7 ms. Pinned memory is taken in 256 MiB pieces as records need it, up to the budget.
+
 ## enc-skip and the candidate fast-path, measured (2026-10-22)
 
 `local/bench-v41/ab-cand-encskip.sh`: the default two-card flags, one-shot runs alternated, 3 each, power-tune on.

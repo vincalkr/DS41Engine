@@ -12,7 +12,8 @@ prefill of the same prompt as closely as the batch-shape noise of a known-good c
 The prompts are token runs of README.md / HANDOVER.md / docs/ds4/V41_EXACT_FAST.md, tokenized with the server's
 tokenizer (models/ds4-1017/tokenizer); --model and --engram default to the 1017 Q2 and its tables in models/.
 
-Scenarios: park_partial (the STRATA_SERVE_PARK_PARTIAL resume 20 positions back, then 8 back), park16 (a partial
+Scenarios: abc (three conversations in turn - with --extra "--conversation-cache-mib N" the pool resumes them),
+park_partial (the STRATA_SERVE_PARK_PARTIAL resume 20 positions back, then 8 back), park16 (a partial
 resume 8 back, within the window ring, then 21 back), engram_hist (a side request longer than the parked
 conversation's end overwrites the Engram history), single (one growing text dialogue, a regenerate and a re-render).
 """
@@ -160,6 +161,15 @@ def build_steps(sc, out, tokenizer_json):
         b0 = BOS + B[:259]                         # the side request is LONGER than the parked conversation
         steps = [("A 240", a0, 2, "", None), ("B side 260 (longer)", b0, 2, "", None),
                  ("A + 20 (full unpark)", a0 + A[239:259], 2, "", None)]
+    elif sc == "abc":                              # three conversations in turn, A and B share a system prompt
+        sys_p = BOS + A[:119]
+        convs = {"A": sys_p + B[:60], "B": sys_p + C[:60], "C": BOS + C[300:420]}
+        src = {"A": B[60:], "B": C[60:], "C": C[420:]}
+        k = {"A": 0, "B": 0, "C": 0}
+        for c in ["A", "B", "C", "A", "B", "C", "A"]:
+            convs[c] = convs[c] + src[c][k[c]:k[c] + 16]
+            k[c] += 16
+            steps.append((f"{c}{k[c] // 16}", list(convs[c]), 2, "", None))
     elif sc == "single":
         h = BOS + A[:199]
         for i in range(4):

@@ -37,7 +37,9 @@
   "--pcie",
   "0",
   "--dump-routes",
-  "local/routes-1017"
+  "local/routes-1017",
+  "--conversation-cache-mib",
+  "4096"
  ],
  "env": {
   "STRATA_NO_LARGEPAGES": "1",

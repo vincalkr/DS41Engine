@@ -25,6 +25,7 @@
 // Load the real model only through tools/ds4/memguard.sh (RAM cap + the shared GPU lock).
 #include "ds41_dense.hpp"
 #include "ds41_moe.hpp"
+#include "ds41_conv_reuse.hpp"
 #include "ds41_vision.hpp"
 #if defined(DS41_HAVE_DSPARK)
 #include "ds41_dspark.hpp"
@@ -190,6 +191,10 @@ struct Args {
     /// first image on), else the main card 0 (weights loaded for a request with images, freed after it).
     std::string vision;
     int vision_device = -2;
+    /// --serve's conversation pool (opt-in, Indras-Mirror/Xolotl#20): --conversation-cache-mib N of pinned host memory
+    /// for conversations saved at their turn boundary (0, the default = the single park of STRATA_SERVE_PARK), at most
+    /// --conversation-cache-slots of them
+    int conv_mib = 0, conv_slots = 64;
 };
 
 std::vector<int> parse_csv(const std::string & s) {
@@ -212,6 +217,8 @@ bool parse(int argc, char ** argv, Args & a) {
         else if (k == "--experts") a.experts = next();
         else if (k == "--peer-device") a.peer_device = std::atoi(next().c_str());
         else if (k == "--vision") a.vision = next();
+        else if (k == "--conversation-cache-mib") a.conv_mib = std::max(0, std::atoi(next().c_str()));
+        else if (k == "--conversation-cache-slots") a.conv_slots = std::max(1, std::atoi(next().c_str()));
         else if (k == "--vision-device") a.vision_device = std::atoi(next().c_str());
         else if (k == "--engram") { std::stringstream ss(next()); std::string d; while (std::getline(ss, d, ':')) a.engram.push_back(d); }
         else if (k == "--slots") { const std::string v = next(); a.slots = v == "auto" ? 0 : std::atoll(v.c_str()); }
@@ -1455,6 +1462,34 @@ int main(int argc, char ** argv) {
         // history at an odd position (its group's first half is the last accepted token) must re-feed that token -
         // the same rule as the in-request refeed (`dirty && (P + 1) & 1`).  Indras-Mirror/Xolotl#18.
         bool live_dirty = false;
+        // ---- the conversation pool (--conversation-cache-mib N, opt-in; 0 = the single park above).  One park keeps one
+        // conversation, and only when the NEXT request's prompt + max tokens fit STRATA_SERVE_PARK_MAX: an agent client
+        // that sends max_tokens 32K, or a side request of 148K tokens (2026-10-21), dropped the main conversation and the
+        // next turn re-read all of it.  With the pool the live conversation is saved whenever a request does not continue
+        // it (at its turn boundary: the snapshot at its prompt's end and every position-indexed row before it), and a
+        // request resumes from whichever holds the longest prefix of it - the live state or a pool record (ties: the
+        // live one, no copy).  A position matches when its token AND its image key do (hist_key / ikey), so image
+        // prompts are saved too.  STRATA_SERVE_PARK_MIN is the smallest conversation worth a record.
+        // Indras-Mirror/Xolotl#19 (the pinned store) and #20 (this loop); STRATA_CONV_POOL=host: a synchronous host store.
+        const bool pool_on = park_on && a.conv_mib > 0;
+        Ds41ConvStore pool;
+        if (pool_on) {
+            std::string perr;
+            if (!pool.init(dense, ctx, (size_t) a.conv_mib << 20, (size_t) a.conv_slots, !ggml_backend_is_cpu(be), perr)) {
+                std::fprintf(stderr, "ds41_generate: conversation pool: %s\n", perr.c_str());
+                return 1;
+            }
+        }
+        auto save_live = [&](const char * why) {   // the live conversation's turn boundary into the pool
+            if (!pool_on || snap_len < std::max(1, park_min) || hist.size() < (size_t) snap_len) return;
+            const double t0 = now_ms();
+            std::string perr;
+            const int64_t id = pool.save(dense, hist.data(), hist_key.data(), std::min(hist_key.size(), (size_t) snap_len),
+                                         snap_len, snap_logits.empty() ? nullptr : snap_logits.data(), snap_logits.size(), perr);
+            std::fprintf(stderr, "strata serve: conversation cache: %s %d tokens in %.1f ms; parked=%zu bytes=%zu evictions=%zu (%s%s%s)\n",
+                         id ? "parked" : "skipped", snap_len, now_ms() - t0, pool.size(), pool.bytes(), pool.evictions(), why,
+                         id ? "" : ": ", id ? "" : perr.c_str());
+        };
 #if defined(DS41_HAVE_DSPARK)
         // STRATA_SERVE_DSPARK: DSpark's window (main_hidden of the last <= 128 positions) is seeded by running a
         // request's last min(128, new) prompt tokens through pass_v instead of the passes / batch (no extra work), and
@@ -1471,8 +1506,12 @@ int main(int argc, char ** argv) {
         const int step_max = std::getenv("STRATA_SERVE_STEP_MAX") ? std::atoi(std::getenv("STRATA_SERVE_STEP_MAX")) : 768;
         // STRATA_SERVE_PASS_BIAS=0: those passes route exactly (the decode biases only while decoding)
         const bool pass_bias = !(std::getenv("STRATA_SERVE_PASS_BIAS") && std::getenv("STRATA_SERVE_PASS_BIAS")[0] == '0');
-        std::printf("INFO ctx=%d experts_vram=%lld arena_experts=%lld\n", ctxv, (long long) tier.resident(),
+        std::printf("INFO ctx=%d experts_vram=%lld arena_experts=%lld", ctxv, (long long) tier.resident(),
                     (long long) tier.arena_experts());
+        if (pool_on) std::printf(" conversation_cache_mib=%d conversation_cache_slots=%d", a.conv_mib, a.conv_slots);
+        std::printf("\n");
+        if (pool_on) std::fprintf(stderr, "serve: conversation pool %d MiB (%s), %d slots, records >= %d tokens\n", a.conv_mib,
+                                  pool.kind(), a.conv_slots, std::max(1, park_min));
         std::printf("READY %d stop\n", ctxv);
         std::fflush(stdout);
         std::fprintf(stderr, "serve: ready (ctx %d, prefill chunk %d)\n", ctxv, NP);
@@ -1525,7 +1564,46 @@ int main(int argc, char ** argv) {
             bool unparked = false;
             int reuse_override = -1;   // a partial unpark: resume at the longest common prefix (see below)
             size_t lp_show = 0;        // how far this request actually continues the PARKED conversation (logged)
-            if (dense.parked()) {   // does this request continue the parked conversation (better than the live one)?
+            if (pool_on) {
+                // what the live state offers (the rules below): its history continued, or its snapshot restored
+                int live = 0;
+                if (!hist.empty() && lcp == hist.size() && lcp < ids.size()) live = (int) lcp;
+                else if (snap_len > 0 && lcp >= (size_t) snap_len && (size_t) snap_len <= ids.size()) live = snap_len;
+                const ConvMatch m = pool.best_prefix(ids.data(), ikey.data(), ikey.size(), (int64_t) ids.size());
+                int64_t pr = m.resume();
+                const bool exact = m.pos > 0 && m.pos == (int64_t) ids.size();
+                if (exact && !m.has_logits) pr = 0;                      // nothing to sample the first token from
+                if (!exact && pr >= (int64_t) ids.size()) pr = 0;        // a partial resume must feed something
+                lp_show = (size_t) m.lcp;
+                if (pr > live) {
+                    save_live("switch");
+                    ConvRestore rs;
+                    std::string perr;
+                    const double t0 = now_ms();
+                    if (pool.restore(dense, m, (int64_t) std::min<size_t>(lcp, (size_t) pr), rs, perr)) {
+                        dense.rearm((int) rs.pos);
+                        dense.restore();
+                        // positions [0, pr) are this prompt's own (the match is strict on token + image key)
+                        hist.assign(ids.begin(), ids.begin() + pr);
+                        hist_key.assign(ikey.begin(), ikey.begin() + std::min<size_t>(ikey.size(), (size_t) pr));
+                        if (pr == rs.pos) { snap_len = (int) rs.pos; snap_logits = rs.logits; }
+                        else snap_len = -1;
+                        live_dirty = false;
+                        reuse_override = (int) pr;
+                        if (exact) last_logits = rs.logits;
+                        lcp = (size_t) pr;
+                        unparked = true;
+#if defined(DS41_HAVE_DSPARK)
+                        dsp_next = -1;
+#endif
+                        std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu\n",
+                                     (long long) pr, pr == rs.pos ? "pool" : "pool, partial", now_ms() - t0, pool.size(), pool.bytes());
+                    } else {
+                        std::fprintf(stderr, "strata serve: conversation cache: restore failed (%s)\n", perr.c_str());
+                        if (rs.live_clobbered) { hist.clear(); hist_key.clear(); snap_len = -1; lcp = 0; }
+                    }
+                }
+            } else if (dense.parked()) {   // does this request continue the parked conversation (better than the live one)?
                 size_t lp = 0;
                 while (lp < park_hist.size() && lp < ids.size() && park_hist[lp] == ids[lp] && key_at(ikey, lp) == 0) ++lp;   // a park is text only
                 lp_show = lp;
@@ -1593,6 +1671,11 @@ int main(int argc, char ** argv) {
                 hist.resize((size_t) snap_len);
                 if (hist_key.size() > (size_t) snap_len) hist_key.resize((size_t) snap_len);
                 reused = snap_len;
+            } else if (pool_on) {
+                save_live("unrelated");   // an unrelated request: the conversation it overwrites goes to the pool
+                hist.clear();
+                hist_key.clear();
+                snap_len = -1;
             } else {
                 // an unrelated request: park the conversation it would overwrite (see STRATA_SERVE_PARK)
                 const int64_t rows = (int64_t) ids.size() + (max_new > 0 ? max_new : park_max) + 64;
@@ -1607,6 +1690,12 @@ int main(int argc, char ** argv) {
                 hist_key.clear();
                 snap_len = -1;
             }
+            if (pool_on) {   // a save queued above reads positions this request is about to overwrite
+                std::string ferr2;
+                if (!pool.fence(&ferr2)) std::fprintf(stderr, "strata serve: conversation cache: fence: %s\n", ferr2.c_str());
+                std::fprintf(stderr, "serve: reuse lcp=%zu pool=%zu lp=%zu hist=%zu snap=%d prompt=%zu -> reused=%d\n",
+                             lcp, pool.size(), lp_show, hist.size(), snap_len, ids.size(), reused);
+            } else
             std::fprintf(stderr, "serve: reuse lcp=%zu park=%zu lp=%zu hist=%zu snap=%d prompt=%zu -> reused=%d\n", lcp,
                          park_hist.size(), lp_show, hist.size(), snap_len, ids.size(), reused);
             live_dirty = false;

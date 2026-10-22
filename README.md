@@ -67,6 +67,13 @@ The encoder runs in the engine on the second card (0.2-5 s an image, exact again
 costs 189-1014 prompt tokens. The September encoder (antirez's `DeepSeek-V4.1-Flash-Vision.gguf`) does not match the
 1017 model. Details and measurements: [docs/ds4/V41_VISION.md](docs/ds4/V41_VISION.md).
 
+## Conversations
+
+The engine keeps every conversation a request does not continue in a 4 GiB pool of pinned RAM
+(`--conversation-cache-mib`, ~380 MB for a 200K-token session) and resumes the one a request continues: two
+conversations taking turns, 17K and 25.5K tokens, went from 36.9 to 6.9 s a turn
+([docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), "The conversation pool").
+
 ## Power-tune (optional, root)
 
 Decode reads an expert from the NVMe every 10-20 ms; between reads the drive (APST) and the CPU cores (C3) fall
