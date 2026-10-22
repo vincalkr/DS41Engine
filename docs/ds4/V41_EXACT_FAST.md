@@ -648,6 +648,34 @@ of the same prompt twice differs by KL 0.006-0.016 (the engine is not bit-reprod
 The cost: a partial resume more than 16 positions back is now a full prefill. In `local/serve-engine.log` (2026-10-21,
 the agent sessions) 19 conversations were parked, 4 fully unparked and none resumed partially.
 
+## enc-skip and the candidate fast-path, measured (2026-10-22)
+
+`local/bench-v41/ab-cand-encskip.sh`: the default two-card flags, one-shot runs alternated, 3 each, power-tune on.
+Results in `local/sweep-cand/summary.txt` and the `.out` files.
+
+**enc-skip** (`--enc-skip`, on by default since 2026-10-11: the prompt tokens before the last 2560 stop after layer
+20's KV-writing part) against `--no-enc-skip`, prompt speed, 8 tokens decoded:
+
+| prompt | `--no-enc-skip` | default (enc-skip) | |
+| --- | ---: | ---: | ---: |
+| 8,192 tokens | 226.3 / 230.2 / 230.0 tok/s | 321.5 / 313.3 / 331.7 tok/s | +39% |
+| 17,349 tokens | 226.7 / 226.0 / 222.9 | 365.7 / 360.2 / 363.9 | +61% |
+| 25,500 tokens | 223.7 / 225.4 / 223.7 | 396.0 / 392.7 / 385.1 | +74% |
+
+The same 8 greedy tokens in every run. The gain grows with the prompt: the share of tokens that skip layers 21-39
+grows.
+
+**Candidate fast-path** (`STRATA_CAND_FAST=1`, opt-in, antirez/ds4 b290d83b): below 2048 blocks of 8 compressed rows
+(~32K positions at ratio 2) every block is a candidate, so layer 20's block sort and the masks of layers 21-39 change
+nothing; the switch leaves them out of the graph. Decode, tok/s:
+
+| prompt | default | `STRATA_CAND_FAST=1` |
+| --- | --- | --- |
+| Promessi Sposi, 300 tokens | 18.22 / 20.11 / 20.34 | 20.29 / 19.86 / 20.35 |
+| 17K context, 128 tokens | 14.26 / 14.79 / 14.66 | 13.84 / 10.99 / 14.84 |
+
+The same within the spread, and the same argmax counts (`diff=` 0-4 in both), so it stays opt-in.
+
 ## Reproduce
 
 ```

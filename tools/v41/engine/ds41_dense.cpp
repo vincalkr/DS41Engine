@@ -644,7 +644,14 @@ static ggml_cgraph * build_attn(Ds41Dense::Impl & im, ggml_context * gc, int il,
                 ggml_tensor * vis = ggml_log(gc, ggml_step(gc, ggml_add(gc, ggml_repeat(gc, ramp, ggml_new_tensor_2d(gc, GGML_TYPE_F32, cap, n)), nvs)));
                 ggml_tensor * sc = ggml_lightning_indexer(gc, iq, ksrc, iw, ggml_cast(gc, vis, GGML_TYPE_F16));   // [cap, n]
                 sc = ggml_reshape_2d(gc, sc, cap, n);
-                if (L.uses_cand) {   // rank only inside cand_layer's candidate blocks
+                // Every block kept (ncb == nblk: up to CB * CBS compressed rows, ~32K positions at ratio 2): the
+                // candidate ids are a permutation of all blocks, so the mask below is all zero and the selection is a
+                // no-op - STRATA_CAND_FAST=1 skips it on both sides (antirez/ds4 b290d83b).  cand_src and its users see
+                // the same cap (one ratio, the same pass or sub-batch), so they always agree on it.  Opt-in: decode
+                // measured the same with and without it (docs/ds4/V41_EXACT_FAST.md, 2026-10-22).
+                static const bool cand_fast = std::getenv("STRATA_CAND_FAST") && std::getenv("STRATA_CAND_FAST")[0] == '1';
+                const bool cand_all = cand_fast && im.CB >= (cap + im.CBS - 1) / im.CBS;
+                if (L.uses_cand && !cand_all) {   // rank only inside cand_layer's candidate blocks
                     const int64_t nblk = (cap + im.CBS - 1) / im.CBS, ncb = std::min<int64_t>(im.CB, nblk);
                     ggml_tensor * m = ggml_fill(gc, ggml_new_tensor_3d(gc, GGML_TYPE_F32, im.CBS, nblk, n), NEG_INF);
                     ggml_tensor * z = ggml_fill(gc, ggml_new_tensor_3d(gc, GGML_TYPE_F32, im.CBS, ncb, n), 0.0f);
@@ -652,7 +659,7 @@ static ggml_cgraph * build_attn(Ds41Dense::Impl & im, ggml_context * gc, int il,
                     m = ggml_view_2d(gc, m, cap, n, m->nb[2], 0);
                     sc = ggml_add(gc, sc, m);
                 }
-                if (L.cand_src) {   // model.py select_candidate_blocks: block score = max, newest block pinned
+                if (L.cand_src && !cand_all) {   // model.py select_candidate_blocks: block score = max, newest block pinned
                     const int64_t nblk = (cap + im.CBS - 1) / im.CBS, ncb = std::min<int64_t>(im.CB, nblk);
                     GGML_ASSERT(cap % im.CBS == 0);
                     ggml_tensor * bm = ggml_pool_2d(gc, sc, GGML_OP_POOL_MAX, (int) im.CBS, 1, (int) im.CBS, 1, 0, 0);   // [nblk, n]
