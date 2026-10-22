@@ -10,9 +10,9 @@
 #                                           (~10 minutes; the server must be stopped)
 #
 # Results are appended to local/ram-bench/summary.txt, one line per measure, so runs with different TAGs line up.
-# Decode depends on the RAM through the experts the CPU computes (12 threads, ~47-50 GB/s of 52-54 at FCLK 2000,
-# 2026-10-22); the 17K prompt reads more of them than the short one.  Turn power-tune on first (sudo local/power-tune.sh
-# on, or run it after run.sh installed it) so both sides of a comparison have it.
+# Decode depends on the RAM through the experts the CPU computes (the 17K prompt reads more of them than the short
+# one).  Turn power-tune on first (sudo local/power-tune.sh on): it changes the bandwidth itself - 51-54 GB/s off,
+# 61-62 GB/s on (2026-10-22, both under the tag fclk-current) - so both sides of a comparison need it.
 set -u
 cd "$(dirname "$0")/.."
 O=local/ram-bench

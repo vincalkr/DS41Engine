@@ -1,0 +1,6 @@
+exact                        sposi          diff=0    decode: 300 tokens in 15.66 s = 19.09 tok/s; experts 52299 hit / 10992 cpu / 0 pcie / 834 file (82.6% VRAM hits), cpu 2568 ms, file 1202 ms; spec reads 0 issued / 0 used;
+exact                        huge17k        diff=0    decode: 128 tokens in 9.63 s = 13.19 tok/s; experts 12727 hit / 9469 cpu / 0 pcie / 969 file (57.3% VRAM hits), cpu 2210 ms, file 1640 ms; spec reads 0 issued / 0 used; p
+rb20                         sposi          diff=0    decode: 300 tokens in 10.72 s = 27.90 tok/s; experts 71760 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0
+rb20                         huge17k        diff=0    decode: 128 tokens in 4.71 s = 26.98 tok/s; experts 30480 hit / 0 cpu / 0 pcie / 0 file (100.0% VRAM hits), cpu 0 ms, file 0 ms; spec reads 0 issued / 0 used; prefetch 0 
+rbdef                        sposi          diff=0    decode: 300 tokens in 12.93 s = 23.13 tok/s; experts 68569 hit / 2613 cpu / 0 pcie / 15 file (96.3% VRAM hits), cpu 629 ms, file 22 ms; spec reads 0 issued / 0 used; pref
+rbdef                        huge17k        diff=0    decode: 128 tokens in 5.46 s = 23.24 tok/s; experts 28373 hit / 1629 cpu / 0 pcie / 13 file (94.6% VRAM hits), cpu 391 ms, file 301 ms; spec reads 0 issued / 0 used; pref

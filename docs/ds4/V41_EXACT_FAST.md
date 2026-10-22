@@ -397,6 +397,10 @@ queued behind each other. So the card waits for the CPU tier most of the token.
 - RAM (`local/bench-v41/membw.c`): 12 threads streaming an 8 GiB buffer read 51.6-54.3 GB/s, the same with 4 KiB pages and transparent huge
   pages (6 / 24 threads: 52.0-54.3). The CPU experts run at ~47-50 GB/s (`cpu` ms against 9.7 MiB per expert), so
   they are at the RAM's limit: faster CPU kernels or huge pages cannot help them, only fewer of them or faster RAM.
+  **Corrected 2026-10-22:** those 51.6-54.3 GB/s were read with power-tune off. With it on (`local/ram-bench.sh`,
+  performance governor, C3 off) the same read is 60.8-62.5 GB/s, and the CPU experts of today's runs read ~44 GB/s
+  (Promessi Sposi: 10,992 experts x 9.7 MiB in 2.54 s). So they run ~25-30% under what the RAM gives: the limit is in
+  the CPU tier itself (threads, kernels, waits), and that is an open lever.
 - NVMe (Lexar NM1090 PRO, PCIe 5.0 x4, ext4; `local/bench-v41/nvme-blob-read.c`): O_DIRECT reads of 9.7 MiB at random offsets of the GSQ file take 3.01
   ms on 1 thread, 1.65 ms on 8, 1.24-1.27 ms on 16-32 (8.0-8.2 GB/s), and two to four blobs in flight reach 9.5-11
   GB/s. The engine pays 2.5-2.9 ms per read.
@@ -696,6 +700,19 @@ two-card flags, power-tune on, 200 tokens (`local/sweep-dspark/summary.txt`):
 ~55 ms a single-step token: even 4 accepted tokens a pass on code do not pay it back, because each pass reads the
 experts of every drafted token from RAM and the NVMe. The chat stays single-step. (The drafted text first differs from
 the single-step one after 24-177 tokens: the verify pass's batch shapes, as any GPU run here.)
+
+## Route bias, measured again (2026-10-22)
+
+The same two-card flags, power-tune on, one run each (`local/sweep-routebias/summary.txt`), not adopted (the route
+bias picks experts by where they are, so the answers change; HANDOVER.md section 3):
+
+| routing | Promessi Sposi | 17K context | VRAM hits |
+| --- | --- | --- | --- |
+| exact (`--route-bias 0 --route-bias-file 0`, the configuration) | 19.09 tok/s | 13.19 | 82.6% / 57.3% |
+| the engine's default bias (+1.0 / -0.6) | 23.13 (+21%) | 23.24 (+76%) | 96.3% / 94.6% |
+| `--route-bias 20` (everything in VRAM, speed only) | 27.90 | 26.98 | 100% |
+
+antirez/ds4 and project-maya route exactly too (their routers add only the model's own `exp_probs_b`).
 
 ## The RAM arena: 80 GiB (2026-10-22)
 

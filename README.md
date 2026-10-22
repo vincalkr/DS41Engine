@@ -111,6 +111,7 @@ card. With one card use `./run.sh --gpu 0` (the two-card default stops at startu
 
 - Server tests (no GPU or model): `.venv/bin/python -m unittest discover -s serve -p "test_*.py" -t .`
 - Measurement scripts: `local/bench-v41/` (one-shot sweeps, profiles, the server benchmark `serve-bench.py`);
-  quality: `local/eval-lucebox/`.
+  quality: `local/eval-lucebox/`; `local/ram-bench.sh TAG [--decode]` compares RAM bandwidth and decode across BIOS
+  settings (no arguments: the results so far).
 - [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md) - the configuration and every measurement behind it;
   [docs/ds4/AMD_HIP_NOTES.md](docs/ds4/AMD_HIP_NOTES.md) - the HIP port; [HANDOVER.md](HANDOVER.md) - the history.
