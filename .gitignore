@@ -109,3 +109,5 @@ build-vision-cuda12.bat
 /local/*.patch
 core
 core.[0-9]*
+/local/ram-bench/*
+!/local/ram-bench/summary.txt
