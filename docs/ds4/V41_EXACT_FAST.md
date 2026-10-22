@@ -680,6 +680,23 @@ The engine's default is 0 (the single park); the four configurations set 4096.
 A record is ~1.9 KB a position (`--kv-q8`): 49 MB for 25.5K tokens, ~380 MB for a 200K session; a save is queued in
 0.1-0.3 ms, a restore takes 4-7 ms. Pinned memory is taken in 256 MiB pieces as records need it, up to the budget.
 
+## DSpark with the 1017 drafter: slower here (2026-10-22)
+
+The 1017 drafter (`V41-MTP-Vision-1017.Q2_K.gguf` from kaushikvira/DeepSeek-V4.1-Flash-1017-GSQ-agentic-strata, 5.66 GB,
+the checkpoint's mtp.0-2 stack; the vision tower in it is not loaded), one-shot greedy (`STRATA_DSPARK`), the default
+two-card flags, power-tune on, 200 tokens (`local/sweep-dspark/summary.txt`):
+
+| | code-en | Promessi Sposi |
+| --- | ---: | ---: |
+| single-step | 16.47 tok/s | 18.70 tok/s |
+| depth 2 | 14.84 (2.78 tokens/pass) | 12.77 (1.88 tokens/pass) |
+| depth 4 | 15.28 (4.02 tokens/pass) | 10.06 (2.07 tokens/pass) |
+
+5.14 GB of weights on card 0 (the VRAM expert cache shrinks around them), a verify pass 167 ms at depth 2 against
+~55 ms a single-step token: even 4 accepted tokens a pass on code do not pay it back, because each pass reads the
+experts of every drafted token from RAM and the NVMe. The chat stays single-step. (The drafted text first differs from
+the single-step one after 24-177 tokens: the verify pass's batch shapes, as any GPU run here.)
+
 ## enc-skip and the candidate fast-path, measured (2026-10-22)
 
 `local/bench-v41/ab-cand-encskip.sh`: the default two-card flags, one-shot runs alternated, 3 each, power-tune on.
