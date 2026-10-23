@@ -494,8 +494,13 @@ class ConvCacheLog:
                       r"bytes=(\d+) budget=(\d+) dir=(.*)$")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
+    # a resume, for the server window: "conversation cache: restored N tokens (pool...) in X ms" and
+    # "conversation disk: restored N tokens in X ms"
+    RESTORED = re.compile(r"conversation (cache|disk): restored (\d+) tokens(?: \(([^)]*)\))? in ([\d.]+) ms")
+
     def __init__(self):
         self.key, self.pos = None, 0
+        self.pending = collections.deque(maxlen=32)   # restores not shown in the server window yet
         self.reset()
 
     def reset(self):
@@ -526,6 +531,11 @@ class ConvCacheLog:
         self.pos += end
         now = time.time()
         for line in data[:end].decode("utf-8", "replace").splitlines():
+            m = self.RESTORED.search(line)
+            if m:
+                self.pending.append({"from": "disk" if m.group(1) == "disk" else "RAM pool",
+                                     "partial": "partial" in (m.group(3) or ""), "tokens": int(m.group(2)),
+                                     "ms": float(m.group(4))})
             if "conversation disk:" in line:
                 m = self.DISK.search(line)
                 if m:
@@ -3519,12 +3529,29 @@ class Service:
         if path is not None:
             Path(path).unlink(missing_ok=True)
 
+    def report_restores(self, effort=None) -> None:
+        """The server window: a conversation the engine took back from its RAM pool or from disk for this request
+        (read from the engine's log, where it writes the resume before its first token)."""
+        log = getattr(self, "conv_log", None)
+        if log is None:
+            return
+        log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
+        while log.pending:
+            r = log.pending.popleft()
+            print(f"[{effort or 'strata'}] conversation restored from {r['from']}: {r['tokens']:,} tokens"
+                  f"{' (partial)' if r['partial'] else ''} in {r['ms']:.0f} ms", flush=True)
+
     def _note(self, n, evs, st=None, rate=None):
+        first = False
         with self.status_lock:
             s = self.status if st is None else st
             s["generated"] = n
             if s.get("first_token") is None:
                 s["first_token"] = time.time()
+                first = True
+        if first:
+            self.report_restores(s.get("effort"))
+        with self.status_lock:
             (self.rate if rate is None else rate).append((time.time(), n))   # the live rate's window (RATE_WINDOW_S)
             for ev in evs:
                 if ev.kind == "reasoning":

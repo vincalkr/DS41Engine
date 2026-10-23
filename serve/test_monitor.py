@@ -278,6 +278,29 @@ class ConversationCacheCard(unittest.TestCase):
             self.assertEqual((st["parked"], st["bytes"], st["last_event"]), (0, 0, "cleared"))
             self.assertEqual((st["disk"]["records"], st["disk"]["bytes"], st["disk"]["last_event"]), (0, 0, "cleared"))
 
+    def test_restores_reach_the_server_window(self):
+        import contextlib
+        import io
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.PARK +
+                           "strata serve: conversation disk: restored 25700 tokens in 51.1 ms; records=1 bytes=1 "
+                           "budget=2 dir=/x\n"
+                           "strata serve: conversation cache: restored 230 tokens (pool, partial) in 1.9 ms; parked=3 "
+                           "bytes=25139404\n", encoding="utf-8")
+            tok = ByteTokenizer()
+            engine = MockEngine(tok, "Hello.", max_context=4096)
+            engine.log_path, engine.log_start = str(log), 0
+            svc = Service(engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                svc.report_restores("high")
+                svc.report_restores("high")            # shown once
+            self.assertEqual(out.getvalue().splitlines(), [
+                "[high] conversation restored from disk: 25,700 tokens in 51 ms",
+                "[high] conversation restored from RAM pool: 230 tokens (partial) in 2 ms"])
+
     def test_clear_with_the_engine_not_loaded(self):
         # the engine is not running: the server deletes the saved conversations itself (only the rec-* folders)
         import tempfile
