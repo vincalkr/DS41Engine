@@ -57,6 +57,9 @@ local/fetch-model.sh                                                  # the mode
 
 Reasoning effort follows DeepSeek's encoder: `low` (50), `high` (75, default), `max` (100), a number 1-100, or `none`;
 as `reasoning_effort`, `reasoning.effort` (OpenAI) or `output_config.effort` / `thinking` (Anthropic).
+The level goes into the model's prompt (`Reasoning Effort: N`); the server also caps the thinking by level
+(`reasoning_budget_by_effort` in the configuration: low 1024 tokens, high 4096, max none - at the cap it closes the
+thinking and the model answers). A request's own `reasoning_budget_tokens` wins.
 
 ## Images (optional)
 

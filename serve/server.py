@@ -2739,6 +2739,7 @@ class Service:
         self.vram_reserve = None                         # #533: the last POST /v1/vram reserve (None: the start's)
         self.reasoning_loop_recovery = False
         self.reasoning_budget_tokens = 0                 # #123: the config's default thinking budget (0: none)
+        self.reasoning_budget_by_effort = {}             # {"low": N, "high": N, "max": N}: per level (0: none)
         self.repeat_stop_tokens = REPEAT_STOP_TOKENS     # #606: one token this many times in a row ends a reply (0: off)
         self.anthropic_think_unasked = True               # #278: "anthropic_thinking": "on_request" -> False
         self.tool_call_recovery = False                   # opt-in: tool calls in forms next to the template's
@@ -2865,13 +2866,30 @@ class Service:
         prompt from it would send nothing, #351).  Reporting only: requests are checked in prepare()."""
         return int(getattr(self.engine, "max_context", 0) or getattr(self.engine, "known_ctx", 0) or 0)
 
-    def reasoning_budget(self, req) -> int | None:
+    @staticmethod
+    def effort_level_name(effort) -> str | None:
+        """An effort tag (effort_tag) as one of the config's budget keys: "low" (up to 50), "high" (up to 75), "max"
+        (above); None for "off" or nothing."""
+        if effort in (None, "", "off", "strata"):
+            return None
+        if effort in ("low", "high", "max"):
+            return effort
+        try:
+            n = int(str(effort))
+        except ValueError:
+            return None
+        return "low" if n <= 50 else "high" if n <= 75 else "max"
+
+    def reasoning_budget(self, req, effort=None) -> int | None:
         """#123: the most tokens this request may think, or None: the request's `reasoning_budget_tokens`, else the
-        config's.  0 (or less) means no budget, so a request can turn a configured one off.  ValueError (a 400) for
-        anything that is not a whole number."""
+        config's for the request's effort level ("reasoning_budget_by_effort"), else the config's one value.  0 (or
+        less) means no budget, so a request can turn a configured one off.  ValueError (a 400) for anything that is
+        not a whole number."""
         value = (req or {}).get("reasoning_budget_tokens") if isinstance(req, dict) else None
         if value is None:
-            value = self.reasoning_budget_tokens
+            level = self.effort_level_name(effort)
+            value = self.reasoning_budget_by_effort.get(level, self.reasoning_budget_tokens) if level else \
+                self.reasoning_budget_tokens
         if isinstance(value, float) and value.is_integer():
             value = int(value)
         if isinstance(value, bool) or not isinstance(value, int):
@@ -3557,7 +3575,7 @@ class Service:
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
         # #123: read after the merge, so a budget shared through POST /settings is seen like the other keys
-        budget = self.reasoning_budget(sampling) if thinking else None
+        budget = self.reasoning_budget(sampling, getattr(self._req_tl, "effort", None)) if thinking else None
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
@@ -5969,6 +5987,15 @@ def main() -> int:
         if budget:
             print(f"[strata] thinking budget: {budget} tokens (reasoning_budget_tokens; a request can set its own)",
                   flush=True)
+    by_effort = cfg.get("reasoning_budget_by_effort")      # {"low": N, "high": N, "max": N}, 0 = no budget
+    if by_effort is not None:
+        if not isinstance(by_effort, dict) or any(k not in ("low", "high", "max") for k in by_effort) or any(
+                isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in by_effort.values()):
+            raise SystemExit("[strata] config \"reasoning_budget_by_effort\" must map low / high / max to whole numbers "
+                             f">= 0 (0 = no budget), not {by_effort!r}")
+        svc.reasoning_budget_by_effort = dict(by_effort)
+        print("[strata] thinking budget by effort: " + ", ".join(
+            f"{k} {v if v else 'none'}" for k, v in by_effort.items()), flush=True)
     recovery = cfg.get("reasoning_loop_recovery", False)   # #728: false (default) | "stop" | "recover" (true)
     if recovery is True:
         recovery = "recover"

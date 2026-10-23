@@ -3278,6 +3278,25 @@ class ThinkingBudget(unittest.TestCase):
         self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT)
         self.assertEqual(len(self.engine.prompts), 3)
 
+    def test_the_budget_by_effort(self):
+        """reasoning_budget_by_effort: the request's level picks the budget (low / high / max, a number by its band),
+        0 is none; the request's own reasoning_budget_tokens still wins, and "off" has none to apply."""
+        self.svc.reasoning_budget_tokens = 1024
+        self.svc.reasoning_budget_by_effort = {"low": 20, "high": 4096, "max": 0}
+        rb = self.svc.reasoning_budget
+        self.assertEqual((rb({}, "low"), rb({}, "high"), rb({}, "max")), (20, 4096, None))
+        self.assertEqual((rb({}, "30"), rb({}, "60"), rb({}, "90")), (20, 4096, None))   # numbers by their band
+        self.assertEqual((rb({}, None), rb({}, "off")), (1024, 1024))                     # no level: the one value
+        self.assertEqual(rb({"reasoning_budget_tokens": 99}, "max"), 99)                 # the request's own wins
+        self.svc.reasoning_budget_by_effort = {"low": 20}
+        self.assertEqual(rb({}, "high"), 1024)                                           # a level not listed
+        self.svc.reasoning_budget_by_effort = {"low": 20, "high": 0}
+        code, b = self.openai(reasoning_effort="low")                  # cut at 20: a second pass after the wrap-up
+        self.assertEqual(code, 200, b)
+        self.assertEqual(len(self.engine.prompts), 2)
+        code, b = self.openai(reasoning_effort="high")                 # no budget for high: the whole thought
+        self.assertEqual(b["choices"][0]["message"]["reasoning_content"], ThinkingEngine.THOUGHT)
+
     def test_a_shared_budget_reaches_a_request_that_sets_none(self):
         """The Chat settings shared with other apps may carry a thinking budget too, like max_tokens and the effort."""
         self.svc.set_shared({"reasoning_budget_tokens": 20})

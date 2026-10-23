@@ -75,5 +75,10 @@
  },
  "reasoning_loop_recovery": "recover",
  "reasoning_budget_tokens": 1024,
- "reasoning_close_retry": true
+ "reasoning_close_retry": true,
+ "reasoning_budget_by_effort": {
+  "low": 1024,
+  "high": 4096,
+  "max": 0
+ }
 }
