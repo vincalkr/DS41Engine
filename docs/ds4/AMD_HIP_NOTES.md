@@ -574,6 +574,20 @@ That is a second, hardware reason the peer expert tier could not win (its per-la
 of the dense half being 63% of the step. For two cards here, only work with little cross-traffic pays; a layer split
 or a peer store served over x2 does not.
 
+**Peer-to-peer, measured (2026-10-23).** HIP reports peer access both ways (`hipDeviceCanAccessPeer`, and
+`hipDeviceEnablePeerAccess` succeeds), but over this path it is no faster than going through pinned host memory, the
+way the peer tier hands its rows back today (`hipMemcpyAsync` + sync, median of 300):
+
+| bytes | card 1 -> pinned host | card 1 -> card 0, P2P |
+| ---: | ---: | ---: |
+| 16 KiB (one expert row) | 40.1 us | 46.3 us |
+| 48 KiB (three rows) | 26.1 us | 55.8 us |
+| 1 MiB | 335 us (3.1 GB/s) | 372 us (2.8 GB/s) |
+| 16 MiB | 5.12 ms (3.3 GB/s) | 5.13 ms (3.3 GB/s) |
+
+Small copies take twice as long peer to peer, large ones hit the same ~3.3 GB/s of the x2 link. The rows stay on the
+host path.
+
 ## Expert kernels on gfx1100: the AMD layouts are compiled out, and switching them on is slower
 
 `src/kernels/cuda/iq_kernels.cu` carries two families of grouped-expert kernels: the CUDA layout (mode 0,
