@@ -33,6 +33,15 @@ constexpr uint64_t pack_head(uint32_t epoch, uint32_t n, uint32_t i) {
 
 namespace {
 std::atomic<int> g_host_core{(int) HostCore::First};
+// STRATA_POOL_PROF=1 (measurement only): where a phase's wall time goes - waiting for the workers to park, from the
+// publish to the first claim (the wake), the drain, and the work the threads actually did - summed over the run and
+// printed when the pool ends.  Off: one relaxed load of a static per phase and per job.
+const bool g_pool_prof = std::getenv("STRATA_POOL_PROF") != nullptr;
+std::atomic<int64_t> g_pp_phases{0}, g_pp_park_ns{0}, g_pp_wall_ns{0}, g_pp_wake_ns{0}, g_pp_busy_ns{0}, g_pp_jobs{0};
+std::atomic<int64_t> g_pp_pub_ns{0}, g_pp_first_ns{0};
+inline int64_t pp_now() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 }  // namespace
 
 void set_host_core(HostCore where) { g_host_core.store((int) where); }
@@ -468,6 +477,16 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
 }
 
 ExpertPool::~ExpertPool() {
+    if (g_pool_prof && g_pp_phases.load() > 0) {
+        const double ph = (double) g_pp_phases.load(), thr = (double) (n_ + (host_works_ ? 1 : 0));
+        const double wall = g_pp_wall_ns.load() / 1e6, busy = g_pp_busy_ns.load() / 1e6;
+        std::fprintf(stderr, "pool prof: %.0f phases (%lld jobs) on %.0f threads: park waits %.1f ms, wall %.1f ms "
+                             "(%.1f us a phase, wake %.1f us a phase), work %.1f ms = %.0f%% of threads x wall; "
+                             "%.2f GB at %.1f GB/s over the wall\n",
+                     ph, (long long) g_pp_jobs.load(), thr, g_pp_park_ns.load() / 1e6, wall, 1e3 * wall / ph,
+                     g_pp_wake_ns.load() / 1e3 / ph, busy, 100.0 * busy / std::max(1e-9, wall * thr),
+                     multi_bytes / 1e9, wall > 0 ? multi_bytes / 1e6 / wall : 0.0);
+    }
     const ExpertPool* self = this;
     g_diag_pool.compare_exchange_strong(self, nullptr);
     stop_.store(true, std::memory_order_release);
@@ -615,6 +634,11 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
         const int ci = claim(epoch);
         if (ci < 0) break;
         const uint32_t i = (uint32_t) ci;
+        const int64_t j0 = g_pool_prof ? pp_now() : 0;
+        if (g_pool_prof) {   // the phase's first claim: its wake latency
+            int64_t z = 0;
+            g_pp_first_ns.compare_exchange_strong(z, j0, std::memory_order_relaxed);
+        }
         if (id >= 0) wstate_[(size_t) id].store(ci, std::memory_order_relaxed);
         else { hstate_.store(ci, std::memory_order_relaxed); hstate_ms_.store(now_ms(), std::memory_order_relaxed); }
         if (mode_ == 0) {
@@ -689,18 +713,37 @@ void ExpertPool::drain(int id, ExpertScratch& scratch, uint32_t epoch) {
                 r += r1 - r0;
             }
         }
+        if (g_pool_prof) {
+            g_pp_busy_ns.fetch_add(pp_now() - j0, std::memory_order_relaxed);
+            g_pp_jobs.fetch_add(1, std::memory_order_relaxed);
+        }
         done_.fetch_add(1, std::memory_order_release);
     }
 }
 
 void ExpertPool::run_phase(int mode, int n_tasks) {
+    const int64_t p0 = g_pool_prof ? pp_now() : 0;
     wait_parked("before a phase");
     mode_ = mode;
     njobs_ = n_tasks;
+    int64_t p1 = 0;
+    if (g_pool_prof) {
+        p1 = pp_now();
+        g_pp_first_ns.store(0, std::memory_order_relaxed);
+        g_pp_pub_ns.store(p1, std::memory_order_relaxed);
+    }
     const uint32_t e = begin_batch(n_tasks);
     if (host_works_) drain(-1, host_scratch_, e);
     wait_done(n_tasks);
+    const int64_t p2 = g_pool_prof ? pp_now() : 0;
     wait_parked("after a phase");
+    if (g_pool_prof) {
+        const int64_t p3 = pp_now(), first = g_pp_first_ns.load(std::memory_order_relaxed);
+        g_pp_phases.fetch_add(1, std::memory_order_relaxed);
+        g_pp_park_ns.fetch_add((p1 - p0) + (p3 - p2), std::memory_order_relaxed);
+        g_pp_wall_ns.fetch_add(p2 - p1, std::memory_order_relaxed);
+        if (first > p1) g_pp_wake_ns.fetch_add(first - p1, std::memory_order_relaxed);
+    }
     hstate_.store(kIdle, std::memory_order_relaxed);
     hstate_ms_.store(now_ms(), std::memory_order_relaxed);
 }

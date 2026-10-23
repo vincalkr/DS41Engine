@@ -59,7 +59,8 @@
   "STRATA_DENSE_NOCONT": "1",
   "STRATA_DENSE_ALIAS": "1",
   "STRATA_DENSE_REQUANT": "q6_K",
-  "STRATA_SERVE_STEP_MAX": "96"
+  "STRATA_SERVE_STEP_MAX": "96",
+  "STRATA_SUM_ZEROCOPY": "1"
  },
  "cwd": ".",
  "tokenizer": "models/ds4-1017/tokenizer",

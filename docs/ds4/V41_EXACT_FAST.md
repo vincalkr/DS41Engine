@@ -726,6 +726,27 @@ on, `local/sweep-disk/summary.txt`):
 A save costs 1-11 ms on the engine's thread after the answer; 47.8 MB on disk for 25.9K positions (~1.9 KB a position,
 ~380 MB for a 200K session).
 
+## The CPU tier's pool, profiled; the zero-copy sum on (2026-10-23)
+
+`STRATA_POOL_PROF=1` (new, measurement only; printed when the engine ends) times the CPU pool's phases: on Promessi
+Sposi 14,164 phases woke in 0.3 us each, spent 2.1 ms in all waiting for the workers to park, and kept 13 threads busy
+88% of the wall, reading 48.3 GB/s (17K: 89%, 47.8 GB/s). So the pool loses little to waking and joining; what is left
+against the 61 GB/s a plain read gets is the kernel reading and computing at once. `DS4_TIER_PROF=1` shows the stage
+after it, "sum", at 0.19-0.22 ms a layer (~8-9 ms a token): the CPU and peer rows to the card, the wait for card 1,
+the sum's launch.
+
+`STRATA_SUM_ZEROCOPY=1` (the sum reads the CPU's and card 1's rows from pinned host memory, ~105 fewer copies a token)
+was measured on 2026-10-20 in the bimodal runs, 2 each, unreadable. Again, power-tune on, six alternated rounds
+(`local/sweep-sumzc/summary.txt`), tok/s:
+
+| | Promessi Sposi, 300 tokens | 17K context, 128 tokens |
+| --- | --- | --- |
+| default | 20.19 18.64 20.05 19.57 19.68 19.87 = 19.67 | 13.37 13.09 14.86 13.94 14.32 14.23 = 13.97 |
+| `STRATA_SUM_ZEROCOPY=1` | 17.69 17.89 20.37 19.65 19.84 20.04 = 19.25 | 14.91 14.77 15.02 14.78 14.83 14.95 = **14.88** |
+
++6.5% at 17K in every round, and steadier; on prose the last three rounds (zero-copy run first) are each a little ahead,
+the two low ones of the first rounds stand alone. The configurations now set it.
+
 ## Route bias, measured again (2026-10-22)
 
 The same two-card flags, power-tune on, one run each (`local/sweep-routebias/summary.txt`), not adopted (the route
