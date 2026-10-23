@@ -51,7 +51,8 @@ local/fetch-model.sh                                                  # the mode
 - `./run.sh` uses cards 0 and 1; `./run.sh --gpu 0` (or `--gpu 1`) one card, `--gpu 0,1` both. The number of cards
   picks the configuration: `local/ds41-local-vision.json` / `local/ds41-local-1gpu-vision.json` when the vision
   encoder is in `models/vision-1017`, otherwise `local/ds41-local.json` / `local/ds41-local-1gpu.json`;
-  `--config FILE` uses that file. Other arguments go to the server (`./run.sh --port 8151`). Loading takes about a minute; the web chat and monitor
+  `--config FILE` uses that file. Other arguments go to the server (`./run.sh --port 8151`). `./stop.sh` stops a
+  server started in the background (as Ctrl+C would; `--force` kills it if it does not end in 60 s). Loading takes about a minute; the web chat and monitor
   are at `http://127.0.0.1:8150/`, the API at `/v1`. Never expose the server beyond `127.0.0.1` without `--api-key`.
 
 Reasoning effort follows DeepSeek's encoder: `low` (50), `high` (75, default), `max` (100), a number 1-100, or `none`;
