@@ -151,9 +151,9 @@ int native_gu_mt_min(int gu_type) {
     static const bool iq3s_one = env == nullptr && std::getenv("STRATA_IQ3S_MT1") != nullptr && cpu_avx2_ok() && std::getenv("STRATA_NO_IQ256") == nullptr &&
                                  !cpu_avx512_ok() && iq256_gather_setting() != 0 && cpu_gather_fast();
     // IQ1_M rows are bit-exact against ggml-cpu's vec_dot, but the AVX-512 kernel only wins from four tokens on:
-    // measured 2026-10-24 at ns per row-token on a Ryzen 9 9900X, nt2 197 vs 133, nt3 142 vs 132, nt4 122 vs 134,
-    // nt7 110 vs 131.  So without STRATA_IQ_MT_MIN its default is that crossover.
-    if (env == nullptr && gu_type == (int) GGML_TYPE_IQ1_M) return 5;
+    // measured 2026-10-24 at ns per row-token on a Ryzen 9 9900X, nt2 195.47 vs 132.61, nt3 141.97 vs 133.44, nt4 121.66 vs 140.22,
+    // nt7 111.20 vs 133.87.  So without STRATA_IQ_MT_MIN its default is that crossover.
+    if (env == nullptr && gu_type == (int) GGML_TYPE_IQ1_M) return 4;
     return iq3s_one && gu_type == 25 ? 1 : mt_min;
 }
 

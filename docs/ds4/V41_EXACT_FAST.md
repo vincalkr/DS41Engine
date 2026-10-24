@@ -864,11 +864,17 @@ ns per row-token, the AVX-512 kernel against ggml-cpu's dispatched vec_dot.
 | 6 | 133.46 | 111.79 |
 | 7 | 133.87 | 111.20 |
 
-One to three tokens stay on ggml-cpu (`native_gu_mt_min`: default four for IQ1_M without `STRATA_IQ_MT_MIN`, measured
-357 / 195 / 142 ns there); from four tokens the kernel wins,
-122 -> 111 ns as the group grows. The integer sums times d_x*d_y reproduce ggml-cpu bit-exactly
-in all 168 comparisons of that test (the generic reference and the dispatched vec_dot). Down projections take the same
-kernel when their format is IQ1_M; other down formats keep their existing paths.
+A separate check used the published pack itself (`blk.12.ffn_down_exps.weight`, IQ1_M): a 131072-byte range
+read from shard one of https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF starting at file offset
+34722813824 covered 96 complete rows of 2304 columns (504 B a row); all 480/480
+dots were bit-exact against ggml-cpu's generic dot (max abs difference 0). On those real blocks ggml-cpu took
+75.74 ns per row-token at four tokens and this kernel 67.71.
 
-No engine A/B tok/s number yet: the GSQ-RCO pack is not downloaded on this box (249 GB over the network) and none of
-the local models has IQ1_M experts - what was measured is the CPU kernel itself.
+One to three tokens stay on ggml-cpu (`native_gu_mt_min` returns four for IQ1_M without `STRATA_IQ_MT_MIN`, measured
+356.51 / 195.47 / 141.97 ns per row-token there); from four the kernel wins, 121.66 -> 111.20 ns.
+The integer sums times d_x*d_y reproduce ggml-cpu bit-exactly in every comparison above: 168 of 168 dots in the synthetic test,
+480 of 480 in the published slice, max abs difference zero.
+
+Down projections take the same kernel when their format is IQ1_M at the same token threshold; other down formats keep
+their existing paths. No engine A/B tok/s number yet: the GSQ-RCO pack is not downloaded on this box (~249 GB over the
+network) and none of the local models has IQ1_M experts - what was measured is the CPU kernel itself.
