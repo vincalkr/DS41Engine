@@ -842,3 +842,33 @@ Default flags (no `--peer-device`), greedy 96 tokens on `local/prompts/code_revi
 5. **A better expert predictor** for speculative file reads: today's uses 4-5% of what it reads and loses.
 
 Done since the earlier list: the adaptive peer store (`STRATA_PEER_ADAPT`), graph replay (on).
+
+## CPU i-quant expert rows: IQ1_M in AVX-512 (2026-10-24)
+
+The CPU-pool kernel `src/kernels/cpu/iq_avx512.cpp` covers IQ2_XXS, IQ2_XS, IQ3_XXS, IQ3_S and IQ2_S, and now also
+IQ1_M; the same format list is in `include/strata/kernels/cpu/iq_avx512.hpp`. IQ1_M matters here because the published
+GSQ-RCO pack mixes it into its routed experts: over its 40 layers 60 of the 128 gate/up/down roles are IQ1_M (mean
+expert blob 7,453,440 B against our Q2's 9,953,280 B), so those rows can be served by this machine's CPU pool at ~25K
+context and above.
+
+Measured with `test_strata_iq1m` (48 rows x 4096 columns, five alternating trials per token count, Ryzen 9 9900X):
+ns per row-token, the AVX-512 kernel against ggml-cpu's dispatched vec_dot.
+
+| tokens | ggml-cpu | AVX-512 IQ1_M |
+|---:|---:|---:|
+| 1 | 131.58 | 356.51 |
+| 2 | 132.61 | 195.47 |
+| 3 | 133.44 | 141.97 |
+| 4 | 140.22 | 121.66 |
+| 5 | 135.12 | 116.42 |
+| 6 | 133.46 | 111.79 |
+| 7 | 133.87 | 111.20 |
+
+One to three tokens stay on ggml-cpu (`native_gu_mt_min`: default four for IQ1_M without `STRATA_IQ_MT_MIN`, measured
+357 / 195 / 142 ns there); from four tokens the kernel wins,
+122 -> 111 ns as the group grows. The integer sums times d_x*d_y reproduce ggml-cpu bit-exactly
+in all 168 comparisons of that test (the generic reference and the dispatched vec_dot). Down projections take the same
+kernel when their format is IQ1_M; other down formats keep their existing paths.
+
+No engine A/B tok/s number yet: the GSQ-RCO pack is not downloaded on this box (249 GB over the network) and none of
+the local models has IQ1_M experts - what was measured is the CPU kernel itself.
