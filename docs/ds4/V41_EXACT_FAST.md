@@ -875,6 +875,13 @@ One to three tokens stay on ggml-cpu (`native_gu_mt_min` returns four for IQ1_M 
 The integer sums times d_x*d_y reproduce ggml-cpu bit-exactly in every comparison above: 168 of 168 dots in the synthetic test,
 480 of 480 in the published slice, max abs difference zero.
 
+The expert API was checked too (`native_fmt`, `native_gu_rows`, `native_down_rows` on a quantized synthetic layer):
+at three tokens it calls ggml-cpu's per-token dot, at five this kernel; gate/up rows agree within 2.72759e-06 relative and
+down rows within 2.32107e-05 (ggml-cpu's own dispatched dot differs from its generic reference in 1787 of 3072 comparisons,
+max abs 7.6e-06). Against that generic reference through silu(gate)*up the gate/up rows are exact in 2304 of 2304
+comparisons (max relative difference 0), and the down rows served by this kernel are bit-exact in 3072 of 3072
+with max abs difference zero.
+
 Down projections take the same kernel when their format is IQ1_M at the same token threshold; other down formats keep
 their existing paths. No engine A/B tok/s number yet: the GSQ-RCO pack is not downloaded on this box (~249 GB over the
 network) and none of the local models has IQ1_M experts - what was measured is the CPU kernel itself.
