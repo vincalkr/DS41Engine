@@ -3,7 +3,7 @@
 #
 #   local/rebuild-rank.sh [chat-weight]      (default 1: one chat selection counts as one corpus selection)
 #
-# The default configuration runs the engine with --dump-routes local/routes-1017: the server adds every (layer,
+# The default configuration runs the engine with --dump-routes local/routes-rco: the server adds every (layer,
 # expert) selection it routes and writes LNN.json there after each request (the counts survive restarts).  This
 # script sums those counts (times chat-weight) with local/calib-q2/stats-merged, ranks the sum and writes
 # local/rank-1017.bin.  It does not apply it: local/update-rank.sh measures it against the rank in use and applies it
@@ -11,7 +11,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 W="${1:-1}"
-ROUTES="${ROUTES:-local/routes-1017}"
+ROUTES="${ROUTES:-local/routes-rco}"
 MAP="${MAP-}"
 OUT="${OUT:-local/rank-1017.bin}"
 STATS="${OUT%.bin}.stats"

@@ -11,23 +11,24 @@ wherever it is: card 0's VRAM, the second card, an 80 GiB pinned RAM arena, or r
 
 ## Performance
 
-Two RX 7900 XTX, Ryzen 9 9900X, 122 GiB RAM, PCIe 5.0 NVMe, ROCm 7.14, the default configuration with power-tune
-on (2026-10-20/21):
+Two RX 7900 XTX, Ryzen 9 9900X, 122 GiB RAM, PCIe 5.0 NVMe, ROCm 7.14, the default configuration's flags with
+power-tune on, the GSQ-RCO pack (2026-10-26, one-shot runs, 3 each):
 
 | | |
 | --- | ---: |
-| decode, short answers (through the server) | 18.5-20.7 tok/s |
-| decode at ~25K context (through the server) | 19.6 tok/s |
-| decode in an agent session at ~120K context | 16.1-17.4 tok/s |
-| prompt, 25.5K tokens from scratch | ~350-370 tok/s |
-| prompt, a +497-token agent turn on 121K context | 7.5 s |
+| decode, Promessi Sposi (300 tokens) | 23.2-23.7 tok/s |
+| decode at 17K context (128 tokens) | 18.4-19.2 tok/s |
+| prompt from scratch, 8K / 17K / 25.5K tokens | 371-414 / 433-459 / 458-484 tok/s |
 
-Quality against the 1017 FP8 on Lucebox's held-out set (8 x 1024 tokens): ppl 9.78 (FP8 8.56), top-1 agreement 78.8%,
-KL 0.269 - measured on the pack this box ran until 2026-10-25, antirez/ds4's Q2. The Lucebox number of the GSQ-RCO
-pack it runs today is not measured yet. Its decode was (chat closed, `local/bench-v41/ab-rco-iq2xxs.sh`, 2 runs each,
-every arm forced on one reference token stream): 20.0 tok/s on Promessi Sposi (300 tokens) and 13.4 on the 17K prompt
-(128 tokens), against the Q2's 19.1 and 12.3 measured the same way. Every number and how it was measured:
-[docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
+On antirez/ds4's Q2, the pack this box ran until 2026-10-25, the same prompts read 314-332 / 360-366 / 385-396 tok/s,
+and through the server: 18.5-20.7 tok/s on short answers, 19.6 at ~25K context, 16.1-17.4 in an agent session at
+~120K, a +497-token agent turn on 121K context in 7.5 s (2026-10-20/21; not yet measured through the server on the
+GSQ-RCO pack).
+
+Quality on Lucebox's held-out set (8 x 1024 tokens, exact routing): ppl 10.37 with the checkpoint's FP8 Engram rows,
+10.33 with the pack's own iq4_nl table (KL 0.026 between the two). The FP8 1017 itself reads 8.56 and antirez/ds4's
+Q2 9.78 (measured 2026-10-20 with a teacher file that is no longer on this box, so the RCO pack's teacher agreement is
+not measured). Every number and how it was measured: [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
 
 ## Requirements
 
@@ -51,7 +52,8 @@ local/fetch-rco-1017.sh                                               # everythi
 
 - `local/fetch-rco-1017.sh` downloads the four shards and the pack's Engram IQ4_NL GGUF with `aria2c` (4 connections,
   `CONN`), checks each sha256, and writes the geometry overlay `local/rco-iq2xxs-meta/meta.gguf` with
-  `tools/v41/ds41_pack_meta.py` (its reference geometry is the 5.8 MB header kept beside it) plus the rank byte map.
+  `tools/v41/ds41_pack_meta.py` (its reference geometry is `local/rco-iq2xxs-meta/geometry-keys.json`, 8 KB, in the
+  repo) plus the rank byte map.
 - The engine reads the Engram rows in either form, and `local/fetch-rco-1017.sh` brings the one that comes with the pack
   (iq4_nl, 144 bytes a row). The checkpoint's native FP8 rows (264 bytes a row) are the other: `local/fetch-model.sh`
   downloads [antirez/ds4](https://github.com/antirez/ds4)'s Q2 pack and `local/ds4-engram-extract.py` cuts the two tables
@@ -89,7 +91,7 @@ costs 189-1014 prompt tokens. The September encoder (antirez's `DeepSeek-V4.1-Fl
 The engine keeps every conversation a request does not continue in a 4 GiB pool of pinned RAM
 (`--conversation-cache-mib`, ~380 MB for a 200K-token session) and resumes the one a request continues: two
 conversations taking turns, 17K and 25.5K tokens, went from 36.9 to 6.9 s a turn. They are also saved in
-`local/conv-cache` (`--conversation-disk`, up to 32 GiB), so a restarted server resumes a 25.7K-token session in 6.5 s
+`local/conv-cache-rco` (`--conversation-disk`, up to 32 GiB), so a restarted server resumes a 25.7K-token session in 6.5 s
 instead of reading it again (~65 s). The Monitor shows the folder and its size, and a button clears them all
 ([docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), "The conversation pool", "Conversations on disk").
 
@@ -110,7 +112,7 @@ sudo local/install-power-tune.sh             # a root-owned copy and a sudo rule
 ## Expert rank
 
 Which experts live in VRAM and in the RAM arena follows a rank of the most used ones (`local/rank-q2.bin`). The server
-counts what the router picks (`local/routes-1017`); `local/update-rank.sh` builds a new rank from those counts, measures
+counts what the router picks (`local/routes-rco`); `local/update-rank.sh` builds a new rank from those counts, measures
 it against the one in use (~25 minutes, the server stopped meanwhile) and applies it only if it is faster.
 
 ## Another machine
