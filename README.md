@@ -54,13 +54,13 @@ local/fetch-rco-1017.sh                                               # everythi
   `CONN`), checks each sha256, and writes the geometry overlay `local/rco-iq2xxs-meta/meta.gguf` with
   `tools/v41/ds41_pack_meta.py` (its reference geometry is `local/rco-iq2xxs-meta/geometry-keys.json`, 8 KB, in the
   repo) plus the rank byte map.
-- The engine reads the Engram rows in either form, and `local/fetch-rco-1017.sh` brings the one that comes with the pack
-  (iq4_nl, 144 bytes a row). The checkpoint's native FP8 rows (264 bytes a row) are the other: `local/fetch-model.sh`
-  downloads [antirez/ds4](https://github.com/antirez/ds4)'s Q2 pack and `local/ds4-engram-extract.py` cuts the two tables
-  out of it into `models/engram-1017` (101 GB a layer) - that pack is only their source, it can go once they are out
-  (re-extractable with `LAYERS=14 local/ds4-engram-extract.py <pack> models/engram-1017`). A configuration naming tables
-  this machine does not have still runs: the engine falls back to the pack's own table beside the pack and prints it.
-  Both forms measured: docs/ds4/V41_EXACT_FAST.md.
+- The Engram tables come in two forms and the engine reads either. `local/fetch-rco-1017.sh` brings the pack's own
+  (iq4_nl, 144 bytes a row, 111 GB), and that is all a new machine needs. The checkpoint's native FP8 rows (264 bytes
+  a row, 203 GB in `models/engram-1017`) measured the same on Lucebox (ppl 10.37 against 10.33, KL 0.026) and are only
+  had by downloading [antirez/ds4](https://github.com/antirez/ds4)'s 366 GB Q2 pack with `local/fetch-model.sh` and
+  cutting them out with `local/ds4-engram-extract.py`; the pack can be deleted afterwards (extracting again needs it
+  back). The default configuration names the FP8 tables; where they are missing the engine uses the iq4_nl table
+  beside the pack and prints that it does.
 - `./build.sh` builds the vendored ggml (`third_party/llama.cpp/ggml`) into `third_party/llama.cpp/build-hip`, then the
   engine into `build-hip-fused`; `ROCM`, `GFX`, `JOBS`, `REBUILD_GGML=1` from the environment.
 - `./run.sh` uses cards 0 and 1; `./run.sh --gpu 0` (or `--gpu 1`) one card, `--gpu 0,1` both. The number of cards
