@@ -240,7 +240,7 @@ public:
                       std::string& err) const;
 
 private:
-    struct Span { uint64_t off = 0, bytes = 0; };
+    struct Span { uint64_t off = 0, bytes = 0; uint8_t shard = 0; };
     void spans(int64_t l, int64_t e, Span s[3]) const;
     /// One 4096-aligned `pread` of [off, off+n) through the O_DIRECT twin fd, sliced out of `scratch`.  False when
     /// there is no twin fd or the bounce is too small (the caller then falls back to the buffered `read`).
@@ -256,9 +256,10 @@ private:
     mutable std::mutex bmu_;
     mutable std::vector<uint8_t*> bfree_, ball_;
     bool part_direct_ = true;    ///< read_part through the O_DIRECT twin (STRATA_DECODE_DIRECT=0: buffered)
+    /// One open pair per shard of a split GGUF (an expert class can live in a different shard than another).
+    std::vector<int> fds_;
+    std::vector<int> odfds_;     ///< O_DIRECT twins of fds_ (-1 where the filesystem refused it)
     std::string path_;
-    int fd_ = -1;
-    int dfd_ = -1;               ///< O_DIRECT twin of fd_ (-1 where the filesystem refused it)
     std::unique_ptr<NvmeKeepAlive> keep_;   ///< STRATA_NVME_KEEPALIVE_US: keeps the drive awake while the tier reads
     size_t scratch_ = 0;         ///< the aligned bounce one read_direct span needs
     Ds41MoeGeom g_;
@@ -266,6 +267,7 @@ private:
     std::vector<uint64_t> base_;          ///< [layer * 3 * n_types...] see .cpp
     std::vector<int32_t> slot_gu_, slot_d_;
     std::vector<uint64_t> gate_off_, up_off_, down_off_;   ///< per (layer, expert): absolute file offsets
+    std::vector<uint8_t> gate_sh_, up_sh_, down_sh_;       ///< and the shard each offset belongs to
     std::vector<uint32_t> gu_rb_, d_rb_;                   ///< per class: row bytes of gate/up and of down
 };
 

@@ -13,7 +13,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-MODEL="${MODEL:-$PWD/models/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"
+MODEL="${MODEL:-$PWD/models/rco-iq2xxs/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf}"
+export DS41_META="${DS41_META-local/rco-iq2xxs-meta/meta.gguf}"
 RANK="${RANK:-$PWD/local/rank-q2.bin}"
 EXE="${EXE:-$PWD/build-hip-pre/ds41_generate}"
 ARENA="${ARENA_GIB:-60}"

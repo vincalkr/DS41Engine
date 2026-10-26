@@ -6,7 +6,10 @@
 set -u
 cd "$(dirname "$0")/../.."
 OUT=$1 PROMPT=$2 N=$3 TAG=$4 ENVS=$5; shift 5
-Q2="${Q2:-models/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf}"
+Q2="${Q2:-models/rco-iq2xxs/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf}"
+# the GSQ-RCO pack has no deepseek41.* keys of its own: the geometry overlay (tools/v41/ds41_pack_meta.py)
+# travels with it.  A ds4 pack ignores a DS41_META that is set by mistake (the tensor names follow the pack).
+export DS41_META="${DS41_META-local/rco-iq2xxs-meta/meta.gguf}"
 RANK="${RANK:-local/rank-q2.bin}"
 ENGRAM="${ENGRAM:-models/engram-1017/layers14:models/engram-1017/layers1}"
 ARENA="${ARENA:-90}"

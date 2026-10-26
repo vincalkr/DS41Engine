@@ -9,7 +9,7 @@ prefill of the same prompt as closely as the batch-shape noise of a known-good c
   check_conv_reuse.py --bin build-hip-fused/ds41_generate --scenario park_partial [--ref-bin B2] [--tail 20]
 
 The prompts are token runs of README.md / HANDOVER.md / docs/ds4/V41_EXACT_FAST.md, tokenized with the server's
-tokenizer (models/ds4-1017/tokenizer); --model and --engram default to the 1017 Q2 and its tables in models/.
+tokenizer (models/rco-iq2xxs/tokenizer); --model and --engram default to the pack this box runs and its tables.
 
 Scenarios: disk (two turns, the engine restarted with the same --conversation-disk directory, then the same prompt
 and one more turn), abc (three conversations in turn - with --extra "--conversation-cache-mib N" the pool resumes them),
@@ -195,9 +195,9 @@ def main():
     ap.add_argument("--bin", required=True)
     ap.add_argument("--ref-bin", help="the fresh-prefill engine (default: --bin)")
     root = Path(__file__).resolve().parents[3]
-    ap.add_argument("--model", default=str(root / "models/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf"))
+    ap.add_argument("--model", default=str(root / "models/rco-iq2xxs/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf"))
     ap.add_argument("--engram", default=f"{root}/models/engram-1017/layers14:{root}/models/engram-1017/layers1")
-    ap.add_argument("--tokenizer", default=str(root / "models/ds4-1017/tokenizer"),
+    ap.add_argument("--tokenizer", default=str(root / "models/rco-iq2xxs/tokenizer"),
                     help="the server's tokenizer directory (vocab.json, merges.txt, token_type.json)")
     ap.add_argument("--scenario", required=True)
     ap.add_argument("--threads", type=int, default=12)

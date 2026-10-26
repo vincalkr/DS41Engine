@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -199,12 +200,55 @@ static void run_module(const std::string & gguf, const std::string & dir, const 
     }
 }
 
+// Two sources of the same Engram rows (the checkpoint's FP8 safetensors and a pack's iq4_nl GGUF): the same hashes
+// through both, and the arithmetic distance between the rows they return.  This is the number that says what reading
+// the pack's own table form costs in quality, without touching the model.
+static void compare_tables(const std::string & gguf, const std::vector<std::string> & a_dirs,
+                           const std::vector<std::string> & b_dirs, const std::vector<int32_t> & seqv, int n, int threads) {
+    GgufModel m = GgufModel::open(gguf);
+    Ds41Geometry G;
+    std::string e = ds41_read_geometry(m, G);
+    if (!e.empty()) { std::fprintf(stderr, "bench: geometry: %s\n", e.c_str()); std::exit(1); }
+    Ds41Engram A, B;
+    if (!A.open(G, a_dirs, threads, e)) { std::fprintf(stderr, "bench: tables A: %s\n", e.c_str()); std::exit(1); }
+    if (!B.open(G, b_dirs, threads, e)) { std::fprintf(stderr, "bench: tables B: %s\n", e.c_str()); std::exit(1); }
+    for (int64_t i = 0; i < n; ++i) { A.set_token(i, seqv[(size_t) i]); B.set_token(i, seqv[(size_t) i]); }
+    std::vector<std::vector<float>> ra, rb;
+    const double t0 = now_s(), t1 = now_s();
+    if (!A.rows(0, n, ra, e)) { std::fprintf(stderr, "bench: A rows: %s\n", e.c_str()); std::exit(1); }
+    const double dtA = now_s() - t1;
+    if (!B.rows(0, n, rb, e)) { std::fprintf(stderr, "bench: B rows: %s\n", e.c_str()); std::exit(1); }
+    const double dtB = now_s() - t0 - dtA;
+    double maxabs = 0.0, sumabs = 0.0, maxrel = 0.0;
+    uint64_t total = 0, differ = 0;
+    for (size_t sl = 0; sl < ra.size(); ++sl) {
+        for (size_t i = 0; i < ra[sl].size(); ++i) {
+            const float x = ra[sl][i], y = rb[sl][i];
+            const double d = std::fabs((double) x - (double) y);
+            maxabs = std::max(maxabs, d);
+            sumabs += d;
+            const double m = std::fabs((double) x);
+            if (m > 1e-6) maxrel = std::max(maxrel, d / m);
+            ++total;
+            differ += (x != y);
+        }
+    }
+    std::printf("cmp %d tokens: rows %zu A / %zu B, values %" PRIu64 ", differ %" PRIu64 " (%.1f%%)\n",
+                n, A.row_reads(), B.row_reads(), total, differ, 100.0 * (double) differ / (double) total);
+    std::printf("    A: %.2f s, %" PRIu64 " B read, %.0f rows/s   B: %.2f s, %" PRIu64 " B read, %.0f rows/s\n",
+                dtA, A.bytes_read(), (double) A.row_reads() / dtA, dtB, B.bytes_read(), (double) B.row_reads() / dtB);
+    std::printf("    row distance: max abs %.4f  mean abs %.6f  max rel %.4f  (against A's magnitudes)\n",
+                maxabs, sumabs / (double) total, maxrel);
+}
+
 int main(int argc, char ** argv) {
     std::string gguf, dir, seq, raw_file, raw_mode = "pread";
     std::vector<int> toks;
     int threads = 16, reps = 3, check_n = 0;
     bool cold = false;
     int split = 0;
+    std::string cmp_to;
+    int cmp_n = 4096;
     int64_t raw_n = 20000, raw_size = 4096;
     std::vector<int> raw_threads_v = { 1, 4, 8, 16, 32 };
     bool raw_drop = false;
@@ -221,6 +265,8 @@ int main(int argc, char ** argv) {
         else if (k == "--check") check_n = std::atoi(nxt().c_str());
         else if (k == "--cold") cold = true;
         else if (k == "--split") split = 1;
+        else if (k == "--cmp-to") cmp_to = nxt();
+        else if (k == "--cmp-n") cmp_n = std::atoi(nxt().c_str());
         else if (k == "--raw") raw_file = nxt();
         else if (k == "--raw-n") raw_n = std::atoll(nxt().c_str());
         else if (k == "--raw-threads") { std::string s = nxt(); raw_threads_v.clear(); size_t p = 0; while (p <= s.size()) { size_t q = s.find(',', p); raw_threads_v.push_back(std::atoi(s.substr(p, q - p).c_str())); if (q == std::string::npos) break; p = q + 1; } }
@@ -239,6 +285,20 @@ int main(int argc, char ** argv) {
                     (double) st.st_size / (1024.0 * 1024 * 1024), raw_lo, raw_hi,
                     (double) (raw_hi - raw_lo) / (1024.0 * 1024 * 1024), raw_drop ? "  cold" : "  warm");
         for (int t : raw_threads_v) raw_bench(raw_file, raw_n, t, raw_mode, raw_lo, raw_hi, raw_size, raw_drop);
+        return 0;
+    }
+    if (!cmp_to.empty()) {
+        auto seqv = load_i32(seq);
+        std::vector<std::string> a_dirs, b_dirs;
+        auto split_dirs = [&](const std::string & d, std::vector<std::string> & v) {
+            for (size_t x = 0, y; x <= d.size(); x = y + 1) { y = d.find(':', x); if (y == std::string::npos) y = d.size(); if (y > x) v.push_back(d.substr(x, y - x)); }
+        };
+        split_dirs(dir, a_dirs); split_dirs(cmp_to, b_dirs);
+        if (gguf.empty() || a_dirs.empty() || b_dirs.empty() || seqv.empty()) {
+            std::fprintf(stderr, "usage: bench_ds41_engram --gguf G --dir DIRS --cmp-to DIRS_OR_GGUF --seq S [--cmp-n 4096]\n");
+            return 2;
+        }
+        compare_tables(gguf, a_dirs, b_dirs, seqv, std::min<int>(cmp_n, (int) seqv.size()), threads);
         return 0;
     }
     if (toks.empty()) toks = { 1, 512, 1024, 4096 };

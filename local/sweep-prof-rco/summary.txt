@@ -1,0 +1,2 @@
+decprof                      sposi          diff=2    decode: 300 tokens in 12.67 s = 23.59 tok/s; experts 55375 hit / 10583 cpu / 0 pcie / 193 file (84.0% VRAM hits), cpu 1934 ms, file 245 ms; spec reads 0 issued / 0 used; 
+decprof                      huge17k        diff=1    decode: 128 tokens in 6.91 s = 18.37 tok/s; experts 15942 hit / 9444 cpu / 0 pcie / 278 file (62.8% VRAM hits), cpu 1725 ms, file 363 ms; spec reads 0 issued / 0 used; pr

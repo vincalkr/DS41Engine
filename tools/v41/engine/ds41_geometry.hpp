@@ -15,9 +15,11 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unistd.h>
@@ -211,8 +213,22 @@ inline std::string json_num(const std::string & js, const std::string & key, dou
 }
 }  // namespace detail
 
+/// DS41_META=<GGUF> is an opt-in metadata overlay: geometry and Engram arrays come from that file while tensor data
+/// stays in the pack being opened (an RCO / ISTA-DASLab style pack whose names/types differ).  Off by default.
+inline bool ds41_foreign_pack() {
+    const char * e = std::getenv("DS41_META");
+    return e && *e;
+}
+
 inline std::string ds41_read_geometry(const GgufModel & model, Ds41Geometry & G) {
-    const GgufFile & g = model.meta();
+    std::unique_ptr<GgufModel> meta_model;
+    const GgufFile * gp = &model.meta();
+    if (const char * mp = std::getenv("DS41_META"); mp && *mp) {
+        try { meta_model = std::make_unique<GgufModel>(std::vector<std::string>{ mp }); }
+        catch (const std::exception & e) { return std::string("DS41_META: ") + e.what(); }
+        gp = &meta_model->meta();
+    }
+    const GgufFile & g = *gp;
     const MetaValue * arch = g.get("general.architecture");
     if (!arch || arch->s != "deepseek41") return "not a deepseek41 GGUF";
     std::string e;
@@ -297,6 +313,7 @@ inline std::string ds41_read_geometry(const GgufModel & model, Ds41Geometry & G)
 inline std::string ds41_check_tensors(const GgufModel & m, Ds41Geometry & G, const std::vector<int64_t> & layers) {
     std::map<std::string, std::pair<std::vector<uint64_t>, uint32_t>> want;   // name -> (shape GGUF order, type; ~0 = any)
     const uint32_t ANY = ~0u;
+    const bool foreign = ds41_foreign_pack();
     auto add = [&](const std::string & n, std::vector<uint64_t> sh, uint32_t t) { want[n] = { std::move(sh), t }; };
     const uint64_t D = (uint64_t) G.n_embd, HC = (uint64_t) G.hc, MIX = (uint64_t) G.hc_mix();
     const uint64_t DH = (uint64_t) G.d_head, NH = (uint64_t) G.n_head, RQ = (uint64_t) G.r_q;
@@ -335,14 +352,24 @@ inline std::string ds41_check_tensors(const GgufModel & m, Ds41Geometry & G, con
         }
         add(b + "ffn_gate_inp.weight", { D, NE }, ty::F32);
         add(b + "exp_probs_b.bias", { NE }, ty::F32);
-        add(b + "exp_probs_b_vl.bias", { NE }, ty::F32);
+        // RCO packs carry no vision-bias vector; a ds4 pack with DS41_META set by mistake still has to show it.
+        if (!foreign || m.find(b + "exp_probs_b_vl.bias")) add(b + "exp_probs_b_vl.bias", { NE }, ty::F32);
         add(b + "ffn_gate_shexp.weight", { D, FF }, ty::Q8_0);
         add(b + "ffn_up_shexp.weight", { D, FF }, ty::Q8_0);
         add(b + "ffn_down_shexp.weight", { FF, D }, ty::Q8_0);
         if (G.engram_slot(l) >= 0) {
-            add(b + "engram_q_norm.weight", { D, HC }, ty::F32);
-            add(b + "engram_k_norm.weight", { D, HC }, ty::F32);
-            add(b + "engram_kv.weight", { (uint64_t) ((G.engram_ngram - 1) * G.engram_heads * G.engram_dim), (HC + 1) * D }, ty::F16);
+            const uint64_t ekv = (uint64_t) ((G.engram_ngram - 1) * G.engram_heads * G.engram_dim);
+            // Which of the two name families this pack uses is a property of the pack, not of the overlay: an antirez
+            // ds4 pack keeps q_norm / k_norm / kv, a GSQ-RCO one renamed them to q / k / wkv.
+            if (!m.find(b + "engram_q_norm.weight")) {
+                add(b + "engram_q.weight", { D, HC }, ANY);
+                add(b + "engram_k.weight", { D, HC }, ANY);
+                add(b + "engram_wkv.weight", { ekv, (HC + 1) * D }, ANY);
+            } else {
+                add(b + "engram_q_norm.weight", { D, HC }, ty::F32);
+                add(b + "engram_k_norm.weight", { D, HC }, ty::F32);
+                add(b + "engram_kv.weight", { ekv, (HC + 1) * D }, ty::F16);
+            }
         }
         // routed experts: uniform role tensors or per-type tensors + the I32 maps
         Ds41ExpertMap & X = G.experts[(size_t) l];
@@ -391,21 +418,36 @@ inline std::string ds41_check_tensors(const GgufModel & m, Ds41Geometry & G, con
         size_t s = 0;
         const TensorInfo * t = m.find(n, &s);
         if (!t) return "missing tensor " + n;
-        if (t->shape != st.first) {
+        bool shape_ok = t->shape == st.first;
+        static const std::string AOA = ".attn_output_a.weight";
+        if (!shape_ok && foreign && n.size() >= AOA.size() &&
+            n.compare(n.size() - AOA.size(), AOA.size(), AOA) == 0) {   // flattened vs grouped view
+            uint64_t a = 1, b = 1;
+            for (uint64_t x : t->shape) a *= x;
+            for (uint64_t x : st.first) b *= x;
+            shape_ok = a == b;
+        }
+        if (!shape_ok) {
             std::string a, w;
             for (auto x : t->shape) a += std::to_string(x) + " ";
             for (auto x : st.first) w += std::to_string(x) + " ";
             return n + ": shape [" + a + "] expected [" + w + "]";
         }
-        if (t->type != st.second) return n + ": type " + std::string(ggml_type_name(t->type)) + " expected " + ggml_type_name(st.second);
+        if (!foreign && t->type != st.second)
+            return n + ": type " + std::string(ggml_type_name(t->type)) + " expected " + ggml_type_name(st.second);
         if (!m.in_bounds(*t, s)) return n + ": out of bounds";
     }
+    auto extra_ok = [&](const std::string & n) {
+        if (n.find(".engram_embd.") != std::string::npos) return true;   // ds4 packs the tables inside; read from --engram
+        return foreign && (n == "engram_token_map.weight" || n == "engram_primes.weight" ||
+                           n == "engram_multipliers.weight" || n == "engram_offsets.weight");
+    };
     for (size_t s = 0; s < m.size(); ++s)
         for (const auto & t : m.shard(s).tensors())
             // A GGUF that carries its Engram tables inside (ds4's DeepSeek-V4.1-Flash-Q2 has blk.{1,14}.engram_embd,
             // 202.8 GB of I8) is accepted here: those tensors are not loaded, the engine reads the two tables
             // from the --engram safetensors, which hold the same native FP8 rows.
-            if (!want.count(t.name) && t.name.find(".engram_embd.") == std::string::npos)
+            if (!want.count(t.name) && !extra_ok(t.name))
                 return "unexpected tensor " + t.name;
     return {};
 }

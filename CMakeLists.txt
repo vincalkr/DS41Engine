@@ -87,7 +87,7 @@ add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu
             src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
             src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/ptq1_0.cpp)
 target_include_directories(strata_kernels_cpu PUBLIC include PRIVATE third_party/ggml)
-set(_strata_avx512 "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
+set(_strata_avx512 "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mbmi2;-mf16c;-mfma")
 set_source_files_properties(src/kernels/cpu/expert.cpp src/kernels/cpu/iq_avx512.cpp PROPERTIES COMPILE_OPTIONS "${_strata_avx512}")
 set_source_files_properties(src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp
                             PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")

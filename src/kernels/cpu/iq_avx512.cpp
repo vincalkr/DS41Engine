@@ -6,9 +6,11 @@
 // `maddubs` and a `madd`.  The arithmetic is ggml's (ggml-cpu/quants.c, the `_generic` references): integer sums
 // per block, times d_x * d_y * the format's constant - only the order of the float additions differs.
 //
-// Formats: IQ2_XXS (16), IQ2_XS (17), IQ3_XXS (18), IQ3_S (21), IQ2_S (22).  IQ1_M stays on ggml-cpu (no shipped
-// model has IQ1_M expert rows: the 'Coder IQ1_M' pack's gate/up are IQ2_S / IQ3_XXS / IQ3_S).
+// Formats: IQ1_M (29), IQ2_XXS (16), IQ2_XS (17), IQ3_XXS (18), IQ3_S (21), IQ2_S (22).  IQ1_M is here because the
+// GSQ-RCO packs mix it into their routed experts; its grid bytes carry integer parts and qh carries a per-group delta.
 #include "strata/kernels/cpu/iq_avx512.hpp"
+#include <climits>
+#include "ggml.h"
 
 #define GGML_COMMON_DECL_CPP
 #define GGML_COMMON_IMPL_CPP
@@ -244,6 +246,211 @@ void dot_rows_nt(int nt, const uint8_t* w, size_t row_bytes, int n, const void* 
     }
 }
 
+// ---- IQ1_M: reference arithmetic is ggml_vec_dot_iq1_m_q8_K_generic. One fp16 dw per block assembled from the
+// packed scales nibbles; every unit consumes four grid words whose integer parts feed sumi1 with two odd sub-scales
+// ls1/ls2, and each grid byte carries a +/-0.125 fractional delta that goes into sumi2 through the group sign,
+// times IQ1M_DELTA once per block. The weights decode once for all tokens here.
+static constexpr int kIq1mGroups = 4;
+static constexpr int kIq1mGridVals = (int) sizeof(uint64_t);
+static constexpr int kIq1mValsPerUnit = kIq1mGroups * kIq1mGridVals;
+static constexpr int kIq1mUnits = QK_K / kIq1mValsPerUnit;
+static_assert(kIq1mUnits * kIq1mValsPerUnit == QK_K, "IQ1_M units must cover one block");
+inline constexpr unsigned lowbits(int n) {
+    return (n >= (int) (sizeof(unsigned) * CHAR_BIT)) ? ~0u : ((1u << n) - 1u);
+}
+template <int N> inline constexpr unsigned mask_bits() {
+    if constexpr (N >= (int) (sizeof(unsigned) * CHAR_BIT)) return ~0u;
+    else return (1u << N) - 1u;
+}
+inline int hsum4(__m128i v) { v = _mm_hadd_epi32(v, v); v = _mm_hadd_epi32(v, v); return _mm_cvtsi128_si32(v); }
+inline int hsum8(__m256i v) {
+    const __m128i lo = _mm256_castsi256_si128(v), hi = _mm256_extracti128_si256(v, 1);
+    return hsum4(_mm_add_epi32(lo, hi));
+}
+
+// Decode one IQ1_M unit for all tokens: magnitudes plus the byte mask that flips negative grid bytes, the group sign
+// mask used by the delta term, and the pair-scale vector (ls1 over the first half of the groups).
+struct Iq1mDecoded {
+    __m256i magv;
+    unsigned flipmask;
+    unsigned signmask;
+    __m256i scvec;
+};
+inline Iq1mDecoded iq1m_decode_unit(const uint8_t* uqs, const uint8_t* uqh, int ls1, int ls2) {
+    static constexpr int kPairs = kIq1mValsPerUnit / sizeof(short);
+    static constexpr int kGroupsHalf = kIq1mGroups / sizeof(short);
+    static constexpr int kPairsGroup = kIq1mGridVals / sizeof(short);
+    static constexpr unsigned kMaskBits = mask_bits<kIq1mValsPerUnit>();
+#if defined(__BMI2__)
+            // two pdeps pack the four grid indices with their uqh high bits exactly as ggml's AVX2 kernel does
+            const uint64_t packed = _pdep_u64(*(const uint32_t*) uqs, 0x00ff00ff00ff00ffULL) |
+                                    _pdep_u64((*(const uint16_t*) uqh) & 0x7777u, 0xf000f000f000f00ULL);
+            const uint16_t* pi = (const uint16_t*) &packed;
+            const __m256i gwv = _mm256_set_epi64x((long long) iq1s_grid[pi[3]], (long long) iq1s_grid[pi[2]],
+                                                  (long long) iq1s_grid[pi[1]], (long long) iq1s_grid[pi[0]]);
+#else
+            uint16_t idx[kIq1mGroups];
+            idx[0] = uqs[0] | ((uqh[0] << 8) & 0x700);
+            idx[1] = uqs[1] | ((uqh[0] << 4) & 0x700);
+            idx[2] = uqs[2] | ((uqh[1] << 8) & 0x700);
+            idx[3] = uqs[3] | ((uqh[1] << 4) & 0x700);
+            const __m256i gwv = _mm256_set_epi64x((long long) iq1s_grid[idx[3]], (long long) iq1s_grid[idx[2]],
+                                                  (long long) iq1s_grid[idx[1]], (long long) iq1s_grid[idx[0]]);
+#endif
+            const __m256i magv = _mm256_abs_epi8(gwv);
+            const unsigned flip_bits = (unsigned) _mm256_movemask_epi8(gwv);   // MSB of each grid byte is its sign
+            // branchless from the uqh delta bits: bit 0x08/0x80 flips that whole group segment in the sums term
+            static constexpr unsigned segbits = (unsigned) kIq1mGridVals;
+            static constexpr unsigned segmask = lowbits(kIq1mGridVals);
+            const uint64_t gsign =
+                (uqh[0] & 0x08 ? segmask : 0u) |
+                (((uint64_t) (uqh[0] & 0x80 ? segmask : 0u)) << segbits) |
+                (((uint64_t) (uqh[1] & 0x08 ? segmask : 0u)) << (2 * segbits)) |
+                (((uint64_t) (uqh[1] & 0x80 ? segmask : 0u)) << (3 * segbits));
+            static constexpr int pairs_half = kPairsGroup * kGroupsHalf;
+            const __m256i scvec = _mm256_mask_blend_epi16(
+                (__mmask16) lowbits(pairs_half), _mm256_set1_epi16((short) ls2), _mm256_set1_epi16((short) ls1));
+    Iq1mDecoded d;
+    d.magv = magv;
+    d.flipmask = flip_bits & kMaskBits;
+    d.signmask = (unsigned) gsign & kMaskBits;
+    d.scvec = scvec;
+    return d;
+}
+
+template <int NT>
+inline void row_dot_iq1m(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+    float accf[NT];
+    for (int t = 0; t < NT; ++t) accf[t] = 0.f;
+    static constexpr int kPairs = kIq1mValsPerUnit / sizeof(short);
+    static constexpr unsigned kMaskBits = mask_bits<kIq1mValsPerUnit>();
+    static constexpr int kGroupsHalf = kIq1mGroups / sizeof(short);
+    static constexpr int kPairsGroup = kIq1mGridVals / sizeof(short);
+    const __m128i zero128 = _mm_setzero_si128();
+    const __m256i zero256 = _mm256_setzero_si256();
+    const __m256i ones8 = _mm256_set1_epi8((char) (CHAR_BIT / CHAR_BIT));
+    const __m256i pairones = _mm256_set1_epi16((short) (CHAR_BIT / CHAR_BIT));
+
+    for (int i = 0; i < nblocks; ++i) {
+        const auto* blk = (const block_iq1_m*) (row + (size_t) i * sizeof(block_iq1_m));
+        iq1m_scale_t scale;
+        const uint8_t* qs = blk->qs;
+        const uint8_t* qh = blk->qh;
+        const uint16_t* sc = (const uint16_t*) blk->scales;
+        scale.u16 =  (sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) & 0x0f00) | (sc[3] & 0xf000);
+        static_assert(kIq1mUnits % 2 == 0, "IQ1_M units must pair up");
+        __m256i accA[NT], accB[NT];
+        for (int t = 0; t < NT; ++t) { accA[t] = zero256; accB[t] = zero256; }
+        int off = 0;
+        // Two independent unit chains per iteration: the second decode and its grid gathers run while the first
+        // token's multiply-add chain still has to finish, so small token counts do not expose all that latency.
+        for (int ib = 0; ib < kIq1mUnits; ib += 2) {
+            const int ia = ib, ja = ib + 1;
+            const int a1 = 2*((sc[ia/2] >> (6*(ia%2)+0)) & 0x7) + 1;
+            const int a2 = 2*((sc[ia/2] >> (6*(ia%2)+3)) & 0x7) + 1;
+            const int b1 = 2*((sc[ja/2] >> (6*(ja%2)+0)) & 0x7) + 1;
+            const int b2 = 2*((sc[ja/2] >> (6*(ja%2)+3)) & 0x7) + 1;
+            const Iq1mDecoded da = iq1m_decode_unit(qs, qh, a1, a2);
+            const Iq1mDecoded db = iq1m_decode_unit(qs + kIq1mGroups, qh + kIq1mGroups / (int) sizeof(uint16_t), b1, b2);
+            for (int t = 0; t < NT; ++t) {
+                const __m256i ya = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + off));
+                const __m256i yb = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + off + kIq1mValsPerUnit));
+                const __m256i sa = _mm256_mask_sub_epi8(ya, (__mmask32) da.flipmask, zero256, ya);
+                const __m256i pa = _mm256_maddubs_epi16(da.magv, sa);
+                accA[t] = _mm256_add_epi32(accA[t], _mm256_madd_epi16(_mm256_mullo_epi16(pa, da.scvec), pairones));
+                const __m256i sga = _mm256_mask_sub_epi8(ya, (__mmask32) da.signmask, zero256, ya);
+                const __m256i pga = _mm256_maddubs_epi16(ones8, sga);
+                accB[t] = _mm256_add_epi32(accB[t], _mm256_madd_epi16(_mm256_mullo_epi16(pga, da.scvec), pairones));
+
+                const __m256i sb = _mm256_mask_sub_epi8(yb, (__mmask32) db.flipmask, zero256, yb);
+                const __m256i pb = _mm256_maddubs_epi16(db.magv, sb);
+                accA[t] = _mm256_add_epi32(accA[t], _mm256_madd_epi16(_mm256_mullo_epi16(pb, db.scvec), pairones));
+                const __m256i sgb = _mm256_mask_sub_epi8(yb, (__mmask32) db.signmask, zero256, yb);
+                const __m256i pgb = _mm256_maddubs_epi16(ones8, sgb);
+                accB[t] = _mm256_add_epi32(accB[t], _mm256_madd_epi16(_mm256_mullo_epi16(pgb, db.scvec), pairones));
+            }
+            qs += kIq1mGroups * 2;
+            qh += (kIq1mGroups / (int) sizeof(uint16_t)) * 2;
+            off += kIq1mValsPerUnit * 2;
+        }
+
+        for (int t = 0; t < NT; ++t) {
+            const int s1 = hsum8(accA[t]), s2 = hsum8(accB[t]);
+            accf[t] += h2f(scale.u16) * y[t][i].d * ((float) s1 + IQ1M_DELTA * (float) s2);
+        }
+    }
+    for (int t = 0; t < NT; ++t) res[t] = accf[t];
+}
+
+template <int NT>
+void iq1m_gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
+                  float* const* ff, int r0, int r1, float lim) {
+    const block_q8_K* y[NT];
+    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
+    const int nb = n / QK_K;
+    float g[NT], u[NT];
+    for (int r = r0; r < r1; ++r) {
+        row_dot_iq1m<NT>(blob + (size_t) r * gu_row, nb, y, g);
+        row_dot_iq1m<NT>(blob + up_off + (size_t) r * gu_row, nb, y, u);
+        for (int t = 0; t < NT; ++t) {
+            const float gc = std::min(g[t], lim), uc = std::min(std::max(u[t], -lim), lim);   // lim = +inf: no-op
+            ff[t][r] = (gc / (1.f + std::exp(-gc))) * uc;
+        }
+    }
+}
+
+template <int NT>
+void iq1m_dot_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out,
+                   int r0, int r1) {
+    const block_q8_K* y[NT];
+    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
+    float res[NT];
+    for (int r = r0; r < r1; ++r) {
+        row_dot_iq1m<NT>(w + (size_t) r * row_bytes, n / QK_K, y, res);
+        for (int t = 0; t < NT; ++t) out[t][r] = res[t];
+    }
+}
+
+static constexpr int kIq1mMaxNT = 9;
+
+void iq1m_gu_nt(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
+                float* const* ff, int r0, int r1, float lim) {
+    switch (nt) {
+        case 1: iq1m_gu_rows<1>(blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
+        case 2: iq1m_gu_rows<2>(blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
+        case 3: iq1m_gu_rows<3>(blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
+        case 4: iq1m_gu_rows<4>(blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
+        case 5: iq1m_gu_rows<5>(blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
+        case 6: iq1m_gu_rows<6>(blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
+        case 7: iq1m_gu_rows<7>(blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
+        case 8: iq1m_gu_rows<8>(blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
+        default:
+            for (int t0 = 0; t0 < nt; t0 += kIq1mMaxNT) {
+                const int k = nt - t0 < kIq1mMaxNT ? nt - t0 : kIq1mMaxNT;
+                iq1m_gu_nt(k, blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1, lim);
+            }
+    }
+}
+
+void iq1m_dot_nt(int nt, const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out,
+                 int r0, int r1) {
+    switch (nt) {
+        case 1: iq1m_dot_rows<1>(w, row_bytes, n, act, out, r0, r1); break;
+        case 2: iq1m_dot_rows<2>(w, row_bytes, n, act, out, r0, r1); break;
+        case 3: iq1m_dot_rows<3>(w, row_bytes, n, act, out, r0, r1); break;
+        case 4: iq1m_dot_rows<4>(w, row_bytes, n, act, out, r0, r1); break;
+        case 5: iq1m_dot_rows<5>(w, row_bytes, n, act, out, r0, r1); break;
+        case 6: iq1m_dot_rows<6>(w, row_bytes, n, act, out, r0, r1); break;
+        case 7: iq1m_dot_rows<7>(w, row_bytes, n, act, out, r0, r1); break;
+        case 8: iq1m_dot_rows<8>(w, row_bytes, n, act, out, r0, r1); break;
+        default:
+            for (int t0 = 0; t0 < nt; t0 += kIq1mMaxNT) {
+                const int k = nt - t0 < kIq1mMaxNT ? nt - t0 : kIq1mMaxNT;
+                iq1m_dot_nt(k, w, row_bytes, n, act + t0, out + t0, r0, r1);
+            }
+    }
+}
+
 }  // namespace
 
 void iq512_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
@@ -254,6 +461,7 @@ void iq512_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, 
         case 18: gu_rows_nt<18>(nt, blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
         case 21: gu_rows_nt<21>(nt, blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
         case 22: gu_rows_nt<22>(nt, blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
+        case GGML_TYPE_IQ1_M: iq1m_gu_nt(nt, blob, gu_row, up_off, n, act, ff, r0, r1, lim); break;
         default: break;
     }
 }
@@ -266,6 +474,7 @@ void iq512_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void*
         case 18: dot_rows_nt<18>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 21: dot_rows_nt<21>(nt, w, row_bytes, n, act, out, r0, r1); break;
         case 22: dot_rows_nt<22>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case GGML_TYPE_IQ1_M: iq1m_dot_nt(nt, w, row_bytes, n, act, out, r0, r1); break;
         default: break;
     }
 }

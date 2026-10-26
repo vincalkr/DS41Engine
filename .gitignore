@@ -115,3 +115,12 @@ core.[0-9]*
 /local/conv-cache/
 /local/sweep-disk/*
 !/local/sweep-disk/summary.txt
+
+# the reference Q2 pack's 5.8 MB header, kept on this box only: the overlay rebuilds from geometry-keys.json
+local/rco-iq2xxs-meta/ds4-q2-header.gguf
+/local/conv-cache-rco/
+/local/routes-rco/
+# rocprofv3 traces (~50 MB a run): the per-token summaries are in the docs
+/local/sweep-prof-rco/trace-*/
+# working notes and reviews, kept on this box
+/local/reports/

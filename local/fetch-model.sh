@@ -68,8 +68,24 @@ for f in vocab.json merges.txt token_type.json chat_template.jinja; do
   get "$TOK_REPO" "tokenizer/$f" "$Q2/tokenizer/$f" "$s"
 done
 
-say "=== 2/3 the GGUF -> $Q2 ($(df -BG --output=avail "$DEST" | tail -1 | tr -dc 0-9) GB free; it needs 366 GB, the tables 203 more)"
+free_gib() { df -BG --output=avail "$1" | tail -1 | tr -dc 0-9; }
+say "=== 2/3 the GGUF -> $Q2 ($(free_gib "$DEST") GB free; it needs 366 GB, the tables 203 more - the pack is only
+the tables' source: once both tables are written it can go, and LAYERS= one layer can be re-extracted from it)"
 read -r want sha < <(meta "$Q2_REPO" "$Q2_FILE")
+# Preflight: never start a 366 GB download that fills the disk.  A disk that runs out mid-extraction leaves a table
+# file whose size was reserved up front and which reads as zeros past the hole - the engine refuses such a file
+# (ds41_engram.hpp's hole sample), but the honest fix is not to create it.
+have=$(size "$Q2/$Q2_FILE"); gib=$((1024*1024*1024))
+need=$(( have == want ? 0 : want ))
+for l in 1 14; do
+  f=$ENG/layers$l/engram-L$l.safetensors; [ -r "$f" ] || need=$(( need + 95 * gib ))
+done
+if [ "$DRY_RUN" != 1 ] && [ $(( $(free_gib "$DEST") * gib )) -lt $(( need + 20 * gib )) ]; then
+  say "refusing: $(free_gib "$DEST") GB free, this run needs $(( need / gib )) GB more for the pack and the Engram tables."
+  say "  free space first (the pack of another model, or the tables you already have); to redo only what is missing:"
+  say "  LAYERS=14 local/ds4-engram-extract.py $Q2/$Q2_FILE $ENG"
+  exit 1
+fi
 get "$Q2_REPO" "$Q2_FILE" "$Q2/$Q2_FILE" "$want"
 if [ "$DRY_RUN" != 1 ] && [ -z "${SKIP_SHA:-}" ] && [ ! -f "$Q2/$Q2_FILE.sha-ok" ]; then
   say "      sha256 of the GGUF (expected $sha) ..."

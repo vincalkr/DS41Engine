@@ -630,7 +630,10 @@ int main(int argc, char ** argv) {
     // the ~0.31 MiB a column of a big prompt batch (2.6 GiB at 8192) goes to VRAM expert slots; a layer-major batch
     // grows them (the VRAM cache is released for it anyway) and gives them back.  s11: 2.6 GiB of slots = 10-20% of a
     // verify pass (one-shot, margin 1.0 / 2.3 / 3.6: python 131 / 136 / 145 ms, code 89 / 93 / 107 ms).
-    dc.elastic_cols = a.serve && PB > 1 && !(std::getenv("STRATA_ELASTIC_COLS") && std::getenv("STRATA_ELASTIC_COLS")[0] == '0');
+    // elastic state columns: on in --serve (STRATA_ELASTIC_COLS=0 = off); a one-shot run opts in with STRATA_ELASTIC_COLS=1,
+    // which is how a benchmark sees the VRAM the server leaves the expert cache after a long prompt
+    const char * ec_env = std::getenv("STRATA_ELASTIC_COLS");
+    dc.elastic_cols = PB > 1 && (a.serve ? !(ec_env && ec_env[0] == '0') : (ec_env && ec_env[0] == '1'));
     // encoder-only prompt prefill (enc-skip): tokens before the last `enc_replay` need their layers past layer 20 only
     // through the per-layer 128-token window, so for a long prompt they can stop after the KV-writing part of layer
     // 20 (the layer-major batch path only; the chunk path has no per-layer column split, --ppl/--dump-logits need

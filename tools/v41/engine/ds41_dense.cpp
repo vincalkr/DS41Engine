@@ -89,6 +89,7 @@ struct Allo {
 struct WStore {
     ggml_context * ctx = nullptr;
     std::vector<ggml_backend_buffer_t> bufs;
+    std::vector<std::unique_ptr<uint8_t []>> owned;   // converted tensors the zero-copy binding cannot hold
     std::map<std::string, ggml_tensor *> t;
     ~WStore() {
         for (auto b : bufs) ggml_backend_buffer_free(b);
@@ -201,7 +202,8 @@ struct Ds41Dense::Impl {
     std::vector<std::array<int64_t, 3>> span_cap;   // [sub-batch][ratio] pass_cap
     std::vector<float> host_fn, host_wts, host_logits, host_emb;
     std::vector<int32_t> host_ids;
-    const uint8_t * embd = nullptr;       // token_embd F16 rows on the mmap
+    const uint8_t * embd = nullptr;       // token_embd rows on the mmap
+    uint32_t embd_type = 0;               // its ggml type (F16 in antirez packs, Q5_K in RCO ones)
     std::vector<std::vector<float>> eng_rows;
     // The pass's Engram reads, started (async) by upload_inputs and waited at the first Engram layer's span /
     // attn_router: the whole pass's rows are read from disk while the embeddings, the init graph and the layers below
@@ -264,6 +266,7 @@ struct Ds41Dense::Impl {
 static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
     WStore & w = im.w;
     const GgufModel & model = *im.model;
+    const bool foreign = ds41_foreign_pack();
     ggml_init_params ip = { 256ull * 1024 * 1024, nullptr, true };
     w.ctx = ggml_init(ip);
     auto make = [&](const TensorInfo & ti, int type = -1) {   // type: the in-memory type (default the file's)
@@ -274,8 +277,22 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
         return t;
     };
     // routed experts never reach ggml (PTQ1_0 = 143 is past GGML_TYPE_COUNT); the I32 maps are read by the geometry
-    auto skip = [&](const std::string & n) { return is_routed(n) || n == "token_embd.weight" ||
-                                                 n.find(".engram_embd.") != std::string::npos; };   // ds4 packs the Engram in the GGUF; we read it from --engram
+    auto skip = [&](const std::string & n) {
+        return is_routed(n) || n == "token_embd.weight" || n.find(".engram_embd.") != std::string::npos ||
+               n == "engram_token_map.weight" || n == "engram_primes.weight" ||
+               n == "engram_multipliers.weight" || n == "engram_offsets.weight";   // the overlay carries these arrays
+    };
+    // A foreign (RCO) pack stores the two Engram norm projections as bf16, and their product feeds an F32 mul: both
+    // paths read them as F32 (the GPU path converts and uploads them with the rest, the CPU path converts in place).
+    auto foreign_force = [&](const TensorInfo & ti) -> int {
+        if (!foreign || ti.shape.size() != 2) return -1;
+        static const std::string qn = ".engram_q.weight", kn = ".engram_k.weight";
+        const std::string & n = ti.name;
+        for (const std::string * sfx : { &qn, &kn })
+            if (n.size() >= sfx->size() && n.compare(n.size() - sfx->size(), sfx->size(), *sfx) == 0)
+                return (int) GGML_TYPE_F32;
+        return -1;
+    };
     if (im.cpu) {
         for (size_t s = 0; s < model.size(); ++s) {
             const GgufFile & sh = model.shard(s);
@@ -286,6 +303,29 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
             w.bufs.push_back(buf);
             for (const auto & ti : ts) {
                 if (skip(ti.name)) continue;
+                // This path binds the file's bytes with no copy, so a tensor stays in its stored type.  A foreign pack
+                // stores the two Engram norm projections as bf16, and ggml-cpu has no f32 * bf16 binary op (the GPU path
+                // already converts them, see mem_type) - so those few (20,480 values each) are converted to f32 here.
+                const int mt = foreign_force(ti);
+                if (mt >= 0 && (uint32_t) mt != ti.type) {
+                    if ((ggml_type) mt != GGML_TYPE_F32) {          // to_float lands in float: the only case today
+                        err = "cpu path: no converter to " + std::string(ggml_type_name((ggml_type) mt));
+                        return false;
+                    }
+                    ggml_tensor * t = make(ti, mt);
+                    const int64_t n0 = t->ne[0], nr = ggml_nrows(t);
+                    auto hold = std::make_unique<uint8_t []>((size_t) nr * ggml_row_size(GGML_TYPE_F32, n0));
+                    auto * tr = ggml_get_type_traits((ggml_type) ti.type);
+                    const uint8_t * src = sh.tensor_data(ti);
+                    const size_t src_row = ggml_row_size((ggml_type) ti.type, n0);
+                    for (int64_t r = 0; r < nr; ++r)
+                        tr->to_float(src + (size_t) r * src_row,
+                                     (float *) (hold.get() + (size_t) r * ggml_row_size(GGML_TYPE_F32, n0)), (int) n0);
+                    t->data = hold.get();
+                    w.owned.push_back(std::move(hold));
+                    w.t[ti.name] = t;
+                    continue;
+                }
                 ggml_tensor * t = make(ti);
                 if (ggml_backend_tensor_alloc(buf, t, const_cast<uint8_t *>(sh.tensor_data(ti))) != GGML_STATUS_SUCCESS) {
                     err = "cannot bind " + ti.name;
@@ -307,6 +347,10 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
             return rq != GGML_TYPE_COUNT && (ggml_type) ti.type == GGML_TYPE_Q8_0 && ti.shape.size() == 2 &&
                    (int64_t) ti.shape[0] % ggml_blck_size(rq) == 0 && (rq_head || ti.name != "output.weight");
         };
+        auto mem_type = [&](const TensorInfo & ti) -> int {
+            const int f = foreign_force(ti);
+            return f >= 0 ? f : (requant(ti) ? (int) rq : -1);
+        };
         // STRATA_PRED_ROUTER=<ggml type> (q8_0, f16; OFF by default): the PREDICTION graphs (the prefetch top-16 and the
         // speculative reads' rows) read a copy of each layer's F32 router in that type (q8_0: 7.9 -> 2.1 MB a read); the
         // routing itself (build_attn) keeps the file's F32.  Only which experts are prefetched can change.
@@ -326,7 +370,7 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
         for (size_t s = 0; s < model.size(); ++s)
             for (const auto & ti : model.shard(s).tensors()) {
                 if (skip(ti.name)) continue;
-                w.t[ti.name] = make(ti, requant(ti) ? (int) rq : -1);
+                w.t[ti.name] = make(ti, mem_type(ti));
                 if (const std::string pn = pred_name(ti); !pn.empty()) {
                     ggml_tensor * tp = make(ti, (int) pq);
                     ggml_set_name(tp, pn.c_str());
@@ -380,6 +424,17 @@ static bool load_weights(Ds41Dense::Impl & im, std::string & err) {
     size_t si = 0;
     const TensorInfo * te = model.find("token_embd.weight", &si);
     im.embd = model.shard(si).tensor_data(*te);
+    im.embd_type = te->type;
+    // RCO packs rename the three per-layer Engram tensors; point the engine's names at them (same layout).
+    for (int64_t l : im.g.engram_layers) {
+        const std::string b = "blk." + std::to_string(l) + ".engram_";
+        static const char * alias[3][2] = { { "q_norm.weight", "q.weight" }, { "k_norm.weight", "k.weight" },
+                                            { "kv.weight", "wkv.weight" } };
+        for (const auto & a : alias) {
+            const auto it = w.t.find(b + a[1]);
+            if (it != w.t.end()) w.t[b + a[0]] = it->second;
+        }
+    }
     return true;
 }
 
@@ -1116,7 +1171,10 @@ bool Ds41Dense::init(const std::string & path, const Ds41DenseConfig & cfg, std:
     }
     im.cpu = ggml_backend_is_cpu(im.backend);
     if (!load_weights(im, err)) return false;
-    if (!cfg.engram_dirs.empty() && !im.engram.open(G, cfg.engram_dirs, cfg.engram_threads, err)) return false;
+    // the pack's own directory is the fallback for --engram paths this machine does not have (a fresh clone has the
+    // pack and its iq4_nl table, not the checkpoint's FP8 safetensors)
+    if (!cfg.engram_dirs.empty() &&
+        !im.engram.open(G, cfg.engram_dirs, cfg.engram_threads, err, im.model->shard(0).path())) return false;
 
     im.vision = cfg.vision;
     if (im.vision)
@@ -1268,12 +1326,13 @@ bool Ds41Dense::Impl::upload_inputs(const int * tids, int n, int pos0) {
     Impl & im = *this;
     im.span_memo_pos0 = -1;   // this writes i_widx / i_wslot / i_sidx / i_sslot: upload_span's memo is stale
     const int64_t D = im.D, SWA = im.SWA, RAW = im.RAW;
-    // embeddings (F16 rows on the mmap)
+    // embeddings (the token_embd rows on the mmap; F16 or a quantized type such as Q5_K)
     im.host_emb.resize((size_t) (D * n));
+    const size_t erow = ggml_row_size((ggml_type) im.embd_type, D);
     for (int t = 0; t < n; ++t) {
         if (tids[t] < 0 || tids[t] >= im.g.vocab) { im.err = "token id out of range"; return false; }
-        const uint16_t * row = reinterpret_cast<const uint16_t *>(im.embd) + (size_t) tids[t] * (size_t) D;
-        for (int64_t i = 0; i < D; ++i) im.host_emb[(size_t) (t * D + i)] = ggml_fp16_to_fp32(row[i]);
+        ggml_get_type_traits((ggml_type) im.embd_type)->to_float(im.embd + (size_t) tids[t] * erow,
+                                                                im.host_emb.data() + (size_t) t * D, D);
     }
     // image input: the span rows replace their positions' embeddings (model.py merge_image_embeddings); col_img marks
     // them for the graphs (VL routing bias, Engram gate) and the Engram history (DEAD).  Empty for a text pass.

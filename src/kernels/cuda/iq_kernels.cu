@@ -614,7 +614,10 @@ template<> struct Fmt<8> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0,
 #else
 #define STRATA_GU_FMTS(X) X(16) X(17) X(18) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(6) X(2) X(3) X(8)
 #endif
-#define STRATA_D_FMTS(X) X(20) X(23) X(42) X(7) X(6) X(2) X(3) X(8)
+// IQ1_M/IQ2_XXS/IQ2_XS down: the RCO/GSQ pack (2026-10-25) quantizes expert down matrices to IQ1_M, IQ2_XXS or
+// IQ2_XS per layer, and Fmt<>/Split<> already exist for those types (gate/up use them); without them
+// native_expert_supported3 refuses the pack at tier init.
+#define STRATA_D_FMTS(X) X(16) X(17) X(20) X(23) X(29) X(42) X(7) X(6) X(2) X(3) X(8)
 #define STRATA_MMVQ_FMTS(X) X(16) X(17) X(18) X(20) X(21) X(22) X(23) X(29) X(42) X(12) X(13) X(7) X(6) X(2) X(3) X(8)
 #include "fork/fork_fmt.cuh"   // Strata-DS4 fork code (docs/UPSTREAM_SYNC.md)
 
@@ -3658,10 +3661,14 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
             else native_down_amd_kernel<T, 2><<<gd_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
     // the AMD layouts cover the IQ packs' down types; the others (Unsloth's Q4_K / Q5_K / Q5_1 / Q8_0) take the
     // CUDA layout below
+    // STRATA_DOWN_AMD_IQ=1 (opt-in): the GSQ-RCO pack's down types (IQ2_XXS, IQ2_XS, IQ1_M) take the AMD layouts too
+    static const bool down_amd_iq = env_on("STRATA_DOWN_AMD_IQ");
     if ((em == 1 || em == 2 || em == 4) &&
-        (L.d_type == 20 || L.d_type == 23 || L.d_type == 42 || L.d_type == 143 || L.d_type == 11)) {   // fork: +PTQ1_0 / Q3_K
+        (L.d_type == 20 || L.d_type == 23 || L.d_type == 42 || L.d_type == 143 || L.d_type == 11 ||
+         (down_amd_iq && (L.d_type == 16 || L.d_type == 17 || L.d_type == 29)))) {   // fork: +PTQ1_0 / Q3_K
         switch (L.d_type) {
             STRATA_D_AMD(20) STRATA_D_AMD(23) STRATA_D_AMD(42) STRATA_D_AMD(143) STRATA_D_AMD(11)
+            STRATA_D_AMD(16) STRATA_D_AMD(17) STRATA_D_AMD(29)
         }
     } else
 #undef STRATA_D_AMD

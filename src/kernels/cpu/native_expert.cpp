@@ -44,7 +44,7 @@ bool native_experts_available() noexcept { return true; }
 // has checked what the CPU can run.  A function in a wide-ISA file may use that ISA anywhere in its body, so an
 // answer that is only a comparison must not come from one (#795).
 bool iq512_supported(int type) noexcept {
-    return type == 16 || type == 17 || type == 18 || type == 21 || type == 22;
+    return type == 16 || type == 17 || type == 18 || type == 21 || type == 22 || type == (int) GGML_TYPE_IQ1_M;
 }
 
 bool iq256_supported(int type) noexcept {
@@ -150,7 +150,11 @@ int native_gu_mt_min(int gu_type) {
     // Opt-in (STRATA_IQ3S_MT1=1): it changes a lone token's IQ3_S rounding on those CPUs, so the default stays 0.1.39's.
     static const bool iq3s_one = env == nullptr && std::getenv("STRATA_IQ3S_MT1") != nullptr && cpu_avx2_ok() && std::getenv("STRATA_NO_IQ256") == nullptr &&
                                  !cpu_avx512_ok() && iq256_gather_setting() != 0 && cpu_gather_fast();
-    return iq3s_one && gu_type == 21 ? 1 : mt_min;
+    // IQ1_M rows are bit-exact against ggml-cpu's vec_dot, but the AVX-512 kernel only wins from four tokens on:
+    // measured 2026-10-24 at ns per row-token on a Ryzen 9 9900X, nt2 195.47 vs 132.61, nt3 141.97 vs 133.44, nt4 121.66 vs 140.22,
+    // nt7 111.20 vs 133.87.  So without STRATA_IQ_MT_MIN its default is that crossover.
+    if (env == nullptr && gu_type == (int) GGML_TYPE_IQ1_M) return 4;
+    return iq3s_one && gu_type == 25 ? 1 : mt_min;
 }
 
 void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
@@ -255,6 +259,13 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
     static const bool ptq_rows = std::getenv("STRATA_NO_PTQ1_ROWS") == nullptr;
     if (ptq_rows && f.d_type == kPtq1Type) {   // PTQ1_0 down: as the gate/up rows above
         ptq1_0_rows_q8_0(blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
+        return;
+    }
+    static const bool avx512 = cpu_avx512_ok() && std::getenv("STRATA_NO_IQ512") == nullptr;
+    // IQ1_M down rows in GSQ-RCO packs: the AVX-512 kernel decodes a unit once for every token and stays bit-exact
+    // against ggml-cpu's vec_dot (test_strata_iq1m); below its measured crossover native_gu_mt_min keeps one token.
+    if (avx512 && f.d_type == (int) GGML_TYPE_IQ1_M && nt >= native_gu_mt_min(f.d_type)) {
+        iq512_rows((int) GGML_TYPE_IQ1_M, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
     const ggml_vec_dot_t dot = traits(f.d_type)->vec_dot;

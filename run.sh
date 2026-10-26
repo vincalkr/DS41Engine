@@ -58,11 +58,13 @@ if [ -z "$CFG" ]; then
         2) base=ds41-local ;;
         *) echo "run.sh: one or two cards (--gpu 0, --gpu 1, --gpu 0,1), not '$GPU'" >&2; exit 1 ;;
     esac
-    if [ -s "$R/models/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf" ]; then
+    # the vision configurations need both the tower and the model's image routing bias; the published GSQ-RCO pack
+    # carries no exp_probs_b_vl.bias, so its configurations are the text-only ones.
+    if [ -s "$R/models/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf" ] && [ -s "$R/local/$base-vision.json" ]; then
         CFG="$R/local/$base-vision.json"
     else
         CFG="$R/local/$base.json"
-        echo "run.sh: no vision encoder in models/vision-1017 (local/fetch-model.sh builds it): text only"
+        echo "run.sh: no vision encoder + vision configuration for $base: text only"
     fi
 fi
 echo "run.sh: config $CFG, cards ${GPU:-as the config says}"
@@ -74,12 +76,24 @@ import json, os, sys
 cfg, root = sys.argv[1], sys.argv[2]
 c = json.load(open(cfg))
 a = c.get("args", [])
-need = [a[a.index("-m") + 1]] if "-m" in a else []
-if "--engram" in a: need += a[a.index("--engram") + 1].split(":")
-if c.get("tokenizer"): need.append(c["tokenizer"])
-for p in need:
+model = a[a.index("-m") + 1] if "-m" in a else ""
+engram = a[a.index("--engram") + 1].split(":") if "--engram" in a else []
+meta = (c.get("env") or {}).get("DS41_META")          # the geometry overlay a foreign pack reads
+need = ([model] if model else []) + engram + ([c["tokenizer"]] if c.get("tokenizer") else []) + ([meta] if meta else [])
+def whole(p):
     q = p if os.path.isabs(p) else os.path.join(root, p)
-    if not os.path.exists(q) or (os.path.isfile(q) and os.path.getsize(q) == 0): print(q)
+    return os.path.exists(q) and not (os.path.isfile(q) and os.path.getsize(q) == 0)
+# An --engram path this box does not have is not fatal when the pack's own Engram GGUF sits beside the pack: the
+# engine falls back to that and prints that it does (ds41_engram.cpp). Everything else must be there.
+soft = [p for p in engram if not whole(p)]
+sib = os.path.join(os.path.dirname(os.path.abspath(os.path.join(root, model))),
+                   "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf") if model else ""
+fatal = [p for p in need if p not in soft and not whole(p)]
+if soft and not (sib and whole(sib)): fatal += soft
+for p in fatal: print(p)
+if soft and sib and whole(sib):
+    sys.stderr.write("run.sh: %s is not here - the engine reads the pack's own Engram table %s\n"
+                     % (", ".join(soft), sib))
 EOF
 )
 if [ -n "$missing" ]; then

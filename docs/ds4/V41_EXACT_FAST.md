@@ -842,3 +842,297 @@ Default flags (no `--peer-device`), greedy 96 tokens on `local/prompts/code_revi
 5. **A better expert predictor** for speculative file reads: today's uses 4-5% of what it reads and loses.
 
 Done since the earlier list: the adaptive peer store (`STRATA_PEER_ADAPT`), graph replay (on).
+
+## CPU i-quant expert rows: IQ1_M in AVX-512 (2026-10-24)
+
+The CPU-pool kernel `src/kernels/cpu/iq_avx512.cpp` covers IQ2_XXS, IQ2_XS, IQ3_XXS, IQ3_S and IQ2_S, and now also
+IQ1_M; the same format list is in `include/strata/kernels/cpu/iq_avx512.hpp`. IQ1_M matters here because the published
+GSQ-RCO pack mixes it into its routed experts: over its 40 layers, 60 of the 120 gate/up/down role tensors are IQ1_M
+(14 layers all IQ1_M, 9 IQ2_XXS gate/up with IQ1_M down, 5 IQ2_XS gate/up with IQ1_M down, 2 IQ1_M gate/up with
+IQ2_XXS down; mean expert blob 8,598,528 B against our Q2's 9,953,280 B), so those rows can be served by this
+machine's CPU pool at ~25K context and above.
+
+Measured with `test_strata_iq1m` (48 rows x 4096 columns, five alternating trials per token count, Ryzen 9 9900X):
+ns per row-token, the AVX-512 kernel against ggml-cpu's dispatched vec_dot.
+
+| tokens | ggml-cpu | AVX-512 IQ1_M |
+|---:|---:|---:|
+| 1 | 131.58 | 356.51 |
+| 2 | 132.61 | 195.47 |
+| 3 | 133.44 | 141.97 |
+| 4 | 140.22 | 121.66 |
+| 5 | 135.12 | 116.42 |
+| 6 | 133.46 | 111.79 |
+| 7 | 133.87 | 111.20 |
+
+A separate check used the published pack itself (`blk.12.ffn_down_exps.weight`, IQ1_M): a 131072-byte range
+read from shard one of https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF starting at file offset
+34722813824 covered 96 complete rows of 2304 columns (504 B a row); all 480/480
+dots were bit-exact against ggml-cpu's generic dot (max abs difference 0). On those real blocks ggml-cpu took
+75.74 ns per row-token at four tokens and this kernel 67.71.
+
+One to three tokens stay on ggml-cpu (`native_gu_mt_min` returns four for IQ1_M without `STRATA_IQ_MT_MIN`, measured
+356.51 / 195.47 / 141.97 ns per row-token there); from four the kernel wins, 121.66 -> 111.20 ns.
+The integer sums times d_x*d_y reproduce ggml-cpu bit-exactly in every comparison above: 168 of 168 dots in the synthetic test,
+480 of 480 in the published slice, max abs difference zero.
+
+The expert API was checked too (`native_fmt`, `native_gu_rows`, `native_down_rows` on a quantized synthetic layer):
+at three tokens it calls ggml-cpu's per-token dot, at five this kernel; gate/up rows agree within 2.72759e-06 relative and
+down rows within 2.32107e-05 (ggml-cpu's own dispatched dot differs from its generic reference in 1787 of 3072 comparisons,
+max abs 7.6e-06). Against that generic reference through silu(gate)*up the gate/up rows are exact in 2304 of 2304
+comparisons (max relative difference 0), and the down rows served by this kernel are bit-exact in 3072 of 3072
+with max abs difference zero.
+
+Down projections take the same kernel when their format is IQ1_M at the same token threshold; other down formats keep
+their existing paths.
+
+The engine A/B (below, `local/sweep-rco2`) says the kernel is **not on this box's decode path at all**: with the same
+pack and everything else equal, `rco` decodes 20.01 tok/s on Promessi Sposi and 13.44 on the 17K prompt, and the same
+pack with `STRATA_NO_IQ512=1` - ggml-cpu's fallback for every IQ1_M row - 20.15 and 13.23, inside the run-to-run spread
+(the Q2 arm alone spans 18.72-19.50 and 11.59-12.90). Decode hands the CPU pool one token at a time, and one token is
+below the four-token threshold, so both arms call the same ggml-cpu dot: their expert counters match to the unit in all
+four Promessi Sposi runs (55080 hit / 10566 cpu / 172 file). Nothing in the tier changes that: `cpu_run` builds one
+job per expert with `nt = 1`, and the CPU-only tier runs "token by token (no sharing)"
+([ds41_moe.cpp:5445](../../tools/v41/engine/ds41_moe.cpp)), so an `--experts cpu` run does not engage the kernel
+either. The only place the engine gives the pool a group of four or more is the speculative verify path, and DSpark
+with the 1017 drafter is measured slower than single-step here (the section above), so today the kernel's win is a
+*guard*: it is what the pool will do when a CPU-served expert is handed several tokens, at 1.12-1.28x on IQ1_M rows.
+
+## The published GSQ-RCO IQ2_XXS pack, loaded through a metadata overlay (2026-10-25)
+
+`DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS` (ISTA-DASLab, four shards, 138.2 GB, sha256 verified, downloaded with
+`aria2c -x4` to the NVMe) is the same checkpoint quantized the RCO way, with expert formats mixed per layer:
+gate/up IQ1_M, IQ2_XXS or IQ2_XS and down IQ1_M, IQ2_XXS or IQ2_XS - eight (gate,down) classes over the 40 layers,
+against our Q2's one (IQ2_XXS gate/up, Q2_K down). Its GGUF carries llama.cpp/HF metadata and the Engram arrays as
+tensors, so it has none of the `deepseek41.*` keys this engine reads.
+
+`local/fetch-rco-1017.sh` (or `tools/v41/ds41_pack_meta.py --pack SHARD1 --ref-keys
+local/rco-iq2xxs-meta/geometry-keys.json --engram ENGRAM.gguf --out local/rco-iq2xxs-meta/meta.gguf`) writes the 511 KB
+overlay with exactly those keys: 51 of them, geometry and the config JSON from `geometry-keys.json` - the 68 reference
+keys of the checkpoint, taken once from the reference Q2's header with `--dump-ref-keys` and kept in the repo as 8 KB of
+JSON, so a fresh clone needs no reference download; `--engram` (which supplies the two table row counts) is optional
+beside it, those rows are in the same JSON,
+compress ratios and the kv/index source layers derived from which compressor tensors the pack holds (a ratio is a
+regime carried forward, not a per-layer flag), and the Engram token map / primes / multipliers read out of the pack's
+own I32/I64 tensors - 129280 map ids, and the primes must tile the two Engram tables' 384006168 and 384016682 rows
+exactly, so a wrong read fails there and then. `DS41_META=<that file>` is opt-in: geometry and the Engram arrays come
+from it, the tensor data stays in the pack.
+
+Three things in the engine were missing for it. Expert blobs assumed one file: an expert class lives in whichever
+shard holds its stacked tensor, so every span now carries a shard id and `Ds41FileBlobs` opens one fd pair (buffered
++ O_DIRECT twin) per shard; the second-drive blob mirror stays single-file because it validates the source by size.
+The grouped GPU expert kernels had IQ1_M/IQ2_XXS/IQ2_XS for gate/up but none of them for down
+(`STRATA_D_FMTS`), so the tier init refused the pack. And the Engram name family is a property of the pack
+(`q_norm`/`k_norm`/`kv` on a ds4 pack, `q`/`k`/`wkv` on an RCO one, stored BF16 and Q5_K instead of F32/F16),
+`attn_output_a` is flattened there (4096x8192 for the 4096x1024x8 the engine reshapes), and `token_embd` is Q5_K
+rather than F16, so the embedding rows go through the type traits. The pack also has no `exp_probs_b_vl.bias`: the
+VL router bias tensor is only required of a pack that carries it.
+
+`test_ds41_geometry` passes on the pack with the overlay, and on the antirez Q2 with and without a stray `DS41_META`
+(its tensor map, tiers and mutation checks). Sizes, from the two headers: the Q2 file is 365.7 GB of which **202.8 GB
+are the Engram I8 tables inside it**, which the engine never loads (it read `models/engram-1017`, extracted from
+those tables, until 2026-10-26 - see the next section); what runs is
+experts 152.9 -> 132.1 GB and dense 8.0 -> 5.2 GB, a mean expert blob 9.49 -> 8.20 MiB (-13.6%).
+
+A/B 2026-10-25 with `local/bench-v41/ab-rco-iq2xxs.sh`, 2 runs each, every arm forced on one reference token stream,
+Promessi Sposi 300 tokens and the 17K prompt 128 tokens at ctx 24576, arena 80 GiB, 12 threads:
+
+| arm | Promessi Sposi | 17K prompt | VRAM hits / cpu / file (Sposi) |
+|---|---:|---:|---|
+| our Q2 (`rank-q2.bin`) | 19.11 (18.72-19.50) | 12.25 (11.59-12.90) | 81.8% / 11470 / 685 |
+| RCO pack | 20.01 (19.74-20.28) | 13.44 (13.27-13.61) | 83.9% / 10566 / 172 |
+| RCO pack, ggml-cpu IQ1_M rows | 20.15 (20.09-20.21) | 13.23 (13.16-13.31) | 83.9% / 10566 / 172 |
+
+So the RCO pack decodes 4.7% faster than our Q2 on Promessi Sposi and 9.7% faster on the 17K prompt: at the same
+80 GiB its smaller blobs fill 10005 arena slots against the Q2's 8630 and leave 3428 to the file tier against 5203,
+the card's VRAM budget holds 1594 experts against 1231, and a CPU-served expert costs 181.5 us against 198.4. The two
+packs are not the same model either: forced on the Q2's own stream, the RCO arm's argmax disagreed with it at 51 of
+the 300 Sposi positions and at 1 of the 128 on the 17K prompt (`margin:` lines), against 0 and 1 for the Q2 arms from
+their own reference.
+
+Bytes, not the CPU kernel, is what moved the tier: on real rows of the two packs (`local/bench-v41/fmt-cost/fmt_cost.cpp`, one
+core of the 9900X, ns per row-token against ggml-cpu's dispatched dot) IQ1_M's 56-byte block is the more expensive
+format to dot - its down rows are 79.04 against Q2_K's 32.39, while its gate/up rows are 168.44 against IQ2_XXS's
+179.39, so an all-IQ1_M expert is +19% when it is compute-bound. A cache-resident 96-row slice is compute-bound;
+the tier's 8 MB blobs are not, and there the -13.6% of bytes wins. The same probe times the kernel on those rows:
+at four tokens IQ1_M gate/up 150.23 against 168.00 ns per row-token (1.12x) and down 67.51 against 78.53 (1.16x),
+IQ2_XXS 38.28 against 83.25 (2.17x), IQ2_XS 89.97 against 198.60 (2.21x); at eight, 138.86 / 61.54 / 38.32 / 93.06.
+The IQ1_M rows are bit-exact against ggml-cpu's generic reference on the pack's own weights (680 of 680 at eight
+tokens, 340 of 340 at four, max abs difference 0). The IQ2_XXS and IQ2_XS rows are not: they differ from it, and from
+the dispatched dot, by a few float32 ulps - on the Q2 pack's gate rows the sums reach 1.4e7 and the difference there
+is 3, which is the same size as the dispatched dot's own difference from generic on those rows (2 to 3), and 1e-6 or
+less on the RCO rows whose sums stay near 7. Bit-exactness is always claimed against generic, as above.
+
+## The Engram tables read from the pack's own iq4_nl GGUF (2026-10-26)
+
+The GSQ-RCO release ships the Engram rows as a file of its own, `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` (110.6 GB),
+with one tensor per Engram layer - `blk.1.engram_embd.weight` and `blk.14.engram_embd.weight`, shape [256, rows] with
+rows 384006168 and 384016682, exactly the counts the pack's primes tile, and iq4_nl. Until now the engine read those
+rows only in the checkpoint's own form: the two HF safetensors with F8_E4M3 weight bytes and F8_E8M0 scales, 264 bytes
+a row, which `local/fetch-model.sh` extracts from antirez's Q2 pack (203 GB, `models/engram-1017`). The reader now
+takes either: `--engram` gets a `.gguf` path instead of the two safetensors directories, and one 144-byte row comes
+back from a single pread instead of 256 + 8 bytes from two. Geometry, hashing and the row cache are unchanged; the
+cache entry shrinks to the row (144 against 264 bytes), and the coalescer groups by the page the row *starts* in, so a
+group can span the page plus one row - an iq4_nl row is not page-aligned, the tensor begins at byte 416.
+
+iq4_nl is not linear: a block is a binary16 scale and 16 nibble bytes, and the value is `d * k`, where `k` runs over
+ggml's 16-entry `kvalues_iq4nl` table (-127 to 113), the low nibbles of the 16 bytes giving the block's first 16 values
+and the high nibbles its second 16. `ds41_dequant_iq4_nl_row` in `ds41_engram.cpp` is that arithmetic, written there
+rather than called through ggml's type traits because `bench_ds41_engram` compiles the module without ggml;
+`tools/v41/engine/test_ds41_engram.cpp` gates it - 1,028,096 of 1,028,096 values bit-identical to ggml's own
+`to_float` over random rows (every nibble pair, every finite binary16 scale, and the codebook endpoints).
+
+Row reads, this box, tables on the internal NVMe (ext4), 4096-token sequence `local/prompts/huge17k.i32`, 16 threads,
+`build-hip-fused/bench_ds41_engram`, rows per pass 96 / 49152 / 393216:
+
+| pass | warm: reference / batch (rows/s) | cold (`drop_cache` between reps): reference / batch |
+|---|---:|---:|
+| 1 token | 1,135,020 / 2,466,598 (2.2x) | 29,539 / 2,671,119 (90.4x) |
+| 512 tokens | 10,004,445 / 7,001,799 (0.70x) | 700,548 / 7,464,885 (10.7x) |
+| 4096 tokens | 7,913,110 / 5,951,369 (0.75x) | 3,395,262 / 7,150,841 (2.1x) |
+
+So cold - which is what a decode token actually pays, ~48 rows of a 110 GB file it has not seen - the batched path is
+90x the old per-row reader at one token and 2.1x at 4096, and it reads 45% fewer bytes per row. Warm the coalescer
+loses on the 144-byte rows: it pulls the page plus a row where the reference path reads the row alone, and on a table
+that already sits in the page cache a plain pread is cheaper. `--check 200` says the two paths return identical rows
+(0 of 2 slots differ), as they must.
+
+The CPU dense path needed one fix to run the pack at all: RCO stores `blk.N.engram_q.weight` and
+`blk.N.engram_k.weight` as BF16, and ggml-cpu has no f32 x bf16 binary op, so `test_ds41_dense` aborted in
+`binary-ops.cpp` ("unsupported types: dst: f32, src0: f32, src1: bf16") as soon as the Engram was on. The GPU path
+already re-typed them to F32 at load; the zero-copy CPU path now converts them into their own buffer with ggml's
+traits (20,480 values each). With that, `test_ds41_dense <pack> --engram <iq4 gguf> --zero-experts --no-actquant`
+runs, and the Engram is doing something: logits against the same pass with `--engram` off move by max abs 10.287 and
+mean abs 1.199 over 1,034,240 values.
+
+What the pack's iq4_nl rows cost in quality against the checkpoint's FP8 rows is measured with Lucebox on the same
+pack in the next section ("The RCO pack measured...").
+
+Ranking a pack by bytes needs to know which format each expert is in: `tools/v41/engine/v41_pack_map.py` writes that
+map from the pack's headers (`{"map": {"<layer>": {"gu": [...], "dn": [...]}}}`, 40 layers, the (gate, down) classes of
+the table above), and `v41_rank.py` now prices iq1_m / iq2_xxs / iq2_xs / q2_k (56 / 66 / 74 / 84 bytes a 256) rather
+than only q2_0 / q3_k / ptq1. Over the calibration corpus (`local/calib-q2/stats-merged`) the pack's own byte-correct
+order puts 40.8% of routed tokens in the first 8 GiB of experts, 74.6% in 32 and 97.1% in 80; against the
+`local/rank-q2.bin` this box runs, its first 10005 pairs overlap 99.1% and its first 2198 - the VRAM budget - 94.5%.
+So the rank file for this pack exists (`local/rank-rco-calib.bin` plus the map) and is **not** taken: like the two rank
+swaps measured before (14.09 against 14.08), it changes nothing until it is measured.
+
+Lucebox with the pack's own tables, run on 2026-10-26 (`MODEL=…GSQ-RCO-IQ2_XXS-00001-of-00004.gguf`,
+`ENGRAM=models/rco-iq2xxs/DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`, `RANK=local/rank-q2.bin`, `local/eval-lucebox/run-eval.sh
+rco-iq2xxs-iq4eng`, 8 x 1024 tokens, arena 75 GiB, ctx 4096, `--kv-q8`, 12 threads): **ppl 10.33, the run's own top-1
+next-token accuracy 50.6%** over 8184 rows (`local/eval-lucebox/rco-iq2xxs-iq4eng/score.json`). Against that, our Q2
+pack with the FP8 tables measured **ppl 9.78** (`local/eval-lucebox/ds4q2-q6k/score.json`) - but that run also had the
+dense half re-quantized to q6_K, which this one did not, and the two packs are different quants, so the 5.6% is the
+pack, the tables and the dense load together. Top-1 agreement with the teacher (78.8%) and KL (0.269) cannot be
+reprinted: `teacher_8x1024.npz`, the 1017 FP8's top-256 log-probs taken on 2026-10-20, is no longer on this box and
+nothing in the tree regenerates it. What `score.py` does now: always ppl and the run's own top-1, the teacher's two
+numbers when its file is present, and with `--against <run dir>` the KL and top-1 agreement **between two runs** -
+which isolates one change (a table form, a rank, a kernel) on one pack, no teacher needed, `KEEP_LOGITS=1` keeping the
+8 x 528 MB of logits that makes it possible. The clean read of the iq4_nl tables - the same pack with both table
+forms - is in the next section.
+
+Both table forms, measured side by side (same box, same sequence `local/prompts/huge17k.i32`, 16 threads,
+`build-hip-fused/bench_ds41_engram`, rows/s of the batched reader; cold = `drop_cache` between reps):
+
+| pass | FP8 safetensors warm | iq4_nl GGUF warm | FP8 cold | iq4_nl cold |
+|---|---:|---:|---:|---:|
+| 1 token | 592,878 | 2,466,598 | 577,617 | 2,671,119 |
+| 512 tokens | 3,014,128 | 7,001,799 | 1,962,231 | 7,464,885 |
+| 4096 tokens | 5,630,238 | 5,951,369 | 5,062,294 | 7,150,841 |
+
+The iq4_nl table is 144 B a row read in one pread against the FP8's 264 B in two, and cold it delivers 4.6x / 3.8x /
+1.4x the rows per second. What that speed buys is paid back in row values: running the CPU dense half over the same
+tokens with each form (`test_ds41_dense <pack> --zero-experts --no-actquant`, experts zeroed so only the dense half and
+the Engram move), the logits of the two forms differ by **max abs 1.759, mean abs 0.170** - against the Engram's own
+effect on the same pass (max abs 10.637, mean abs 1.249 against `--engram` off). So the pack's own tables move the model
+by about a seventh of what the Engram itself moves it, and read 45% fewer bytes; two rows only, taken on the CPU half,
+so it is a size estimate of the gap, not the Lucebox number. This box runs the FP8 tables (they are the checkpoint's
+own rows and they came back for free from the pack it already had); the iq4_nl form stays supported - `--engram <file>.gguf` -
+and is what a pack that ships only that form would use.
+
+One incident worth keeping, because the failure mode is silent: the extraction of `engram-L14.safetensors` was killed by
+a full disk, and the file it left had its whole size (reserved by `truncate()` before writing) with zeros past 46 GiB -
+it opened fine and would have fed the model an all-zero n-gram row for half the table. Two guards now:
+`local/ds4-engram-extract.py` writes `<name>.part` and renames only after `fsync`, samples 256 weight rows before
+calling a table complete (the hole-filled one: 139 of 256 zero), and refuses to start without room; and the engine
+samples 512 rows at open (that same file: 278 of 512 zero -> `reads as zeros over a third of the sample`,
+`STRATA_ENGRAM_NO_ZERO_CHECK=1` to skip). A complete table samples clean: 0 zero rows in 400. The re-extracted L14 was
+checked row by row against the pack: 300 random rows, weight and scale bytes identical, 0 mismatch.
+
+## The RCO pack measured: FP8 against iq4_nl tables, the q6_K requant, prompts from the NVMe (2026-10-26)
+
+**Quality, Lucebox** (`local/eval-lucebox/run-eval.sh`, 8 x 1024 tokens, one card, arena 75 GiB, ctx 4096, `--kv-q8`,
+12 threads, `RANK=local/rank-q2.bin`, the pack with `DS41_META`; `--against` scores one run's logits against another's):
+
+| run | ppl | own top-1 | against | KL | same top-1 |
+| --- | ---: | ---: | --- | ---: | ---: |
+| iq4_nl tables (`rco-iq2xxs-iq4eng`) | 10.334 | 50.6% | | | |
+| FP8 tables (`rco-iq2xxs-fp8eng`) | 10.369 | 50.7% | iq4_nl | 0.026 | 93.6% |
+| FP8 tables, repeated (`rco-iq2xxs-fp8eng-rep`) | 10.369 | 50.7% | FP8 | 0.000 | 100% |
+| FP8 + `STRATA_DENSE_REQUANT=q6_K` (`rco-iq2xxs-fp8eng-q6k`) | 10.372 | 50.7% | FP8 | 0.018 | 94.7% |
+
+The repeat is bit-identical to the first run (KL 0, every row the same argmax): this one-card eval is deterministic,
+so 0.026 and 0.018 are real differences, not placement noise. Both are small and neither moves the ppl: the FP8 rows
+read 10.369 against the iq4_nl rows' 10.334, and the requant adds 0.003. So on this set the pack's own iq4_nl table is
+as good as the checkpoint's FP8 rows, and the q6_K requant costs nothing measurable. `score.py`'s `--against` KL
+had its sign inverted until this run (it printed -KL); fixed.
+
+What the requant touches on this pack: the dense half is Q5_K already (attention output, q_b, shared expert, output,
+token_embd) except `attn_q_a` and `attn_kv`, Q8_0, so `dense requant: 84 Q8_0 matrices -> q6_K, 0.39 -> 0.30 GB`.
+
+**Speed, requant against the pack's own types** (`local/bench-v41/ab-rco-requant.sh`, the chat configuration's flags:
+two cards, arena 80 GiB, zero-copy sum, 12 threads, power-tune on; arms alternated, tok/s per run;
+`local/sweep-rco-rq/`):
+
+| | q6_K (the chat config) | the pack's own types |
+| --- | --- | --- |
+| Promessi Sposi, 300 tokens | 20.99 / 22.97 / 23.20 | 23.61 / 23.26 / 23.30 |
+| 17K context, 128 tokens | 17.66 / 18.30 / 18.32 | 15.11 / 17.88 / 18.30 / 18.33 |
+| prompt 8,192 tokens | 379.1 / 392.3 / 371.2 | 413.7 / 384.7 / 378.6 |
+| prompt 17,349 tokens | 436.1 / 433.4 / 450.0 | 435.3 / 459.2 / 447.5 |
+| prompt 25,500 tokens | 482.2 / 483.5 / 470.5 | 460.3 / 458.3 / 477.3 |
+
+The two arms are the same within their spread (the low first runs of each column are the first engine starts of the
+series), so the chat config keeps `STRATA_DENSE_REQUANT=q6_K`: it saves 0.09 GB of VRAM and costs nothing measured.
+(The 17K row's first q6_K run is not in the table: unforced, the model ended its answer at the first token; the
+other runs are forced on the 128-token stream of `local/sweep-rco2`.)
+
+Prompts from zero with the pack on the internal NVMe: 371-414 tok/s at 8K, 433-459 at 17K, 458-484 at 25.5K, file
+wait 6-11 s, against our Q2's 314-332 / 360-366 / 385-396 on 2026-10-22 (the enc-skip table above, same flags but
+arena 75 GiB): **+18-23% prompt speed** from the smaller blobs. Decode on the same flags is 23.3 tok/s on Promessi
+Sposi and ~18.2 at 17K; the 2026-10-25 A/B on this pack read 20.01 and 13.44, and whether power-tune was on for it was
+not recorded (power-tune measured +11% short / +21% at ~25K on 2026-10-21, the size of that gap).
+
+## Where an RCO token goes, and three levers that did not move it (2026-10-26)
+
+`STRATA_DEC_PROF=1` / `DS4_TIER_PROF=1` / `STRATA_POOL_PROF=1` on the chat flags (two cards, arena 80 GiB, power-tune
+on, `local/sweep-prof-rco/`), ms per token:
+
+| | begin | attn_router (dense) | tier | finish | tok/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Promessi Sposi | 1.0 | 24.8 | 14.7 | 1.4 | 23.6 |
+| 17K context | 0.5 | 27.8 | 27.5 | 1.6 | 18.4 |
+
+Inside the tier: the CPU pool 7.4 ms (Sposi, 35 experts a token) / 16.8 ms (17K, 74 a token), at 47 GB/s - the RAM's
+limit, as before; waiting for card 1's rows and the sum 6.2 / 7.1 ms. Card 0's kernel trace (64 Sposi tokens): 3,378
+kernels and 19.9 ms busy a token (`mul_mat_vec_q` 7.2 ms, the expert kernels 3.6 ms); of its idle time, 8.6 ms a token
+is the gap between its own expert kernels and the sum (waiting for the CPU's rows) and ~6 ms is spread over the 40
+per-layer host round trips (router readback, the tier's decision, the next graph). Neither gap is a kernel cost, so
+fusing the dense half's small kernels cannot remove them; removing the round trips means routing on the card.
+
+A one-shot run keeps the prompt's 8192 state columns (~2.5 GiB) after the prompt; `--serve` gives them back
+(`elastic_cols`), so the one-shot 17K numbers above read card 0 with 1594 experts where the server has ~2170.
+`STRATA_ELASTIC_COLS=1` now opts a one-shot run in: the 17K prompt then holds 2176 experts on card 0 and decodes
+**18.50 / 19.22 / 18.42 tok/s** against 17.67 / 16.69 / 18.50 without (`local/sweep-rco-lev`, `elastic-r*`).
+
+`local/bench-v41/ab-rco-levers.sh`, 3 rounds alternated, tok/s (VRAM hits):
+
+| | 17K, 128 tokens | Promessi Sposi, 300 tokens |
+| --- | --- | --- |
+| chat flags | 17.67 / 16.69 / 18.50 (62.7%) | 23.69 / 23.31 / 23.68 (84.0%) |
+| `STRATA_DOWN_AMD_IQ=1` (the pack's IQ2_XXS/IQ2_XS/IQ1_M down rows on the AMD layouts) | 18.44 / 18.33 / 18.28 | 23.55 / 23.65 / 23.74 |
+| `--rank local/rank-rco-calib.bin` (the pack's byte-correct order) | 18.92 / 18.45 / 18.39 (62.6-64.9%) | 23.88 / 22.97 / 23.79 (84.2%) |
+
+All three inside the spread; the argmax counts (`diff=`) are the base's. `STRATA_DOWN_AMD_IQ` stays opt-in and the rank
+stays `rank-q2.bin`. A release of ggml's device memory pool after the prompt (tried as the cause of the one-shot VRAM
+loss) gave back 0.22 GiB and was removed.

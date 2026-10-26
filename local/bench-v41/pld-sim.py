@@ -7,12 +7,12 @@ message's own output is its thinking, text and tool calls.  At each step the las
 history (most recent occurrence); the K tokens that followed are the draft, and a verify pass keeps the longest prefix
 the real output agrees with, plus the pass's own token.  Without a match the step is a normal single token.
 Prints, per K: output tokens, steps, tokens per step, and how many tokens came from drafted passes.  Tokens are the
-model's own (models/ds4-1017/tokenizer, the server's tokenizer).  Only counts are printed, no content."""
+model's own (models/rco-iq2xxs/tokenizer, the server's tokenizer).  Only counts are printed, no content."""
 import json, os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tools"))
 import strata_tokenizer as ST  # noqa: E402
 
-TD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "models", "ds4-1017", "tokenizer")
+TD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "models", "rco-iq2xxs", "tokenizer")
 vocab = json.load(open(os.path.join(TD, "vocab.json")))
 tokens = [None] * (max(vocab.values()) + 1)
 for t, i in vocab.items():
