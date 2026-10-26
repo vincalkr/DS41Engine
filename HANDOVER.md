@@ -41,6 +41,17 @@ latest state is in the update notes below and in `docs/ds4/V41_EXACT_FAST.md`). 
 > Conversations are also kept on disk (`--conversation-disk local/conv-cache`): a restarted server resumes them in
 > about a second; the Monitor shows the folder, the space and a button that clears them.
 
+> **Update 2026-10-25/26:** the model is now the published GSQ-RCO pack (`models/rco-iq2xxs`, four shards, 138.2 GB) -
+> its GGUF carries llama.cpp metadata, so the geometry comes from a 511 KB overlay (`DS41_META`,
+> `tools/v41/ds41_pack_meta.py`) while the weights stay in the pack, and `Ds41FileBlobs` reads a blob from whichever
+> shard holds it. 60 of the 120 expert tensors there are IQ1_M, and the CPU expert pool now has an AVX-512 kernel for
+> them (bit-exact against ggml-cpu's generic dot; 1.12-1.16x on its own rows - decode is one token at a time, so it was
+> the -13.6% of bytes that moved the tier: +4.7% on Promessi Sposi, +9.7% on the 17K prompt). The Engram rows are read
+> from the pack's own iq4_nl GGUF (144 B a row, one pread, the batch reader 2.1-90x the per-row one cold); the
+> checkpoint's FP8 tables - re-extractable from antirez's Q2 pack, which is off this box; the overlay rebuilds from the
+> 8 KB `local/rco-iq2xxs-meta/geometry-keys.json`. Numbers and gates: the last three sections of
+> [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
+
 ## 0. TL;DR
 
 The stack is a fork of **Strata** (a Qwen3.8-oriented server + C++/HIP engine) with a v41 (DeepSeek-V4.1) shim and a

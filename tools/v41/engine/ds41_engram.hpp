@@ -1,8 +1,12 @@
 // tools/v41/engine/ds41_engram.hpp - DeepSeek-V4.1 Engram: the n-gram hash (model.py / engram.py NgramHashState)
-// and the row reader.  The tables are NOT copied anywhere: rows are read straight from the HF safetensors shards
-// (layers.{1,14}.engram.embed.weight F8_E4M3 [rows, 256] + .scale F8_E8M0 [rows, 8]), two small preads per row,
-// in parallel.  A row dequantizes to 256 floats = fp8 * 2^(e8m0 - 127) per 32 (model.py ParallelEngramEmbedding;
-// exactly representable in bf16, so model.py's bf16 cast is a no-op on them).
+// and the row reader.  The tables are NOT copied anywhere: rows are read straight from the file that holds them, in
+// parallel, in either of the two forms the releases come in:
+//   * the checkpoint's own HF safetensors (layers.{1,14}.engram.embed.weight F8_E4M3 [rows, 256] + .scale F8_E8M0
+//     [rows, 8]): two small preads a row, 264 B a row.  A row dequantizes to 256 floats = fp8 * 2^(e8m0 - 127) per 32
+//     (model.py ParallelEngramEmbedding; exactly representable in bf16, so model.py's bf16 cast is a no-op on them).
+//   * a GGUF that carries them as one quantized tensor a layer (`--engram <file>.gguf`, the RCO packs'
+//     blk.{1,14}.engram_embd.weight, iq4_nl): one pread a row, 144 B a row, dequantized by ggml's own iq4_nl traits.
+//     The same rows, 4.5 bpw instead of the FP8's ~8.2: bench_ds41_engram --cmp-to measures what that costs.
 //
 // rows()/start() are the fast batch reader: hashes are deduped and sorted by row id, so per row the two preads come out
 // ascending and the unique rows whose bytes share a 4 KiB page are one pread - which on the exFAT volume the tables live
@@ -26,12 +30,19 @@
 
 namespace strata::v41 {
 
+/// One iq4_nl row (dim/32 blocks of 18 B: a binary16 scale + 16 nibble bytes) -> dim floats, exactly ggml's
+/// dequantize_row_iq4_nl (test_ds41_engram diffs it against ggml's own type traits).
+void ds41_dequant_iq4_nl_row(const uint8_t * w, int64_t dim, float * o);
+
 class Ds41Engram {
 public:
     struct RawMap;   ///< a fragmented table file read straight from its block device (see ds41_engram.cpp)
     ~Ds41Engram();
-    /// dirs: where the shards are (the index json is looked up in each, the shard files too).
-    bool open(const Ds41Geometry & g, const std::vector<std::string> & dirs, int threads, std::string & err);
+    /// dirs: where the shards are (the index json is looked up in each, the shard files too), or a .gguf table file.
+    /// pack_hint: the pack being run; when the named table paths are not there, the pack's own Engram GGUF next to it
+    /// (the RCO release's `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`) is used instead, and the choice is printed.
+    bool open(const Ds41Geometry & g, const std::vector<std::string> & dirs, int threads, std::string & err,
+              const std::string & pack_hint = std::string());
     bool enabled() const { return !tables_.empty(); }
     int64_t n_cols() const { return cols_; }                    ///< hash columns per token per layer (24)
     int64_t row_dim() const { return dim_; }                    ///< 256
@@ -64,8 +75,9 @@ public:
     uint64_t cache_misses() const { return cache_miss_; }
 
 private:
+    // rb / sb: bytes a row takes in the weight array and in the scale array (FP8: 256 and 8; iq4_nl: 144 and none).
     struct Table { int fd_w = -1, fd_s = -1; uint64_t off_w = 0, off_s = 0; int64_t rows = 0;
-                   std::shared_ptr<RawMap> rm_w, rm_s; };
+                   std::shared_ptr<RawMap> rm_w, rm_s; uint32_t rb = 0, sb = 0; bool iq4 = false; };
     struct ReadGroup;               // one coalesced pread (defined in the .cpp)
     const Ds41Geometry * g_ = nullptr;
     std::vector<Table> tables_;
@@ -73,9 +85,10 @@ private:
     // by every read until `cache_cap_` rows (STRATA_ENGRAM_CACHE_ROWS, default 2M ~ 0.6 GB; 0 = off), never evicted:
     // a prompt's rows are all cached as it is read, so decode n-grams that repeat the context skip the disk (the Engram
     // table sits on exFAT here: ~13K random reads/s - a decode token's ~48 reads cost ~10 ms cold).
+    bool open_gguf(const Ds41Geometry & g, const std::vector<std::string> & paths, std::string & err);
     std::unordered_map<uint64_t, uint32_t> cache_idx_;
     std::vector<uint8_t> cache_pool_;
-    size_t cache_cap_ = 0, cache_used_ = 0;
+    size_t cache_cap_ = 0, cache_used_ = 0, cache_stride_ = 0;
     uint64_t cache_hits_ = 0, cache_miss_ = 0;
     std::mutex cache_mu_;
     std::vector<int64_t> hist_;      // compressed ids by position

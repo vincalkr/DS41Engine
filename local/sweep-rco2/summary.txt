@@ -1,0 +1,27 @@
+AB_RCO_START 2026-10-25 18:58:07 reps=2 models=q2 rco rcogen
+q2-r1                        huge17k        diff=0    decode: 128 tokens in 9.84 s = 12.90 tok/s; experts 13505 hit / 9630 cpu / 0 pcie / 800 file (58.4% VRAM hits), cpu 1930 ms, file 2248 ms; spec reads 0 issued / 0 used; p
+q2-r1                        sposi          diff=0    decode: 300 tokens in 15.34 s = 19.50 tok/s; experts 51659 hit / 11464 cpu / 0 pcie / 693 file (81.8% VRAM hits), cpu 2273 ms, file 1534 ms; spec reads 0 issued / 0 used;
+q2-r2                        huge17k        diff=0    decode: 128 tokens in 10.95 s = 11.59 tok/s; experts 13516 hit / 9587 cpu / 0 pcie / 791 file (58.5% VRAM hits), cpu 1868 ms, file 2470 ms; spec reads 0 issued / 0 used; 
+q2-r2                        sposi          diff=1    decode: 300 tokens in 15.97 s = 18.72 tok/s; experts 51599 hit / 11475 cpu / 0 pcie / 677 file (81.8% VRAM hits), cpu 2278 ms, file 1976 ms; spec reads 0 issued / 0 used;
+rco-r1                       huge17k        diff=1    decode: 128 tokens in 9.33 s = 13.61 tok/s; experts 15986 hit / 9330 cpu / 0 pcie / 288 file (63.1% VRAM hits), cpu 1683 ms, file 2476 ms; spec reads 0 issued / 0 used; p
+rco-r1                       sposi          diff=51   decode: 300 tokens in 14.75 s = 20.28 tok/s; experts 55080 hit / 10566 cpu / 0 pcie / 172 file (83.9% VRAM hits), cpu 1920 ms, file 1458 ms; spec reads 0 issued / 0 used;
+rco-r2                       huge17k        diff=1    decode: 128 tokens in 9.57 s = 13.27 tok/s; experts 15853 hit / 9377 cpu / 0 pcie / 299 file (62.8% VRAM hits), cpu 1725 ms, file 2582 ms; spec reads 0 issued / 0 used; p
+rco-r2                       sposi          diff=51   decode: 300 tokens in 15.15 s = 19.74 tok/s; experts 55080 hit / 10566 cpu / 0 pcie / 172 file (83.9% VRAM hits), cpu 1916 ms, file 1459 ms; spec reads 0 issued / 0 used;
+rcogen-r1                    huge17k        diff=1    decode: 128 tokens in 9.54 s = 13.31 tok/s; experts 15915 hit / 9355 cpu / 0 pcie / 297 file (63.0% VRAM hits), cpu 1707 ms, file 2573 ms; spec reads 0 issued / 0 used; p
+rcogen-r1                    sposi          diff=51   decode: 300 tokens in 14.88 s = 20.09 tok/s; experts 55080 hit / 10566 cpu / 0 pcie / 172 file (83.9% VRAM hits), cpu 1904 ms, file 1459 ms; spec reads 0 issued / 0 used;
+rcogen-r2                    huge17k        diff=1    decode: 128 tokens in 9.65 s = 13.16 tok/s; experts 15905 hit / 9373 cpu / 0 pcie / 299 file (62.9% VRAM hits), cpu 1715 ms, file 2584 ms; spec reads 0 issued / 0 used; p
+rcogen-r2                    sposi          diff=51   decode: 300 tokens in 14.79 s = 20.21 tok/s; experts 55080 hit / 10566 cpu / 0 pcie / 172 file (83.9% VRAM hits), cpu 1894 ms, file 1459 ms; spec reads 0 issued / 0 used;
+AB_RCO_DONE 2026-10-25 19:29:13
+AB_RCO_START 2026-10-25 20:31:00 reps=2 models=q2 rco rcogen
+AB_RCO_START 2026-10-26 08:58:47 reps=2 models=rco rcogen
+AB_RCO_START 2026-10-26 10:17:54 reps=2 models=rco rcogen
+AB_RCO_START 2026-10-26 11:46:42 reps=2 models=rco rcogen
+rco-r1                       huge17k        diff=1    decode: 128 tokens in 8.53 s = 14.89 tok/s; experts 15830 hit / 9408 cpu / 0 pcie / 292 file (62.7% VRAM hits), cpu 1788 ms, file 812 ms; spec reads 0 issued / 0 used; pr
+rco-r1                       sposi          diff=50   decode: 300 tokens in 13.83 s = 21.62 tok/s; experts 55070 hit / 10584 cpu / 0 pcie / 173 file (83.9% VRAM hits), cpu 1913 ms, file 624 ms; spec reads 0 issued / 0 used; 
+rco-r2                       huge17k        diff=1    decode: 128 tokens in 7.31 s = 17.38 tok/s; experts 16704 hit / 9186 cpu / 0 pcie / 225 file (64.5% VRAM hits), cpu 1689 ms, file 893 ms; spec reads 0 issued / 0 used; pr
+rco-r2                       sposi          diff=50   decode: 300 tokens in 15.19 s = 19.68 tok/s; experts 55070 hit / 10584 cpu / 0 pcie / 173 file (83.9% VRAM hits), cpu 1897 ms, file 552 ms; spec reads 0 issued / 0 used; 
+rcogen-r1                    huge17k        diff=1    decode: 128 tokens in 7.69 s = 16.52 tok/s; experts 15900 hit / 9421 cpu / 0 pcie / 296 file (62.8% VRAM hits), cpu 1724 ms, file 1099 ms; spec reads 0 issued / 0 used; p
+rcogen-r1                    sposi          diff=51   decode: 300 tokens in 13.87 s = 21.55 tok/s; experts 55080 hit / 10566 cpu / 0 pcie / 172 file (83.9% VRAM hits), cpu 1930 ms, file 646 ms; spec reads 0 issued / 0 used; 
+rcogen-r2                    huge17k        diff=1    decode: 128 tokens in 7.47 s = 17.01 tok/s; experts 15975 hit / 9391 cpu / 0 pcie / 286 file (63.0% VRAM hits), cpu 1728 ms, file 835 ms; spec reads 0 issued / 0 used; pr
+rcogen-r2                    sposi          diff=51   decode: 300 tokens in 13.81 s = 21.65 tok/s; experts 55080 hit / 10566 cpu / 0 pcie / 172 file (83.9% VRAM hits), cpu 1956 ms, file 594 ms; spec reads 0 issued / 0 used; 
+AB_RCO_DONE 2026-10-26 11:56:11

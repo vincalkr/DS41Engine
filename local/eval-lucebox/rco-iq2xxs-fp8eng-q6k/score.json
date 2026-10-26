@@ -1,0 +1,1 @@
+{"tokens": 8184, "ppl": 10.371627380860037, "top1_own": 0.5074535679374389, "teacher": "absent", "against": "rco-iq2xxs-fp8eng", "kl_against": 0.01796272127272201, "top1_against": 0.946969696969697}

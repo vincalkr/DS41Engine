@@ -15,7 +15,11 @@ import os
 import numpy as np
 
 D, FF, NE = 5120, 2304, 384
-BPW = {"q2_0": 18 / 64, "q3_k": 110 / 256, "ptq1": 28 / 128}
+# bytes per value of the expert formats (block bytes / block values): the mixed packs are ranked per BYTE of
+# blob, so an IQ1_M expert (56 B a 256) and a Q2_K one (84 B) must not be priced the same.
+BPW = {"q2_0": 18 / 64, "q3_k": 110 / 256, "ptq1": 28 / 128,
+       "iq1_m": 56 / 256, "iq2_xxs": 66 / 256, "iq2_xs": 74 / 256, "q2_k": 84 / 256,
+       "iq2_s": 98 / 256, "iq3_xxs": 110 / 256, "iq3_s": 104 / 256, "iq4_nl": 18 / 32, "iq4_xs": 136 / 256}
 
 
 def main():

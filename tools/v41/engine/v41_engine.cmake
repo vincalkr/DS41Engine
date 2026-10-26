@@ -80,6 +80,12 @@ if(TARGET ds41_dense)
         target_link_libraries(test_ds41_hcmix PRIVATE ds41_dense)
     endif()
 endif()
+# the iq4_nl Engram-table gate: the module's row dequant against ggml's type traits
+if(TARGET ds41_dense)
+    add_executable(test_ds41_engram ${_v41_dir}/test_ds41_engram.cpp)
+    target_include_directories(test_ds41_engram PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_v41_dir})
+    target_link_libraries(test_ds41_engram PRIVATE ds41_dense)
+endif()
 # the Engram row-read bench (CPU + disk only): it compiles the module straight in, so it builds without ggml or CUDA
 add_executable(bench_ds41_engram ${_v41_dir}/bench_ds41_engram.cpp ${_v41_dir}/ds41_engram.cpp)
 target_include_directories(bench_ds41_engram PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${_v41_dir})

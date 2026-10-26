@@ -1,11 +1,12 @@
 <h1 align="center">ds41e - DeepSeek-V4.1-Flash-1017 on RX 7900 XTX</h1>
 
-<p align="center"><b>DeepSeek-V4.1-Flash-1017 (antirez/ds4's Q2) with exact routing on one or two RX 7900 XTX, its experts across VRAM, pinned RAM and NVMe</b><br>
+<p align="center"><b>DeepSeek-V4.1-Flash-1017 (the published GSQ-RCO IQ2_XXS pack) with exact routing on one or two RX 7900 XTX, its experts across VRAM, pinned RAM and NVMe</b><br>
 Linux - ROCm/HIP - MIT</p>
 
 A C++/HIP inference engine for DeepSeek-V4.1-Flash and an OpenAI- and Anthropic-compatible server with a web chat
-and monitor. The model is DeepSeek-V4.1-Flash-1017 as [antirez/ds4](https://github.com/antirez/ds4)'s Q2
-(`DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf`); every expert the model routes to is computed (no route bias),
+and monitor. The model is DeepSeek-V4.1-Flash-1017 as the [ISTA-DASLab GSQ-RCO pack](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF)
+(IQ2_XXS/IQ2_XS/IQ1_M experts, four shards, 138.2 GB), read through the geometry overlay `DS41_META` because its GGUF
+carries llama.cpp metadata instead of this engine's `deepseek41.*` keys; every expert the model routes to is computed (no route bias),
 wherever it is: card 0's VRAM, the second card, an 80 GiB pinned RAM arena, or read from the NVMe.
 
 ## Performance
@@ -22,7 +23,11 @@ on (2026-10-20/21):
 | prompt, a +497-token agent turn on 121K context | 7.5 s |
 
 Quality against the 1017 FP8 on Lucebox's held-out set (8 x 1024 tokens): ppl 9.78 (FP8 8.56), top-1 agreement 78.8%,
-KL 0.269. Every number and how it was measured: [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
+KL 0.269 - measured on the pack this box ran until 2026-10-25, antirez/ds4's Q2. The Lucebox number of the GSQ-RCO
+pack it runs today is not measured yet. Its decode was (chat closed, `local/bench-v41/ab-rco-iq2xxs.sh`, 2 runs each,
+every arm forced on one reference token stream): 20.0 tok/s on Promessi Sposi (300 tokens) and 13.4 on the 17K prompt
+(128 tokens), against the Q2's 19.1 and 12.3 measured the same way. Every number and how it was measured:
+[docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
 
 ## Requirements
 
@@ -32,25 +37,32 @@ KL 0.269. Every number and how it was measured: [docs/ds4/V41_EXACT_FAST.md](doc
 | GPU | RX 7900 XT / XTX (`gfx1100`); a second 24 GB card is used as an expert tier when present |
 | RAM | 128 GB class (the engine holds ~94 GB with the 80 GiB arena) |
 | CPU | x86-64 with AVX2 (AVX-512 used when present) |
-| disk | ~570 GB on an NVMe for `models/` (366 GB GGUF + 203 GB Engram tables + 0.9 GiB vision encoder) |
+| disk | ~350 GB on an NVMe for `models/` (138 GB pack in four shards + 111 GB Engram GGUF + 0.9 GiB vision encoder); the checkpoint's own FP8 Engram rows instead of that GGUF are 203 GB |
 | tools | `cmake` >= 3.24, gcc, Python 3, curl, `aria2c` (faster downloads) |
 
 ## Quick start
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt   # the server's Python packages
-local/fetch-model.sh                                                  # the model into models/ (~570 GB, resumable)
+local/fetch-rco-1017.sh                                               # everything the engine needs (~249 GB, resumable)
 ./build.sh                                                            # ggml and the engine (tens of minutes the first time)
 ./run.sh                                                              # the server on 127.0.0.1:8150
 ```
 
-- `local/fetch-model.sh` downloads the GGUF with `aria2c` (4 connections, `CONN`), checks its sha256, extracts the two
-  Engram tables from it, fetches the tokenizer tables and builds the vision encoder; `DRY_RUN=1` prints the plan.
+- `local/fetch-rco-1017.sh` downloads the four shards and the pack's Engram IQ4_NL GGUF with `aria2c` (4 connections,
+  `CONN`), checks each sha256, and writes the geometry overlay `local/rco-iq2xxs-meta/meta.gguf` with
+  `tools/v41/ds41_pack_meta.py` (its reference geometry is the 5.8 MB header kept beside it) plus the rank byte map.
+- The engine reads the Engram rows in either form, and `local/fetch-rco-1017.sh` brings the one that comes with the pack
+  (iq4_nl, 144 bytes a row). The checkpoint's native FP8 rows (264 bytes a row) are the other: `local/fetch-model.sh`
+  downloads [antirez/ds4](https://github.com/antirez/ds4)'s Q2 pack and `local/ds4-engram-extract.py` cuts the two tables
+  out of it into `models/engram-1017` (101 GB a layer) - that pack is only their source, it can go once they are out
+  (re-extractable with `LAYERS=14 local/ds4-engram-extract.py <pack> models/engram-1017`). A configuration naming tables
+  this machine does not have still runs: the engine falls back to the pack's own table beside the pack and prints it.
+  Both forms measured: docs/ds4/V41_EXACT_FAST.md.
 - `./build.sh` builds the vendored ggml (`third_party/llama.cpp/ggml`) into `third_party/llama.cpp/build-hip`, then the
   engine into `build-hip-fused`; `ROCM`, `GFX`, `JOBS`, `REBUILD_GGML=1` from the environment.
 - `./run.sh` uses cards 0 and 1; `./run.sh --gpu 0` (or `--gpu 1`) one card, `--gpu 0,1` both. The number of cards
-  picks the configuration: `local/ds41-local-vision.json` / `local/ds41-local-1gpu-vision.json` when the vision
-  encoder is in `models/vision-1017`, otherwise `local/ds41-local.json` / `local/ds41-local-1gpu.json`;
+  picks the configuration: `local/ds41-local.json` (two cards) or `local/ds41-local-1gpu.json` (one);
   `--config FILE` uses that file. Other arguments go to the server (`./run.sh --port 8151`). `./stop.sh` stops a
   server started in the background (as Ctrl+C would; `--force` kills it if it does not end in 60 s). Loading takes about a minute; the web chat and monitor
   are at `http://127.0.0.1:8150/`, the API at `/v1`. Never expose the server beyond `127.0.0.1` without `--api-key`.
@@ -61,11 +73,12 @@ The level goes into the model's prompt (`Reasoning Effort: N`); the server also 
 (`reasoning_budget_by_effort` in the configuration: low 1024 tokens, high 4096, max none - at the cap it closes the
 thinking and the model answers). A request's own `reasoning_budget_tokens` wins.
 
-## Images (optional)
+## Images (not with this pack)
 
-The model reads pictures (OpenAI `image_url`, Anthropic `image` blocks). `local/fetch-model.sh` builds the 1017 vision
-encoder (0.9 GiB) into `models/vision-1017` and `./run.sh` starts the vision configuration; text runs as fast as
-without it. `VISION=0 local/fetch-model.sh` leaves it out, and `./run.sh` then runs text only.
+Images need the model's image routing bias, `blk.N.exp_probs_b_vl.bias`: the GSQ-RCO pack carries none, so the vision
+configurations were removed on 2026-10-25 and `--vision` says so when it is asked for. The encoder itself
+(`models/vision-1017`, 0.9 GiB, built by `local/fetch-model.sh`) stays; a pack that holds the bias gets a vision
+configuration back. Measurements of the path, on the pack that had it: [docs/ds4/V41_VISION.md](docs/ds4/V41_VISION.md).
 
 The encoder runs in the engine on the second card (0.2-5 s an image, exact against DeepSeek's code); a picture
 costs 189-1014 prompt tokens. The September encoder (antirez's `DeepSeek-V4.1-Flash-Vision.gguf`) does not match the
