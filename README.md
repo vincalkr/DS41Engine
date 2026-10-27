@@ -112,8 +112,10 @@ sudo local/install-power-tune.sh             # a root-owned copy and a sudo rule
 ## Expert rank
 
 Which experts live in VRAM and in the RAM arena follows a rank of the most used ones (`local/rank-q2.bin`). The server
-counts what the router picks (`local/routes-rco`); `local/update-rank.sh` builds a new rank from those counts, measures
-it against the one in use (~25 minutes, the server stopped meanwhile) and applies it only if it is faster.
+counts what the router picks (`local/routes-rco`); `local/update-rank.sh` builds a new rank from those counts (experts
+ranked per byte with the pack's formats, `local/rco-iq2xxs-map.json`), measures it against the one in use on a code
+review and a documentation prompt (`local/prompts/dev-code`, `dev-docs`; ~30 minutes, the server stopped meanwhile)
+and applies it only if it is faster.
 
 ## Another machine
 

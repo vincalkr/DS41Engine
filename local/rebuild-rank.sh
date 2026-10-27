@@ -7,12 +7,13 @@
 # expert) selection it routes and writes LNN.json there after each request (the counts survive restarts).  This
 # script sums those counts (times chat-weight) with local/calib-q2/stats-merged, ranks the sum and writes
 # local/rank-1017.bin.  It does not apply it: local/update-rank.sh measures it against the rank in use and applies it
-# only if faster.  ROUTES, MAP (per-expert sizes, for a mixed-size quant) and OUT override the defaults.
+# only if faster.  ROUTES, MAP (per-layer formats, default the GSQ-RCO pack's local/rco-iq2xxs-map.json; MAP= ranks as all Q2_0) and OUT
+# override the defaults.
 set -eu
 cd "$(dirname "$0")/.."
 W="${1:-1}"
 ROUTES="${ROUTES:-local/routes-rco}"
-MAP="${MAP-}"
+MAP="${MAP-local/rco-iq2xxs-map.json}"   # the pack's per-layer formats: experts ranked per byte, sizes right
 OUT="${OUT:-local/rank-1017.bin}"
 STATS="${OUT%.bin}.stats"
 [ -f "$ROUTES/L00.json" ] || { echo "no chat routes yet in $ROUTES (start the chat, use it)" >&2; exit 1; }

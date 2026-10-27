@@ -7,7 +7,9 @@
 # 1. local/rebuild-rank.sh: the September Q2's calibration corpus plus the chat's routing (ROUTES, default
 #    local/routes-rco, which the server fills while it runs) -> local/rank-candidate.bin
 # 2. local/bench-v41/ab-1017.sh: the rank in use (local/ds41-local.json's --rank) and the candidate, interleaved, REPS
-#    runs each (default 3) at 17K context and on Promessi Sposi, the default configuration's flags
+#    runs each (default 3) on this box's real use: local/prompts/dev-code (a code review with a patch, 16.7K tokens of
+#    C++) and dev-docs (a README section, 10.8K tokens of docs), the default configuration's flags
+#    (local/make-dev-prompts.py writes them)
 # 3. the candidate is applied only if neither prompt's mean is more than 2% slower and the two means together are at
 #    least 1% faster (single runs here spread by 5-10%): it is copied to local/rank-1017.bin and the
 #    configurations (local/ds41-local.json, -1gpu) get --rank local/rank-1017.bin.
@@ -21,6 +23,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROUTES=${ROUTES:-local/routes-rco}
 REPS=${REPS:-3}
+PROMPTS=${PROMPTS:-dev-code:200:24576 dev-docs:300:16384}
+[ -f local/prompts/dev-code.i32 ] && [ -f local/prompts/dev-docs.i32 ] || python3 local/make-dev-prompts.py
 CAND=local/rank-candidate.bin
 STAMP=$(date +%Y%m%d-%H%M)
 LOG=local/sweep-1017/summary.txt
@@ -29,7 +33,7 @@ say() { echo "$(date '+%F %T') update-rank: $*"; }
 
 [ -f "$ROUTES/L00.json" ] || { say "no routing in $ROUTES yet: use the server first"; exit 1; }
 say "rank in use: $CUR; candidate from the corpus + $ROUTES"
-ROUTES="$ROUTES" MAP= OUT="$CAND" sh local/rebuild-rank.sh "${CHAT_WEIGHT:-1}" | tail -3
+ROUTES="$ROUTES" OUT="$CAND" sh local/rebuild-rank.sh "${CHAT_WEIGHT:-1}" | tail -3
 if cmp -s "$CAND" "$CUR"; then say "the candidate is the rank in use: nothing to measure"; exit 0; fi
 
 was_running=0
@@ -50,11 +54,11 @@ restart() {
 trap restart EXIT
 
 for r in $(seq 1 "$REPS"); do
-    REPS=1 TAG=ur$STAMP-cur-$r RANK="$CUR" bash local/bench-v41/ab-1017.sh > /dev/null
-    REPS=1 TAG=ur$STAMP-new-$r RANK="$CAND" bash local/bench-v41/ab-1017.sh > /dev/null
+    REPS=1 TAG=ur$STAMP-cur-$r RANK="$CUR" PROMPTS="$PROMPTS" bash local/bench-v41/ab-1017.sh > /dev/null
+    REPS=1 TAG=ur$STAMP-new-$r RANK="$CAND" PROMPTS="$PROMPTS" bash local/bench-v41/ab-1017.sh > /dev/null
 done
 
-verdict=$(python3 - "$STAMP" <<'EOF'
+verdict=$(python3 - "$STAMP" $PROMPTS <<'EOF'
 import glob, re, statistics as st, sys
 stamp = sys.argv[1]
 def mean(prompt, arm):
@@ -63,7 +67,7 @@ def mean(prompt, arm):
         m = re.search(r"^decode: .*?= ([\d.]+) tok/s", open(p).read(), re.M)
         if m: v.append(float(m.group(1)))
     return st.mean(v) if v else 0.0
-r = {p: (mean(p, "cur"), mean(p, "new")) for p in ("huge17k", "sposi")}
+r = {p: (mean(p, "cur"), mean(p, "new")) for p in (a.split(":")[0] for a in sys.argv[2:])}
 ok = all(c > 0 for c, _ in r.values())
 ratios = [n / c for c, n in r.values()] if ok else [0]
 apply = ok and min(ratios) >= 0.98 and sum(ratios) / len(ratios) >= 1.01
