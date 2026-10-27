@@ -120,7 +120,7 @@ def t_parser():
     r, c, k = run_parser("plain answer <｜DSML not a tag", False, 3)
     check("non-DSML text passes through", c == "plain answer <｜DSML not a tag" and not k, (c, k))
     esc = "a&lt;" + D.P_CLOSE[1:] + "b"
-    check("DwarfStar escape undone", D.unescape(esc) == "a" + D.P_CLOSE + "b", D.unescape(esc))
+    check("closing-tag escape undone", D.unescape(esc) == "a" + D.P_CLOSE + "b", D.unescape(esc))
 
 
 def t_tokenizer(tok_dir):

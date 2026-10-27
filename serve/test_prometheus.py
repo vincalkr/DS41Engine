@@ -1,4 +1,4 @@
-"""serve/test_prometheus.py - GET /metrics in the Prometheus text format (vLLM's names), against the mock engine.
+"""serve/test_prometheus.py - GET /metrics in the Prometheus text format (the strata: names), against the mock engine.
 
     python -m unittest serve.test_prometheus -v
 """
@@ -69,12 +69,12 @@ class Units(unittest.TestCase):
                         "drafts_offered": 40, "drafts_accepted": 30}}
         got = parse(render(m, Latencies().snapshot()))
         lab = 'model_name="a \\"b\\""'
-        self.assertEqual(got[("vllm:num_requests_running", lab)], 1)
-        self.assertEqual(got[("vllm:num_requests_waiting", lab)], 2)
-        self.assertEqual(got[("vllm:kv_cache_usage_perc", lab)], 0.5)
-        self.assertEqual(got[("vllm:prefix_cache_hits_total", lab)], 600)
-        self.assertEqual(got[("vllm:spec_decode_num_accepted_tokens_total", lab)], 30)
-        self.assertEqual(got[("vllm:time_to_first_token_seconds_count", lab)], 0)
+        self.assertEqual(got[("strata:num_requests_running", lab)], 1)
+        self.assertEqual(got[("strata:num_requests_waiting", lab)], 2)
+        self.assertEqual(got[("strata:kv_cache_usage_perc", lab)], 0.5)
+        self.assertEqual(got[("strata:prefix_cache_hits_total", lab)], 600)
+        self.assertEqual(got[("strata:spec_decode_num_accepted_tokens_total", lab)], 30)
+        self.assertEqual(got[("strata:time_to_first_token_seconds_count", lab)], 0)
 
     def test_strata_names_follow_the_json(self):
         m = {"engine": {"model": "m", "max_context": 1000},
@@ -125,9 +125,9 @@ class Endpoint(unittest.TestCase):
         ctype, text = self.get("/metrics", "text/plain")
         self.assertTrue(ctype.startswith("text/plain"))
         got = {k[0]: v for k, v in parse(text).items()}
-        self.assertGreaterEqual(got["vllm:request_success_total"], 1)
-        self.assertGreaterEqual(got["vllm:generation_tokens_total"], usage["completion_tokens"])
-        self.assertGreaterEqual(got["vllm:e2e_request_latency_seconds_count"], 1)
+        self.assertGreaterEqual(got["strata:request_success_total"], 1)
+        self.assertGreaterEqual(got["strata:generation_tokens_total"], usage["completion_tokens"])
+        self.assertGreaterEqual(got["strata:e2e_request_latency_seconds_count"], 1)
         ctype, text = self.get("/metrics", "application/json")
         self.assertTrue(ctype.startswith("application/json"))
         self.assertGreaterEqual(json.loads(text)["totals"]["requests"], 1)
@@ -169,11 +169,11 @@ class Batched(unittest.TestCase):
         finally:
             httpd.shutdown()
             httpd.server_close()
-        self.assertEqual(during["vllm:num_requests_running"], 3)
-        self.assertEqual(after["vllm:num_requests_running"], 0)
-        self.assertEqual(after["vllm:request_success_total"], 3)      # each one, not only the last to finish
-        self.assertEqual(after["vllm:e2e_request_latency_seconds_count"], 3)
-        self.assertEqual(after["vllm:time_to_first_token_seconds_count"], 3)
+        self.assertEqual(during["strata:num_requests_running"], 3)
+        self.assertEqual(after["strata:num_requests_running"], 0)
+        self.assertEqual(after["strata:request_success_total"], 3)      # each one, not only the last to finish
+        self.assertEqual(after["strata:e2e_request_latency_seconds_count"], 3)
+        self.assertEqual(after["strata:time_to_first_token_seconds_count"], 3)
         self.assertEqual(svc.metrics()["totals"]["requests"], 3)          # the JSON agrees
 
 

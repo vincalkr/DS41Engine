@@ -1,6 +1,6 @@
 // tools/v41/engine/ds41_geometry.hpp - DeepSeek-V4.1-Flash (`deepseek41`) geometry, tensor map and expert tiers.
 //
-// The GGUF is the one tools/v41/v41_gguf.py writes (DwarfStar's dense names, per-expert routed tiers).  Every number
+// The GGUF carries the dense names this engine reads and per-expert routed tiers (or an overlay supplies them).  Every number
 // comes from the file's `deepseek41.*` keys (or the `deepseek41.config` JSON for the Engram shape the flat keys lack);
 // a missing key is an error, never a default.  `ds41_check_tensors` resolves the full tensor map: every name in the
 // file must be predicted and every predicted name present, with the conditional sets exactly as model.py builds them:

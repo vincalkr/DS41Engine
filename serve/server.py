@@ -4679,7 +4679,7 @@ def make_handler(svc: Service):
             if path == "/metrics":
                 from serve import prometheus
                 if prometheus.wants_prometheus(self.headers.get("Accept", ""), urlsplit(self.path).query):
-                    if self._authorized():   # a scraper: the text format, vLLM's names (serve/prometheus.py)
+                    if self._authorized():   # a scraper: the Prometheus text format (serve/prometheus.py)
                         body = prometheus.render(svc.metrics(), svc.latencies.snapshot()).encode()
                         self.send_response(200)
                         self.send_header("Content-Type", prometheus.CONTENT_TYPE)

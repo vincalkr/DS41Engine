@@ -759,10 +759,8 @@ void reserve_ftmp(Ds41MoeImpl& im, int n) {
 //
 // The measured prompt (4096 tokens, chunk 2048) spends 52.9 s of its 85 s waiting on its own file-tier reads:
 // run_chunk(l) reads layer l's file-tier experts on its critical path, so the NVMe reads never overlap the dense
-// half or the previous layer.  Another DeepSeek engine does the opposite during prefill - one background thread reads EVERY
-// routed expert of layer l+1 with its own fds while layer l computes (ds4.c:42471-42484, ds4_cuda.cu:29290-29393,
-// report §A4), which is what turns the latency-bound reads into a bandwidth-bound pipeline.  This is that
-// mechanism for our tier: two pinned host slabs ping-pong.  While layer l runs, a reader pool fills the other slab
+// half or the previous layer.  The fix is to read during prefill EVERY routed expert of layer l+1 in the background
+// while layer l computes, which turns the latency-bound reads into a bandwidth-bound pipeline.  For our tier: two pinned host slabs ping-pong.  While layer l runs, a reader pool fills the other slab
 // with layer l+1's file-tier experts (every expert of l+1 that is neither VRAM-resident nor in the RAM arena - at a
 // prompt batch of >= 256 rows nearly all 384 are routed); run_chunk(l+1) then DMAs straight out of the slab.  A blob
 // is published only when its read is complete (the job is joined before the slab is consumed), the reads are issued

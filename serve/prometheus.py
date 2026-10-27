@@ -1,13 +1,13 @@
-"""GET /metrics in the Prometheus text format, with vLLM's metric names, so the dashboards and alerts written for a
-vLLM server read a Strata server unchanged.  Everything comes from the server's own record (Service.metrics(), the
+"""GET /metrics in the Prometheus text format, every metric under `strata:`.  Everything comes from the server's own record (Service.metrics(), the
 same dict the JSON /metrics returns) plus three latency histograms observed when a request finishes.
 
-What vLLM has no name for is the JSON's own facts under `strata:`, named after the JSON's keys (live.tok_s ->
+The serving metrics (requests, tokens, the prompt cache, latencies) have their usual names; the JSON's own facts are
+named after the JSON's keys (live.tok_s ->
 strata:live_tok_s, totals.decode_ms -> strata:totals_decode_seconds_total, hardware.gpu_util -> strata:gpu_util), so
 the two formats say the same thing and a panel can be moved from the Monitor tab to Grafana by its key."""
 import threading
 
-# vLLM's buckets for the request latencies (seconds)
+# the buckets for the request latencies (seconds)
 BUCKETS = (0.001, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 20.0, 40.0,
            80.0, 160.0, 640.0, 2560.0)
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
@@ -74,28 +74,28 @@ def render(m: dict, lat: dict) -> str:
     ctx = _num((m.get("engine") or {}).get("max_context"), 0)
     used = _num(live.get("prompt_tokens")) + _num(live.get("generated")) if busy else 0
     # "parallel": live.running / live.waiting count the requests together (waiting: for a slot or the control lines)
-    metric("vllm:num_requests_running", "gauge", "Requests reading their prompt or generating.",
+    metric("strata:num_requests_running", "gauge", "Requests reading their prompt or generating.",
            _num(live.get("running"), int(busy)))
-    metric("vllm:num_requests_waiting", "gauge", "Requests waiting for their turn.",
+    metric("strata:num_requests_waiting", "gauge", "Requests waiting for their turn.",
            _num(live.get("queued")) + _num(live.get("waiting")))
-    metric("vllm:kv_cache_usage_perc", "gauge", "The running request's share of the context (1 = full).",
+    metric("strata:kv_cache_usage_perc", "gauge", "The running request's share of the context (1 = full).",
            round(min(1.0, used / ctx), 4) if ctx else 0)
-    metric("vllm:prompt_tokens_total", "counter", "Prompt tokens of the finished requests.",
+    metric("strata:prompt_tokens_total", "counter", "Prompt tokens of the finished requests.",
            _num(totals.get("prompt_tokens")))
-    metric("vllm:generation_tokens_total", "counter", "Generated tokens.", _num(totals.get("output_tokens")))
-    metric("vllm:request_success_total", "counter", "Finished requests.", _num(totals.get("requests")))
-    metric("vllm:prefix_cache_queries_total", "counter", "Prompt tokens looked up in the prompt cache.",
+    metric("strata:generation_tokens_total", "counter", "Generated tokens.", _num(totals.get("output_tokens")))
+    metric("strata:request_success_total", "counter", "Finished requests.", _num(totals.get("requests")))
+    metric("strata:prefix_cache_queries_total", "counter", "Prompt tokens looked up in the prompt cache.",
            _num(totals.get("prompt_tokens")))
-    metric("vllm:prefix_cache_hits_total", "counter", "Prompt tokens the prompt cache already held.",
+    metric("strata:prefix_cache_hits_total", "counter", "Prompt tokens the prompt cache already held.",
            _num(totals.get("reused")))
-    metric("vllm:spec_decode_num_draft_tokens_total", "counter", "MTP draft tokens offered.",
+    metric("strata:spec_decode_num_draft_tokens_total", "counter", "MTP draft tokens offered.",
            _num(totals.get("drafts_offered")))
-    metric("vllm:spec_decode_num_accepted_tokens_total", "counter", "MTP draft tokens accepted.",
+    metric("strata:spec_decode_num_accepted_tokens_total", "counter", "MTP draft tokens accepted.",
            _num(totals.get("drafts_accepted")))
-    metric("vllm:num_preemptions_total", "counter", "Preempted requests (Strata does not preempt).", 0)
-    for name, key, help_ in (("vllm:time_to_first_token_seconds", "ttft", "Time to the first token."),
-                             ("vllm:inter_token_latency_seconds", "itl", "Time between two tokens."),
-                             ("vllm:e2e_request_latency_seconds", "e2e", "A request from start to end.")):
+    metric("strata:num_preemptions_total", "counter", "Preempted requests (Strata does not preempt).", 0)
+    for name, key, help_ in (("strata:time_to_first_token_seconds", "ttft", "Time to the first token."),
+                             ("strata:inter_token_latency_seconds", "itl", "Time between two tokens."),
+                             ("strata:e2e_request_latency_seconds", "e2e", "A request from start to end.")):
         counts, total, n = lat[key]
         out.append(f"# HELP {name} {help_}\n# TYPE {name} histogram")
         for b, c in zip(BUCKETS, counts):
@@ -107,7 +107,7 @@ def render(m: dict, lat: dict) -> str:
 
 
 def strata(m: dict, out: list, lab: str):
-    """The JSON's facts vLLM has no name for, under `strata:` and the JSON's key."""
+    """The JSON's own facts, under `strata:` and the JSON's key."""
     live, totals = m.get("live") or {}, m.get("totals") or {}
     hw, eng = m.get("hardware") or {}, m.get("engine") or {}
     reqs = m.get("requests") or []

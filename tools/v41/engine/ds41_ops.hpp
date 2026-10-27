@@ -5,7 +5,7 @@
 //   the window K           FP8 E4M3, blocks of 32, power-of-two scale 2^ceil(log2(amax/448)), amax >= 1e-4
 //   the compressed KV      FP4 E2M1, blocks of 16, E4M3 scale e4m3(amax/6), amax >= 6*2^-9
 //   indexer q and k        FP4 E2M1, blocks of 32, power-of-two scale 2^ceil(log2(amax/6)), amax >= 6*2^-126
-// The model was trained with these (DwarfStar emulates them too); dropping them moved 3-layer outputs by cos 1.6e-3
+// The model was trained with these; dropping them moved 3-layer outputs by cos 1.6e-3
 // and the indexer's picks (2026-10-10 measurement), so the engine reproduces them.
 //
 // No custom op: every step is an exact float trick on stock ggml ops, each its own node (so no FMA contraction):

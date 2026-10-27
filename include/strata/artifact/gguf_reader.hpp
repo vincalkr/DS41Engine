@@ -118,7 +118,7 @@ inline const char* ggml_type_name(uint32_t t) {
         return "Q1_0";
     case 42:
         return "Q2_0";
-    case 143:   // Strata-DS4 fork: llama-tq / ik_llama PTQ1_0 ternary (V4.1 routed experts; never reaches ggml)
+    case 143:   // fork: PTQ1_0 ternary (routed experts; never reaches ggml)
         return "PTQ1_0";
     default:
         return "?";

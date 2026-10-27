@@ -1,6 +1,6 @@
 // tools/v41/engine/ds41_dspark.hpp - DeepSeek-V4.1's DSpark draft stack (the checkpoint's mtp.0-2) on ggml.
 //
-// Convention (docs/ds4/V41_DSPARK_AUDIT.md, verified against SGLang / vLLM / DeepSeek's model.py):
+// Convention (verified against DeepSeek's model.py):
 //   main_hidden(p) = the HC-mean (mean over the hc streams) of the trunk residual ENTERING layers 37 / 38 / 39 at
 //                    position p, concatenated 37|38|39 -> [3 * n_embd]
 //   main_x         = main_norm(main_proj(main_hidden))                          (block 0's weights, shared by all)

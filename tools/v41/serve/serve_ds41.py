@@ -12,7 +12,7 @@ swaps in V4.1's pieces:
 - end of turn: <｜end▁of▁sentence｜>
 - tool calls: DSML (`<｜DSML｜ invoke name="X">` + `<｜DSML｜ parameter name="K" string="true|false">V</｜DSML｜ parameter>`,
   note the LEADING SPACE in the tag names) parsed as DeepSeek's parse_tool_calls does; the `calls` wrapper is
-  stripped from the stream.  A value may carry DwarfStar's escape of its own closing tag (ds4_tool_text.h): undone.
+  stripped from the stream.  A value may carry an escape of its own closing tag: undone.
 
   serve_ds41.py --engine strata --config local/ds41-local.json --port 8150   (./run.sh does this)
 """
@@ -63,9 +63,8 @@ ST.Tokenizer = Ds41Tokenizer
 # The model's own levels are the three the encoder knows (dsv41_encoding.REASONING_EFFORT_MAPPINGS: low 50,
 # high 75, max 100, default high), and they are rendered as the encoder renders them; the clients' extra spellings
 # (minimal, medium, xhigh) fold onto high, no invented budgets.
-# DeepSeek-V4.1 renders the effort as "Reasoning Effort: N (range 1-100, ...)". DwarfStar (ds4.h:29,
-# ds4.c:44201-44208) pins HIGH to 75 and MAX to 100 and renders low/medium as HIGH; here low follows DeepSeek's own
-# encoder (50) instead (2026-10-21). A numeric 1-100 is also accepted and rendered as given.
+# DeepSeek-V4.1 renders the effort as "Reasoning Effort: N (range 1-100, ...)": HIGH 75, MAX 100, and low 50 as
+# DeepSeek's own encoder has it. A numeric 1-100 is also accepted and rendered as given.
 EFFORT = {"none": 0, "off": 0, "disabled": 0, "false": 0,
           "minimal": 75, "low": 50, "medium": 75,
           "high": 75, "xhigh": 75, "max": 100, "maximum": 100}
@@ -88,7 +87,7 @@ def effort_kwargs(value) -> dict:
 
 def budget_effort(tokens) -> dict:
     """Anthropic's thinking budget: V4.1 has two named levels (HIGH 75, MAX 100), so a small or medium budget asks
-    for HIGH and a large one for MAX (the reference renders low/medium as HIGH, ds4.h:29)."""
+    for HIGH and a large one for MAX."""
     try:
         n = int(tokens)
     except (TypeError, ValueError):
@@ -224,8 +223,8 @@ _P_RE = re.compile(r' name="(.*?)" string="(true|false)">(.*?)' + re.escape(P_CL
 
 
 def unescape(value: str) -> str:
-    """DwarfStar escapes a value's own closing tag as &lt;... (and &amp; chains before it); DeepSeek's encoder never
-    escapes, so only that exact spelling is undone."""
+    """A value may arrive with its own closing tag escaped as &lt;... (and &amp; chains before it); DeepSeek's encoder
+    never escapes, so only that exact spelling is undone."""
     tail = P_CLOSE[1:]
     return re.sub(r"&((?:amp;)*)lt;" + re.escape(tail),
                   lambda m: ("&" + m.group(1)[:-4] + "lt;" if m.group(1) else "<") + tail, value)
