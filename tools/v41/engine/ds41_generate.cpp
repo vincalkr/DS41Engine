@@ -1735,6 +1735,7 @@ int main(int argc, char ** argv) {
                     std::fprintf(stderr, "serve: park dropped (request reaches past %lld positions)\n", (long long) park_rows);
                 }
             }
+            static const bool live_partial = !(std::getenv("STRATA_SERVE_LIVE_PARTIAL") && std::getenv("STRATA_SERVE_LIVE_PARTIAL")[0] == '0');
             int reused = 0;
             if (reuse_override >= 0) reused = reuse_override;   // a partial unpark: positions [0, lp) are the parked one's
             else if (!unparked && !hist.empty() && lcp == hist.size() && lcp < ids.size()) {
@@ -1755,6 +1756,21 @@ int main(int argc, char ** argv) {
                 hist.resize((size_t) snap_len);
                 if (hist_key.size() > (size_t) snap_len) hist_key.resize((size_t) snap_len);
                 reused = snap_len;
+            } else if (live_partial && snap_len > 0 && lcp < (size_t) snap_len && hist.size() >= (size_t) snap_len
+                       && (lcp & ~(size_t) 1) > 0 && (size_t) snap_len - (lcp & ~(size_t) 1) <= 16
+                       && (lcp & ~(size_t) 1) < ids.size() && dense.restore()) {
+                // the live conversation's own snapshot, re-rendered a few tokens before its end (a client that rewrites
+                // the tail of the last turn, often after a cancelled answer): the same exact partial resume as a park's
+                // - restore() puts the rings at the snapshot's end P, and an even s with P - s <= RAW - SWA = 16 reads
+                // only positions they hold.  2026-10-27: lcp 176616 of a 176619-token snapshot re-read all 176K.
+                // STRATA_SERVE_LIVE_PARTIAL=0 = off (the old path: the conversation goes to the pool / park).
+                const size_t ps = lcp & ~(size_t) 1;
+                std::fprintf(stderr, "serve: resumed the live %d-token snapshot at %zu (lcp %zu; partial: re-feeds from there)\n",
+                             snap_len, ps, lcp);
+                hist.resize(ps);
+                if (hist_key.size() > ps) hist_key.resize(ps);
+                snap_len = -1;
+                reused = (int) ps;
             } else if (pool_on) {
                 save_live("unrelated");   // an unrelated request: the conversation it overwrites goes to the pool
                 hist.clear();

@@ -1136,3 +1136,15 @@ A one-shot run keeps the prompt's 8192 state columns (~2.5 GiB) after the prompt
 All three inside the spread; the argmax counts (`diff=`) are the base's. `STRATA_DOWN_AMD_IQ` stays opt-in and the rank
 stays `rank-q2.bin`. A release of ggml's device memory pool after the prompt (tried as the cause of the one-shot VRAM
 loss) gave back 0.22 GiB and was removed.
+
+## The live conversation resumes a few tokens before its end (2026-10-27)
+
+A client that rewrites the tail of the last turn (here after a cancelled answer) sent a prompt that matched the live
+176,619-token snapshot up to 176,616: the engine treated it as unrelated, moved the conversation to the pool, and read
+all 176K tokens again (~7 minutes). The live snapshot now resumes the way a parked conversation does: `restore()`, then
+re-feed from the even position `ps = lcp & ~1` when `P - ps <= 16` (the window ring's reach). `check_conv_reuse.py
+--scenario single` (its "re-render 12 back" step resumes at 298 of a 310-token snapshot): **bit-exact** against a fresh
+prefill on the CPU backend (maxdiff 0 on every step); on the GPU the same step reads KL 0.069 with the same top-1, the
+run-to-run noise of that engine. `STRATA_SERVE_LIVE_PARTIAL=0` restores the old path. A client that cuts the middle of
+a conversation (the other re-read that day: lcp 67,762 of 190,505) still re-reads it: there is no state to resume
+from there.

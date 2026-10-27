@@ -224,6 +224,9 @@ def main():
               "--prompt-batch", "512", "--stop", "1"] + (["--vision"] if a.vision else []) + (a.extra.split() if a.extra else [])
     env = dict(kv.split("=", 1) for kv in a.env)
     env.setdefault("STRATA_SERVE_PARK_MIN", "64")
+    meta = root / "local/rco-iq2xxs-meta/meta.gguf"   # the GSQ-RCO pack's geometry overlay, for both engines
+    meta_env = {"DS41_META": env.get("DS41_META", str(meta))} if (env.get("DS41_META") or meta.exists()) else {}
+    env.update(meta_env)
     tail_env = {"STRATA_SERVE_DUMP_TAIL": str(a.tail)} if a.tail > 0 else {}
     env.update(tail_env)
     sc = a.scenario
@@ -258,7 +261,7 @@ def main():
         summary["steps"].append({"label": label, "prompt": len(ids), "resume": r["resume"], "tokens": r["tokens"],
                                  "sec": round(r["sec"], 1)})
     if not a.no_ref:
-        ref = Engine(a.ref_bin or a.bin, common, {"STRATA_SERVE_PARK": "0", **tail_env, **gpu_env}, out, "fresh", cpu=cpu)
+        ref = Engine(a.ref_bin or a.bin, common, {"STRATA_SERVE_PARK": "0", **tail_env, **gpu_env, **meta_env}, out, "fresh", cpu=cpu)
         try:
             for (label, ids, mx, keys, emb), r, st in zip(steps, res, summary["steps"]):
                 if r["resume"] == 0 and not a.ref_all:
