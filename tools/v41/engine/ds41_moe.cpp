@@ -4747,8 +4747,12 @@ bool gpu_run_chunk(Ds41MoeImpl& im, int64_t layer, int n, const int32_t* ids, co
         ck(cudaMalloc(&gp.c_xq, (size_t) n * strata::kernels::native_q8_1_bytes((int) H, 1)), "c_xq");   // its ncols <= 8
         ck(cudaMalloc(&gp.c_parts, (size_t) ne * (size_t) H * 4), "c_parts");
         ck(cudaMalloc(&gp.c_scratch, strata::kernels::native_expert_scratch_bytes(ne, im.g.n_ff)), "c_scratch");
-        ck(cudaMalloc(&gp.c_dst, sizeof(int32_t) * (size_t) ne), "c_dst");
-        ck(cudaMalloc(&gp.c_tokv, sizeof(int32_t) * (size_t) ne), "c_tok");
+        // + 128 ints of slack: the MMQ down product takes its ids from c_dst + r0 and reads up to J_best - 1 (<= 127)
+        // past the run's last row (src/prefill/moe_mmq.cu); without it the last run of a batch read past the end
+        // (a GPU page fault on 2026-10-27, a 3918-token batch, reproducible at 8000 + 3918)
+        ck(cudaMalloc(&gp.c_dst, sizeof(int32_t) * (size_t) (ne + 128)), "c_dst");
+        ck(cudaMemset(gp.c_dst, 0, sizeof(int32_t) * (size_t) (ne + 128)), "c_dst slack");
+        ck(cudaMalloc(&gp.c_tokv, sizeof(int32_t) * (size_t) (ne + 128)), "c_tok");
         ck(cudaMalloc(&gp.c_w, sizeof(float) * (size_t) ne), "c_w");
         ck(cudaMalloc(&gp.c_out, (size_t) n * (size_t) H * 4), "c_out");
     }
@@ -4838,8 +4842,8 @@ bool gpu_run_chunk(Ds41MoeImpl& im, int64_t layer, int n, const int32_t* ids, co
             ck(cudaMalloc(&gp.m_xu, mmq::q8_bytes(cap, H)), "m_xu");
             ck(cudaMalloc(&gp.m_xd, mmq::q8_bytes(cap, FF)), "m_xd");
             ck(cudaMalloc(&gp.m_bnd, sizeof(int32_t) * (size_t) (im.g.n_experts + 1)), "m_bnd");
-            ck(cudaMalloc(&gp.m_iota, sizeof(int32_t) * (size_t) cap), "m_iota");
-            mmq::iota((int32_t*) gp.m_iota, cap, gp.s);
+            ck(cudaMalloc(&gp.m_iota, sizeof(int32_t) * (size_t) (cap + 128)), "m_iota");   // + the MMQ tile's slack
+            mmq::iota((int32_t*) gp.m_iota, cap + 128, gp.s);
             if (!gp.m_ctx) gp.m_ctx = new mmq::Context();   // never deleted (see Gpu::m_ctx)
         }
     }
