@@ -31,6 +31,8 @@ Where ds41e stands and what is open. How it runs and every measured number: [REA
   routing on the card was estimated at ~5% on short prompts and ~0 at long ones and not built.
 - **Speculative decoding:** a verify pass costs about as much as decoding its tokens here. Lookup drafts
   (`STRATA_LOOKUP`, opt-in) gain 14-25% only on text copied whole and lose 10-25% on new text; off.
+- **The VRAM cache seeded by the conversation** (`STRATA_VRAM_CONV`, opt-in): 17.80 against 17.98 tok/s over
+  12 turns; off.
 - **The rank:** `local/update-rank.sh` measures a rank built from the chat's routing on code and documentation prompts
   and applies it only if faster.
 - **Images:** the pack has no VL router bias; a pack that has one would bring them back.

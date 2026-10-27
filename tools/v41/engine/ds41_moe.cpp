@@ -717,7 +717,15 @@ struct Ds41MoeImpl {
     std::unique_ptr<ChunkStage> cstage;   ///< chunk_prefetch: the two pinned slabs
 #endif
     std::unique_ptr<Rebal> rebal;         ///< STRATA_ARENA_REBAL (null = off)
+    std::vector<float> conv;              ///< STRATA_VRAM_CONV: (layer, expert) routed tokens of this conversation, decayed per release
 };
+
+/// STRATA_VRAM_CONV=<per mille> (0 = off, the default): the share of a per-expert-sized VRAM cache's byte budget that
+/// re-opens with the experts this conversation routes most instead of the rank's
+static int vram_conv_share() {
+    static const int v = std::getenv("STRATA_VRAM_CONV") ? std::max(0, std::min(1000, std::atoi(std::getenv("STRATA_VRAM_CONV")))) : 0;
+    return v;
+}
 
 void rebal_count(Ds41MoeImpl& im, int64_t layer, const int32_t* ids, int64_t n);   // defined with rebalance_*
 
@@ -2022,13 +2030,50 @@ bool Ds41MoeTier::seed_from_ranked(const std::vector<std::pair<int32_t, int32_t>
     // A per-layer-sized geometry opens its cache now: one slot per ranked expert, each the size of ITS
     // layer's blob, until `slots` experts or `slot_gib` bytes.  The seed below admits in the same order, so slot i
     // is ranked[i]'s and fits it exactly; the cache never evicts, so a slot never meets another layer's blob.
+    // STRATA_VRAM_CONV (opt-in): that share of the budget goes first to the experts this conversation routed most
+    // (prompt + decode counts, decayed at every release), most-used first; the rest from the rank.  The cache re-opens
+    // after every batch turn, so the decode that follows starts from the conversation's own hot set.
+    std::vector<std::pair<int32_t, int32_t>> conv_ranked;
+    if (im_->mixed_sizes && im_->gpu && !im_->gpu->cache && !im_->cfg.no_cache && im_->cfg.slots > 0 &&
+        vram_conv_share() > 0 && !im_->conv.empty()) {
+        const double budget = im_->cfg.slot_gib > 0 ? im_->cfg.slot_gib * 1073741824.0
+                                                     : (double) im_->cfg.slots * (double) im_->blob;
+        const int64_t NX = im_->g.n_experts;
+        std::vector<char> ok((size_t) (im_->g.n_layers * NX), 0), in((size_t) (im_->g.n_layers * NX), 0);
+        for (const auto& le : ranked)   // only what the rank list holds (excluded experts are not in it)
+            if (le.first >= 0 && le.first < im_->g.n_layers && le.second >= 0 && le.second < NX)
+                ok[(size_t) (le.first * NX + le.second)] = 1;
+        std::vector<std::pair<float, int32_t>> top;
+        for (size_t i = 0; i < im_->conv.size(); ++i)
+            if (im_->conv[i] >= 1.0f && ok[i]) top.push_back({im_->conv[i], (int32_t) i});
+        std::sort(top.begin(), top.end(), [](const std::pair<float, int32_t>& a, const std::pair<float, int32_t>& b) {
+            return a.first != b.first ? a.first > b.first : a.second < b.second; });
+        const double cap = budget * vram_conv_share() / 1000.0;
+        double got = 0;
+        for (const auto& t : top) {
+            const int32_t l = t.second / (int32_t) NX, e = t.second % (int32_t) NX;
+            if (!im_->g.routed(l)) continue;
+            const double b = (double) im_->bl[(size_t) im_->g.cls(l, e)];
+            if (got + b > cap) break;
+            got += b;
+            in[(size_t) t.second] = 1;
+            conv_ranked.push_back({l, e});
+        }
+        const int64_t n_conv = (int64_t) conv_ranked.size();
+        for (const auto& le : ranked)
+            if (le.first >= 0 && le.second >= 0 && le.second < NX && !in[(size_t) (le.first * NX + le.second)])
+                conv_ranked.push_back(le);
+        std::fprintf(stderr, "vram seed: %lld experts by this conversation's routing first (%.2f GiB), then the rank\n",
+                     (long long) n_conv, got / 1073741824.0);
+    }
+    const std::vector<std::pair<int32_t, int32_t>>& c_ranked = conv_ranked.empty() ? ranked : conv_ranked;
     if (im_->mixed_sizes && im_->gpu && !im_->gpu->cache && !im_->cfg.no_cache && im_->cfg.slots > 0) {
         const double budget = im_->cfg.slot_gib > 0 ? im_->cfg.slot_gib * 1073741824.0
                                                      : (double) im_->cfg.slots * (double) im_->blob;
         std::vector<int64_t> sizes;
         std::vector<char> seen((size_t) (im_->g.n_layers * im_->g.n_experts), 0);
         double used = 0;
-        for (const auto& le : ranked) {
+        for (const auto& le : c_ranked) {
             if ((int64_t) sizes.size() >= im_->cfg.slots) break;
             if (!im_->g.routed(le.first) || le.second < 0 || le.second >= im_->g.n_experts) continue;
             char& sn = seen[(size_t) (le.first * im_->g.n_experts + le.second)];
@@ -2059,7 +2104,7 @@ bool Ds41MoeTier::seed_from_ranked(const std::vector<std::pair<int32_t, int32_t>
     const int64_t want = std::min<int64_t>(im_->cfg.slots, im_->gpu->cache->full_slots());
     // the order the slots fill in.  A per-layer-sized cache keeps the rank: its sizes list above pairs slot
     // i with ranked[i].  Everywhere else a preceding release_cache() supplies the warm set.
-    const std::vector<std::pair<int32_t, int32_t>> fill_order = im_->mixed_sizes ? ranked : warm_first(*im_, ranked, want);
+    const std::vector<std::pair<int32_t, int32_t>> fill_order = im_->mixed_sizes ? c_ranked : warm_first(*im_, ranked, want);
     int64_t filled = 0;
     // vram_lru: the LRU's starting order = the fill order: the last-seeded expert goes out first
     auto lru_seed_order = [&](int64_t n_seeded) {
@@ -5543,6 +5588,10 @@ void Ds41MoeTier::release_cache() {
         im_->warm.reserve(ord.size());
         for (const auto& p : ord) im_->warm.emplace_back((int32_t) (p.second / NX), (int32_t) (p.second % NX));
     }
+    if (!im_->conv.empty()) {   // STRATA_VRAM_CONV: older turns weigh less (STRATA_VRAM_CONV_DECAY, default 0.9 a release)
+        static const float dk = std::getenv("STRATA_VRAM_CONV_DECAY") ? (float) std::atof(std::getenv("STRATA_VRAM_CONV_DECAY")) : 0.9f;
+        for (float& c : im_->conv) c *= dk;
+    }
     im_->gpu->cache.reset();
     im_->admitted = 0;
     im_->pf_n = 0;             // staged prefetches are keyed by expert, not slot - but they belong to the old decode
@@ -5730,8 +5779,15 @@ struct Rebal {
 };
 
 void rebal_count(Ds41MoeImpl& im, int64_t layer, const int32_t* ids, int64_t n) {
-    if (!im.rebal || layer < 0 || layer >= im.g.n_layers) return;
+    if (layer < 0 || layer >= im.g.n_layers) return;
     const int64_t NX = im.g.n_experts;
+    if (vram_conv_share() > 0) {
+        if (im.conv.empty()) im.conv.assign((size_t) (im.g.n_layers * NX), 0.0f);
+        float* cc = im.conv.data() + (size_t) (layer * NX);
+        for (int64_t i = 0; i < n; ++i)
+            if (ids[i] >= 0 && ids[i] < NX) cc[ids[i]] += 1.0f;
+    }
+    if (!im.rebal) return;
     float* sc = im.rebal->score.data() + (size_t) (layer * NX);
     for (int64_t i = 0; i < n; ++i)
         if (ids[i] >= 0 && ids[i] < NX) sc[ids[i]] += 1.0f;

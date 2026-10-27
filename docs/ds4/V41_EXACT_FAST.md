@@ -187,6 +187,29 @@ plain step): each token routes its own experts and the CPU computes them at the 
 little. Even text copied whole gains only 14-25%, and a review that writes new text loses 10-25%; the server keeps
 plain decoding.
 
+## The VRAM cache seeded by the conversation: measured, opt-in, off (2026-10-27)
+
+The VRAM cache re-opens after every turn that runs as a batch (its slots give the prompt's buffers their VRAM), and
+re-opens in the rank's order. `STRATA_VRAM_CONV=<per mille>` gives that share of its byte budget first to the experts
+this conversation routed most (prompt and decode counts, times `STRATA_VRAM_CONV_DECAY`, default 0.9, at every
+release), then the rank. Routing is unchanged; only which experts sit in VRAM changes.
+
+Through the server (`local/bench-v41/ab-vram-conv.py`, `local/sweep-vram-conv`): the configuration without the
+conversation disk, the `dev-code` review (16,709 tokens) and three ~400-token follow-ups, 128 tokens each, greedy,
+3 runs interleaved, tok/s:
+
+| turn | off | `STRATA_VRAM_CONV=500` (~1,000 experts, 7.6-8.5 GiB, from the conversation) |
+| --- | ---: | ---: |
+| after the prompt | 15.2 / 18.5 / 18.9 | 17.9 / 18.1 / 18.2 |
+| +365 tokens | 16.9 / 17.2 / 17.3 | 15.0 / 16.8 / 17.1 |
+| +400 tokens | 17.4 / 19.3 / 18.8 | 16.2 / 16.6 / 19.1 |
+| +361 tokens | 18.6 / 18.9 / 18.7 | 19.9 / 19.4 / 19.3 |
+| mean of all 12 | 17.98 | 17.80 |
+
+The hit rate rises a little on the last turn (0.70-0.79 off, 0.76-0.79 on), the speed does not: card 0's VRAM holds
+2,128 experts, card 1 2,754 more and the RAM arena 10,001, so an expert the seed moves into VRAM was mostly in a fast
+tier already. The default stays off.
+
 ## The Engram tables, in either form
 
 The Engram rows come as the pack's own iq4_nl GGUF (`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`, 110.6 GB, one tensor a

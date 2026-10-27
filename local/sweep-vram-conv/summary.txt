@@ -1,0 +1,6 @@
+STRATA_VRAM_CONV=0 rep 0: read 16709 -> 15.2 tok/s (hit 0.703)  read 365 -> 16.9 tok/s (hit 0.71)  read 400 -> 17.4 tok/s (hit 0.7)  read 361 -> 18.6 tok/s (hit 0.738)
+STRATA_VRAM_CONV=500 rep 0: read 16709 -> 17.9 tok/s (hit 0.711)  read 365 -> 15.0 tok/s (hit 0.715)  read 400 -> 16.2 tok/s (hit 0.74)  read 361 -> 19.9 tok/s (hit 0.791)
+STRATA_VRAM_CONV=0 rep 1: read 16709 -> 18.5 tok/s (hit 0.699)  read 365 -> 17.2 tok/s (hit 0.702)  read 400 -> 19.3 tok/s (hit 0.729)  read 361 -> 18.9 tok/s (hit 0.704)
+STRATA_VRAM_CONV=500 rep 1: read 16709 -> 18.1 tok/s (hit 0.711)  read 365 -> 16.8 tok/s (hit 0.695)  read 400 -> 16.6 tok/s (hit 0.738)  read 361 -> 19.4 tok/s (hit 0.783)
+STRATA_VRAM_CONV=0 rep 2: read 16709 -> 18.9 tok/s (hit 0.7)  read 365 -> 17.3 tok/s (hit 0.71)  read 400 -> 18.8 tok/s (hit 0.715)  read 361 -> 18.7 tok/s (hit 0.786)
+STRATA_VRAM_CONV=500 rep 2: read 16709 -> 18.2 tok/s (hit 0.709)  read 365 -> 17.1 tok/s (hit 0.716)  read 400 -> 19.1 tok/s (hit 0.734)  read 361 -> 19.3 tok/s (hit 0.758)
