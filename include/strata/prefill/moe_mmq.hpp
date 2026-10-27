@@ -13,7 +13,7 @@ namespace strata::prefill::mmq {
 /// This build has the MMQ path (the ggml sources were available to the build).
 bool built();
 /// MMQ covers this ggml type (the i-quants and Q2_0 the packs use, Q8_0, and with STRATA_MMQ_KQUANTS the
-/// K-quants Q4_K / Q5_K / Q5_1 / Q6_K: Unsloth's UD-Q4_K_XL experts (CUDA), and the dense GGUF projections of
+/// K-quants Q4_K / Q5_K / Q5_1 / Q6_K: K-quant experts (CUDA), and the dense GGUF projections of
 /// the mixed-quant packs through Gemm::native's STRATA_DENSE_MMQ path (HIP); IQ1_M is not covered).
 bool supported(int ggml_type);
 /// #420: `supported`, and on every visible GPU llama.cpp's MMQ has a tile for this type and a weight matrix of

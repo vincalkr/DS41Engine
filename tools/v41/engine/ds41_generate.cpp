@@ -3,7 +3,7 @@
 // VRAM cache, pinned RAM arena, file tier, CPU pool, PCIe share) + sampling.  Token ids in, token ids out (text is
 // the server's job: tools/v41/serve/serve_ds41.py).
 //
-//   ds41_generate -m V41-GSQ.gguf (--ids 1,2,3 | --ids-file f.i32) [-n 64] [--backend cuda|cpu] [--experts gpu|cpu]
+//   ds41_generate -m PACK.gguf (--ids 1,2,3 | --ids-file f.i32) [-n 64] [--backend cuda|cpu] [--experts gpu|cpu]
 //                 [--engram DIR:DIR:DIR] [--slots auto|N] [--vram-margin GiB] [--arena-gib 60] [--rank r.bin]
 //                 [--vram-lru] [--arena-adapt] [--arena-skip-vram] [--pcie 0.25] [--prefill-chunk N] [--prompt-batch B] [--chunk-mmq] [--ctx N]
 //                 [--temp 0] [--seed 1] [--stop id,id] [--ppl] [--no-actquant] [--kv-fp4] [--serve] [--quiet]
@@ -177,7 +177,7 @@ struct Args {
     std::vector<int> stop;
     bool ppl = false, serve = false, quiet = false, vram_lru = true, arena_adapt = false, chunk_mmq = true;
     bool act_quant = true, chunk_prefetch = true, kv_fp4 = false, arena_skip_vram = false;
-    /// --peer-device N / STRATA_PEER_DEVICE=N: the SECOND GPU's expert tier (docs/ds4/V41_AMD_PEER_TIER.md); -1 =
+    /// --peer-device N / STRATA_PEER_DEVICE=N: the SECOND GPU's expert tier (docs/ds4/V41_EXACT_FAST.md); -1 =
     /// off, in which case nothing about the tier changes.  N >= 0 must be a CUDA/HIP device index that is not the
     /// dense half's (0 on this box): its memory holds the ranked experts after card 0's VRAM head, and a decode
     /// token's misses that it holds are computed there (no blob moves), in parallel with the primary's kernels.
@@ -722,7 +722,7 @@ int main(int argc, char ** argv) {
     // This is the ds4 engine's `defer_seed`, and for a UNIFORM geometry (DS4/DS4.1: every expert one format, one blob
     // size) it is what makes the reopen happen at all: opened at init the cache holds ~14 GiB, the serve path then
     // measures 0.87 GiB free, releases it - and a uniform geometry has no other seed that opens it again, so the
-    // decode ran with no VRAM slots (measured on the Q2 model, 2026-10-17: 6.2 tok/s instead of ~7.9).
+    // decode ran with no VRAM slots.
     const bool defer_vram = !mc.cpu_only && (a.prefill_chunk > 1 || a.prompt_batch > 1);
     mc.defer_cache = defer_vram;
     mc.slots = a.slots > 0 ? a.slots : TG.n_layers * TG.n_experts;
@@ -740,7 +740,7 @@ int main(int argc, char ** argv) {
     mc.chunk_prefetch_gib = a.chunk_prefetch_gib;
     mc.skip_miss = a.skip_miss;
     mc.skip_file = a.skip_file;
-    // soft / hard pruning (the GLM recipe, as tools/ds4/ds4_generate): listed experts take no VRAM slot and no arena space;
+    // soft / hard pruning: listed experts take no VRAM slot and no arena space;
     // with --prune-penalty X they keep a selection bias -X (still chosen when the router prefers them by more than X, then
     // read from the file tier), without it they are never routed
     std::vector<char> pruned;

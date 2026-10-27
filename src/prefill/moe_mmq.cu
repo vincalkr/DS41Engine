@@ -142,8 +142,8 @@ bool supported(int t) {
         case GGML_TYPE_IQ3_XXS: case GGML_TYPE_IQ3_S: case GGML_TYPE_IQ4_NL: case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_Q8_0:   // the draft layer's dense matrices (E-9)
 #ifdef STRATA_MMQ_KQUANTS
-        case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q5_1:   // Unsloth's UD-Q4_K_XL experts (CUDA)
-        case GGML_TYPE_Q2_K: case GGML_TYPE_Q3_K:   // MiMo-V2.6-Flash RL GSQ-RCO experts are Q2_K/Q3_K (2/3-bit K-quants)
+        case GGML_TYPE_Q4_K: case GGML_TYPE_Q5_K: case GGML_TYPE_Q5_1:   // K-quant experts (CUDA)
+        case GGML_TYPE_Q2_K: case GGML_TYPE_Q3_K:   // 2/3-bit K-quant experts
         case GGML_TYPE_MXFP4:                       // ...and its MXFP4 expert outliers
 #if defined(__HIPCC__) || defined(STRATA_Q6K_EXPERTS)
         case GGML_TYPE_Q6_K:   // HIP: the dense GGUF projections (STRATA_DENSE_MMQ); CUDA: only the opt-in -DSTRATA_Q6K_EXPERTS=ON build
@@ -270,9 +270,9 @@ void Context::run(const Product& p, void* stream) {
         case GGML_TYPE_Q6_K: STRATA_MMQ_CASE(GGML_TYPE_Q6_K); break;
 #endif
         case GGML_TYPE_Q5_1: STRATA_MMQ_CASE(GGML_TYPE_Q5_1); break;
-        case GGML_TYPE_Q2_K: STRATA_MMQ_CASE(GGML_TYPE_Q2_K); break;   // MiMo GSQ-RCO experts
-        case GGML_TYPE_Q3_K: STRATA_MMQ_CASE(GGML_TYPE_Q3_K); break;   // MiMo GSQ-RCO experts
-        case GGML_TYPE_MXFP4: STRATA_MMQ_CASE(GGML_TYPE_MXFP4); break; // MiMo GSQ-RCO experts
+        case GGML_TYPE_Q2_K: STRATA_MMQ_CASE(GGML_TYPE_Q2_K); break;   // K-quant experts
+        case GGML_TYPE_Q3_K: STRATA_MMQ_CASE(GGML_TYPE_Q3_K); break;   // K-quant experts
+        case GGML_TYPE_MXFP4: STRATA_MMQ_CASE(GGML_TYPE_MXFP4); break; // MXFP4 experts
 #endif
         default:
             std::fprintf(stderr, "prefill mmq: type %d is not covered\n", (int) t);

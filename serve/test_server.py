@@ -1030,7 +1030,7 @@ class ToolCallTagInProse(unittest.TestCase):
 
 class ToolCallRecovery(unittest.TestCase):
     """Opt-in ("tool_call_recovery": true): the model sometimes writes a call in a form next to the template's.  These
-    shapes are from a corpus of 1,462 agent turns (Qwen3.8 under Claude Code, signalnine/q27): with the switch on, a
+    shapes are from a corpus of 1,462 agent turns (an agent under Claude Code): with the switch on, a
     declared tool's call in one of them is the call; anything else stays content, verbatim."""
     SCHEMA = ToolCallTerminators.SCHEMA
     PARAMS = "<parameter=path>\na.md\n</parameter>\n<parameter=content>\nhi\n</parameter>\n</function>"
@@ -1328,7 +1328,7 @@ class ClientShapes(unittest.TestCase):
             self.assertIn(part, text)
 
     def test_no_user_turn_is_a_400(self):
-        # #365: the template's own refusal (Qwen's "No user query found in messages." when no turn is a user's query)
+        # #365: the template's own refusal ("No user query found in messages." when no turn is a user's query)
         # answers 400, not a dropped connection
         with tempfile.TemporaryDirectory() as d:
             tpl = Path(d) / "chat_template.jinja"

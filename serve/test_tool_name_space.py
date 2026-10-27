@@ -1,6 +1,6 @@
 """serve/test_tool_name_space.py - a tool call written `<function= NAME>` (a space after the `=`) is the call NAME.
 
-Seen live (Qwen3.8-Flash-Next IQ2_XS, Zed's agent panel): the model wrote `<function= capture>` inside its thinking;
+Seen live (Zed's agent panel): the model wrote `<function= capture>` inside its thinking;
 the name was read as " capture", matched no declared tool, stayed reasoning text (#804), and the turn ended with no
 call, so the agent stopped.  After the thinking the same call came out named " capture", and its arguments were
 typed without the tool's schema.

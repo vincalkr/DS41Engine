@@ -4,17 +4,17 @@
 #
 #   local/update-rank.sh            (about 25 minutes with the defaults; it needs the GPUs)
 #
-# 1. local/rebuild-rank.sh: the September Q2's calibration corpus plus the chat's routing (ROUTES, default
+# 1. local/rebuild-rank.sh: the calibration corpus plus the chat's routing (ROUTES, default
 #    local/routes-rco, which the server fills while it runs) -> local/rank-candidate.bin
 # 2. local/bench-v41/ab-1017.sh: the rank in use (local/ds41-local.json's --rank) and the candidate, interleaved, REPS
 #    runs each (default 3) on this box's real use: local/prompts/dev-code (a code review with a patch, 16.7K tokens of
 #    C++) and dev-docs (a README section, 10.8K tokens of docs), the default configuration's flags
 #    (local/make-dev-prompts.py writes them)
 # 3. the candidate is applied only if neither prompt's mean is more than 2% slower and the two means together are at
-#    least 1% faster (single runs here spread by 5-10%): it is copied to local/rank-1017.bin and the
-#    configurations (local/ds41-local.json, -1gpu) get --rank local/rank-1017.bin.
+#    least 1% faster (single runs here spread by 5-10%): it is copied to local/rank.bin and the
+#    configurations (local/ds41-local.json, -1gpu) get --rank local/rank.bin.
 #    Otherwise nothing changes.
-# 4. the decision is appended to local/sweep-1017/summary.txt.
+# 4. the decision is appended to local/sweep-rank/summary.txt.
 #
 # A running server (127.0.0.1:8150) is stopped for the measurement and started again afterwards with
 # ./run.sh (the default configuration); NO_RESTART=1 leaves it stopped.  Env: ROUTES, REPS, CHAT_WEIGHT (the
@@ -27,7 +27,7 @@ PROMPTS=${PROMPTS:-dev-code:200:24576 dev-docs:300:16384}
 [ -f local/prompts/dev-code.i32 ] && [ -f local/prompts/dev-docs.i32 ] || python3 local/make-dev-prompts.py
 CAND=local/rank-candidate.bin
 STAMP=$(date +%Y%m%d-%H%M)
-LOG=local/sweep-1017/summary.txt
+LOG=local/sweep-rank/summary.txt
 CUR=$(python3 -c 'import json; a = json.load(open("local/ds41-local.json"))["args"]; print(a[a.index("--rank") + 1])')
 say() { echo "$(date '+%F %T') update-rank: $*"; }
 
@@ -63,7 +63,7 @@ import glob, re, statistics as st, sys
 stamp = sys.argv[1]
 def mean(prompt, arm):
     v = []
-    for p in glob.glob(f"local/sweep-1017/{prompt}-ur{stamp}-{arm}-*.out"):
+    for p in glob.glob(f"local/sweep-rank/{prompt}-ur{stamp}-{arm}-*.out"):
         m = re.search(r"^decode: .*?= ([\d.]+) tok/s", open(p).read(), re.M)
         if m: v.append(float(m.group(1)))
     return st.mean(v) if v else 0.0
@@ -76,17 +76,17 @@ EOF
 )
 say "$verdict"
 if [ "${verdict%% *}" = APPLY ]; then
-    cp "$CAND" local/rank-1017.bin
+    cp "$CAND" local/rank.bin
     python3 - <<'EOF'
 import json
 import os
 for f in ("local/ds41-local.json", "local/ds41-local-1gpu.json",
           "local/ds41-local-vision.json", "local/ds41-local-1gpu-vision.json"):
     if not os.path.exists(f): continue
-    c = json.load(open(f)); a = c["args"]; a[a.index("--rank") + 1] = "local/rank-1017.bin"
+    c = json.load(open(f)); a = c["args"]; a[a.index("--rank") + 1] = "local/rank.bin"
     json.dump(c, open(f, "w"), indent=1); open(f, "a").write("\n")
 EOF
-    say "applied: local/rank-1017.bin in the configurations"
+    say "applied: local/rank.bin in the configurations"
 else
     say "kept $CUR"
 fi

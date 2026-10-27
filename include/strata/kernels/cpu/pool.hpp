@@ -299,7 +299,7 @@ private:
     // run_split_multi state: mode 3 = gate/up row parts, 4 = down row parts
     ExpertJobMulti* mjobs_ = nullptr;
     int64_t mrows_ = 0;     // rows of the current multi phase across all its experts (n * FF, then n * H)
-    /// Rows per expert of the current phase.  NOT the compile-time `FF`/`H` (Qwen's 640/2560): a native layer's
+    /// Rows per expert of the current phase.  NOT the compile-time `FF`/`H` (640/2560): a native layer's
     /// width is the model's own (`NativeFmt::n_ff` / `n_embd`), and using the canonical constants here computed
     /// only the first 640 of DeepSeek-V4's 2048 gate/up rows and 2560 of its 4096 down rows.
     int64_t mper_ = 0;

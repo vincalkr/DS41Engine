@@ -1,4 +1,4 @@
-// src/kernels/cuda/fork/fork_vecdot.cuh - fork formats' q8_1 dot products: Q2_K (DeepSeek-V4 down), Q3_K and MXFP4 (MiMo GSQ-RCO).
+// src/kernels/cuda/fork/fork_vecdot.cuh - fork formats' q8_1 dot products: Q2_K, Q3_K and MXFP4.
 // Fork code kept out of upstream's iq_kernels.cu (one #include line there) so upstream merges do not conflict
 // on it; included at a fixed point of that translation unit and uses its helpers (not a standalone header).
 #pragma once
@@ -41,7 +41,7 @@ __device__ __forceinline__ float vec_dot_q2_K_q8_1(const void* __restrict__ vbq,
     return vec_dot_q2_K_q8_1_impl_mmvq(v, u, scales, bq2_K->dm, d8);
 }
 
-// Q3_K (MiMo-V2.6-Flash GSQ-RCO's gate/up/down on some layers): llama.cpp's vec_dot_q3_K_q8_1 (vecdotq.cuh),
+// Q3_K: llama.cpp's vec_dot_q3_K_q8_1 (vecdotq.cuh),
 // VDR_Q3_K_Q8_1_MMVQ = 1.  The high-bit mask is inverted so a clear bit subtracts 4.
 constexpr int VDR_Q3_K = 1;
 __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmvq(const int& vl, const int& vh, const int* __restrict__ u,
@@ -83,7 +83,7 @@ __device__ __forceinline__ float vec_dot_q3_K_q8_1(const void* __restrict__ vbq,
     return vec_dot_q3_K_q8_1_impl_mmvq(vl, vh, u, bq3_K->scales, scale_offset, d, d8);
 }
 
-// MXFP4 (MiMo's source-format down projections on 3 layers): llama.cpp's vec_dot_mxfp4_q8_1 (vecdotq.cuh),
+// MXFP4: llama.cpp's vec_dot_mxfp4_q8_1 (vecdotq.cuh),
 // VDR_MXFP4_Q8_1_MMVQ = 2.  kvalues_mxfp4 holds the e2m1 values doubled, hence the 0.5.
 constexpr int VDR_MXFP4 = 2;
 __device__ __forceinline__ float vec_dot_mxfp4_q8_1(const void* __restrict__ vbq, const block_q8_1* __restrict__ bq8_1,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Merge ds41_generate --dump-routes stats directories (sum experts[e].n) into one v41_rank.py input.
 
-  python3 local/calib-q2/merge_stats.py --out local/calib-q2/stats-merged DIR [DIR ...]
+  python3 local/calib/merge_stats.py --out local/calib/stats-merged DIR [DIR ...]
 """
 import argparse
 import json

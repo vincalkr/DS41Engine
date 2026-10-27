@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""ds41_pack_meta.py - an antirez-style metadata overlay for a GSQ-RCO IQ2_XXS GGUF pack.
+"""ds41_pack_meta.py - a metadata overlay for the GSQ-RCO IQ2_XXS GGUF pack.
 
 The ISTA-DASLab / RCO packs carry llama.cpp/HF metadata (`embedding_length`, `block_count`,
 `attention.head_count_kv`, ...), not the flat `deepseek41.*` keys ds41e reads, and their Engram arrays live as I32/I64
 tensors instead of KV entries. This writes ONE tiny GGUF with exactly the keys and full integer arrays that
-`tools/v41/engine/ds41_geometry.hpp` expects: geometry scalars and the config JSON come from the reference antirez Q2
-file (same checkpoint architecture), compress ratios/sources are cross-checked against which tensors the pack holds,
+`tools/v41/engine/ds41_geometry.hpp` expects: geometry scalars and the config JSON come from the checkpoint's reference
+keys (`local/rco-iq2xxs-meta/geometry-keys.json`, or any GGUF of the same checkpoint that carries them), compress ratios/sources are cross-checked against which tensors the pack holds,
 and the Engram token map/primes/multipliers are read out of the pack's own small global tensors.  The table row counts
 come from the separate Engram IQ4_NL GGUF and must tile exactly under those primes.
 
-    python3 tools/v41/ds41_pack_meta.py --pack SHARD1 --ref REF_Q2.gguf --engram ENGRAM.gguf \
-        --out models/rco-iq2xxs-meta/meta.gguf
+    python3 tools/v41/ds41_pack_meta.py --pack SHARD1 --ref-keys local/rco-iq2xxs-meta/geometry-keys.json \
+        [--engram ENGRAM.gguf] --out local/rco-iq2xxs-meta/meta.gguf
 
 Then run the engine with DS41_META=<that file>; no tensor data is touched or copied.
 """
@@ -196,8 +196,8 @@ def main():
     ap.add_argument("--pack", default="", help="first shard of the RCO pack")
     ap.add_argument("--ref-keys", default="", help="JSON with the reference deepseek41.* keys (see --dump-ref-keys)")
     ap.add_argument("--dump-ref-keys", default="", help="write --ref's keys to this JSON and stop")
-    ap.add_argument("--ref", default="models/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf",
-                    help="antirez Q2 GGUF carrying deepseek41.* geometry (same checkpoint architecture)")
+    ap.add_argument("--ref", default="",
+                    help="a GGUF of the same checkpoint carrying the deepseek41.* geometry keys (instead of --ref-keys)")
     ap.add_argument("--engram", default="", help="the separate Engram IQ4_NL GGUF (table row counts); without it the rows come from the reference keys under deepseek41.engram.rows")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
@@ -211,7 +211,7 @@ def main():
     if not (a.pack and a.out):
         ap.error("--pack and --out are needed (--engram is optional with --ref-keys); "
                  "--dump-ref-keys OUT.json --ref REF.gguf writes the reference keys")
-    if not a.ref_keys and not os.path.exists(a.ref):
+    if not a.ref_keys and not (a.ref and os.path.exists(a.ref)):
         sys.exit(f"{a.ref} is not there: use --ref-keys <geometry-keys.json> "
                  f"(tools/v41/ds41_pack_meta.py --dump-ref-keys REF.gguf keys.json builds one from any reference pack)")
     ref = KeyRef(a.ref_keys) if a.ref_keys else Header(a.ref)

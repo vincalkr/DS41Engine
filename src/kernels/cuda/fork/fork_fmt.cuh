@@ -19,7 +19,7 @@ template<> struct Fmt<143> { static constexpr int qk = 128, ipb = 4, step = 1;
     __device__ static float dot(const void* v, const block_q8_1* y, int kbx, int iqs) { return vec_dot_ptq1_0_q8_1_quarter(v, y, kbx, iqs); } };
 #endif
 // Fork formats, kept out of upstream's lists above so those stay verbatim (fewer merge conflicts): Q2_K (10,
-// DeepSeek-V4 down), Q3_K (11, MiMo GSQ-RCO / V4.1 tier), MXFP4 (39, MiMo outliers), PTQ1_0 (143, V4.1 ternary tier).  Each use site expands the _FORK list too.
+// DeepSeek-V4 down), Q3_K (11), MXFP4 (39), PTQ1_0 (143, ternary).  Each use site expands the _FORK list too.
 #define STRATA_GU_FMTS_FORK(X) X(10) X(11) X(143)
 #define STRATA_D_FMTS_FORK(X) X(10) X(11) X(39) X(143)
 #define STRATA_MMVQ_FMTS_FORK(X) X(10) X(143)

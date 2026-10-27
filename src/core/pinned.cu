@@ -14,7 +14,7 @@
 #include <mutex>
 #include <thread>
 
-// Loader fix: `fseek`/`ftell` are 32-bit on Windows by default (and the pack is 42.9 GB), and the 64-bit
+// Loader fix: `fseek`/`ftell` are 32-bit on Windows by default (and a pack is tens of GB), and the 64-bit
 // spelling is not the same on the two platforms the engine builds for.
 #ifdef _WIN32
 #define STRATA_FSEEK64(f, o) _fseeki64((f), (long long) (o), SEEK_SET)
@@ -710,7 +710,7 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
             uint64_t remaining = layer_bytes[(size_t) L];
             uint64_t pos = 0;
             uint64_t h = 1469598103934665603ull;
-            // 64-bit seek: the pack is 42.9 GB, so the 32-bit `fseek` would wrap past 4 GiB
+            // 64-bit seek: a pack is tens of GB, so the 32-bit `fseek` would wrap past 4 GiB
             if (STRATA_FSEEK64(f, off) != 0) {
                 std::lock_guard<std::mutex> g(err_mu);
                 err = "seek to " + std::to_string(off) + " B failed in layer " + std::to_string(L);

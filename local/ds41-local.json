@@ -8,7 +8,7 @@
     "--experts",
     "gpu",
     "--rank",
-    "local/rank-q2.bin",
+    "local/rank.bin",
     "--threads",
     "12",
     "--ctx",

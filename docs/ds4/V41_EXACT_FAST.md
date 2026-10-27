@@ -1,1150 +1,234 @@
-# V4.1 GSQ: exact routing at 10-14 tok/s (2026-10-17)
-
-> 2026-10-21: the scripts of past experiments, the quantization pipeline (`tools/v41/*`), the V4 tools (`tools/ds4/*`)
-> and the September GSQ / Q2 configurations were removed from the tree; the paths this document names for them are
-> in the git history before that date.
-
-The route bias made the model fast and wrong (`HANDOVER.md` §3). This note records how the GSQ was made fast **with
-the model's own routing** (`--route-bias 0 --route-bias-file 0`) on this box: 2x RX 7900 XTX (card 1 behind a PCIe
-4.0 x2 bridge), Ryzen 9 9900X (12 cores / 24 threads), 122 GiB RAM, the GSQ on the Lexar NM1090 PRO (PCIe 5.0 x4).
-Every number below was measured on this box; one-shot runs are greedy, 300 tokens, `--ctx 8192`, arena 90 GiB.
-
-## Result
-
-| configuration (exact routing throughout) | Divina Commedia | Promessi Sposi | Python (English) |
-|---|---:|---:|---:|
-| before: GSQ `rank.bin`, 24 threads | 2.83-3.36 | 3.37 | 3.93 |
-| + `local/rank-gsq-mixed.bin` | 5.86 | 4.96 | 4.50 |
-| + `--arena-adapt` | - | 5.88 | 5.21 |
-| + `STRATA_PF_NO_DUMMY=1` | - | 6.72 | - |
-| + `--peer-device 1` (miss mode, below) | - | 7.29 | 5.84 |
-| + `--threads 12` | - | 10.39 | - |
-| + `--vram-margin 0.5` (= `local/ds41-local-fast-exact.json`) | 10.05 / **11.16** free | 10.68 | **9.85** |
-| + DSpark, peer in the verify path, `STRATA_TIER_BATCH_PCIE=0` | - | 11.06 | **14.03** |
-| `--vram-margin 0.5` config + `--pf-b 0`, no DSpark (= `local/ds41-local.json` now) | **13.07** | **12.98** | 10.32 |
-
-Through the server (`./run-v41-gsq.sh`, ctx 262144, arena 75 GiB, temperature 0), with `--pf-b 0`: Divina Commedia
-12.10 cold / 14.51 repeated, the nine circles 13.70 (TTFT 1.2 s), Promessi Sposi 13.40, the Python prompt 10.94, and
-with thinking on (temperature 0.8) 12.95 tok/s; before `--pf-b 0`: 11.84 / 14.05 / 13.64, thinking 11.27. The chat with exact routing ran at ~2.7 tok/s
-before. Answers checked by hand: correct dates, structure, the nine circles.
-
-Token agreement against the exact reference (the same stream forced with `STRATA_FORCE_IDS`, `STRATA_DEC_MARGIN=1`
-counting the positions whose argmax differs): every lossless change above stays at **2-7 of 300**, all near-ties
-(logit gaps <= 0.27), the same positions as an identical exact run repeated (2 of 300: the CPU and the cards round a
-row differently, and which computes it depends on the cache state). The route bias at 0.5/0.3 differs at **30 of
-300**, with gaps up to 18 logits.
-
-## What each step is
-
-1. **The rank was the main defect, not the routing.** The GSQ's `rank.bin` comes from an agentic/code corpus: on the
-   Divina Commedia answer's own routing it covers **11.5%** of the routed tokens in the first 14 GiB (the VRAM seed)
-   and 78.9% in 104 GiB; the Q2's counts (`local/calib-q2/stats-merged`, mixed Italian/English/code, same base
-   router) cover 51.6% and 97.5%. `local/rank-gsq-mixed.bin` is those counts ranked with the GSQ's real per-expert
-   sizes (`local/gsq-alloc-map.json`, from `V41-GSQ.gguf.experts.json`: type 11 = Q3_K, 42 = Q2_0, 143 = PTQ1_0):
-   `python3 tools/v41/engine/v41_rank.py --stats local/calib-q2/stats-merged --map local/gsq-alloc-map.json --out
-   local/rank-gsq-mixed.bin`. The Divina Commedia answer is partly in that corpus; the Promessi Sposi and the Python
-   prompt are not, and gain +47% and +15%.
-2. **`--arena-adapt`** (existing): a file-tier read takes the arena slot of the layer's least recently used expert.
-3. **`STRATA_PF_NO_DUMMY=1`** (existing): the prefetch DMA'd a zero blob for every predicted expert outside the
-   arena (6,070 of 17,102 prefetches in the exact run, 9.7 MB each) to keep an old simulator's timing.
-4. **The second card in miss mode** (`--peer-device 1`, new): the saved peer patch (`local/peer-tier-attempt.patch`)
-   re-applied, with one change of design. The old peer only moved the *kernel* of rows card 0 would compute anyway
-   and kept their DMA, to stay bit-identical; under exact routing the misses are the cost (~2 ms each on the
-   critical path), so now a miss whose expert the peer's store holds is computed on card 1 and **no blob moves** -
-   only n_embd floats each way over the x2 link. The store is the 22 GiB (`STRATA_PEER_GIB=22`, ~2,390 experts) of
-   ranked experts after card 0's VRAM head; with `--arena-adapt` its arena copies are not refreshed, so the arena
-   swaps them out. Wired in the single-token decode (`gpu_run`), its prefetch, and the DSpark verify pass
-   (`gpu_run_n_ex`, `prefetch_multi`); not in the prompt path. `STRATA_PEER_HOT=1` = the original hot split.
-5. **`--threads 12`**: the 12 physical cores. With 24 SMT threads the pool's threads contend with the thread that
-   drives the cards: 7.29 -> 10.39 tok/s, and the prompt 189.8 -> 246.4 tok/s (5,783 tokens).
-6. **`--vram-margin 0.5`**: 0.5 GiB more expert slots on card 0.
-7. **`--pf-b 0`** (no predicted prefetch): with the peer and 12 threads the prefetch's DMAs cost more than its hits
-   save - Promessi Sposi 10.68 -> 12.98, Divina Commedia 10.05 -> 13.07, Python 9.85 -> 10.32. Not with DSpark: there
-   the prefetch is what admits experts into VRAM in the verify pass (hits 74% -> 21-53% without it; Sposi 11.06 -> 9.60).
-
-## What does not work
-
-- **The near-tie bias** (`STRATA_RB_MARGIN=d`): d = 0.02 changes 5 of 300 positions and is no faster (45.7% VRAM
-  hits, the same as exact); d = 0.05 changes 8 and is no faster. The bias is fast only because it rewrites many
-  choices, so restricting it to near-ties leaves nothing to gain. `STRATA_RB_MARGIN=1` (the old chat config) is
-  wider than the scores' spread: it is the flat bias.
-- **File-tier-only penalty with the top 4 protected** (`STRATA_RB_PROTECT=4 --route-bias-file 0.3`): 6 of 300
-  changed, no faster.
-- **DSpark on Italian prose**: the drafter accepts ~1.0 draft per pass (code: 2.5-2.9), so the verify width is mostly
-  wasted; 11.06 vs 10.68 tok/s single-step.
-
-## The dense half is GPU-bound, not sync-bound (measured)
-
-An opt-in asynchronous dense path (`STRATA_DENSE_ASYNC=1`: `graph_compute_async`, the readbacks queued behind the
-graphs with one synchronize, and the tier handing over with an event that ggml's stream waits on instead of a
-stream sync) changed nothing: Sposi 12.98 sync vs 12.87 async at `--pf-b 0`, and the all-VRAM ceiling 20.54 vs 19.69.
-It was removed; the code is `local/dense-async-attempt.patch`. `rocprofv3 --kernel-trace` on the all-VRAM ceiling
-(64 tokens) says why: **32.4 ms of kernels per token in 4,596 launches** - `mul_mat_vec_q` 12.1 ms (335 launches, the
-~7.3 GB of Q8_0 dense weights at ~600 GB/s), the expert kernels 5.6 ms, `mul_mat_vec_f` 3.2 ms (197), copies 1.5 ms
-(815), rms_norm 1.6 ms (306), argsort 1.2 ms, the rest ~7 ms. Against the 48.7 ms an unprofiled token takes, ~16 ms is
-the gaps between ~4,600 launches (~3.5 us each on HIP), which the host cannot hide by running ahead: it launches one
-kernel at a time either way. Removing them needs ggml's HIP graphs to replay instead of re-capturing every token
-(`AMD_HIP_NOTES.md`, "ggml's HIP graph capture costs more than it saves here").
-
-## Session 2 (2026-10-17 night): the miss path and the prompt passes
-
-Three opt-in changes, now in the chat config (`local/ds41-local.json`); one-shot numbers are greedy 300-token runs on
-the forced exact stream, server numbers are `./run-v41-gsq.sh` at temperature 0.
-
-1. **The peer store follows the working set** (`STRATA_PEER_ADAPT=1`, `STRATA_PEER_ADAPT_INFLIGHT=8`,
-   `STRATA_PEER_ADAPT_WIN=16`): a miss that recurs within 16 calls of its layer and is in the arena is copied to
-   card 1 on a separate stream (after the peer's last launch), into the least recently used peer slot of the same
-   format class; the victim is unmapped at once and the newcomer published when its copy's event fires (a layer's
-   copies are waited for at its next call, because that call may hand the source arena slot to someone else).
-   1,360-1,870 experts admitted per 300 tokens, never a wait. A/B, alternated: Promessi Sposi 13.16 -> 13.55 tok/s
-   (mean of 2 vs 3 runs), Python 10.92 -> 11.39 (one adaptive run at 8.89 left out as an outlier).
-2. **`--pcie 0`**: the arena misses on the CPU pool (12 threads) instead of DMA'd to card 0 - with the peer and
-   12 threads the CPU is the cheaper path for one token: Sposi 13.55 -> 14.63, Python 11.39 -> 12.35 (`--pcie 0.25`:
-   13.44 / 12.22). It made the server's short prompts slower (they ran token by token, each recomputing its misses on
-   the CPU: a 40-token prompt 2.7 -> 6.1 s), which 3. fixes.
-3. **`STRATA_SERVE_PASS_BATCH=1`**: the server's prompt passes (prompts up to 768 tokens) call the tier with
-   `run_multi_to_dev` per 8 tokens, as the DSpark verify pass does - each distinct expert is served once for every token
-   routing it - instead of `run_to_dev` per token.
-
-| server, temperature 0 | before session 2 (graphs on) | after 1+2 | after 1+2+3 (= now) |
-|---|---:|---:|---:|
-| Divina Commedia cold / repeated | 11.71 / 15.18 | 13.32 / 15.46 | 12.77 / **16.07** |
-| nine circles: TTFT / decode | 1.26 s / 14.04 | 2.40 s / 14.82 | **0.94 s / 15.11** |
-| Promessi Sposi: TTFT / decode | 0.89 s / 13.69 | 1.39 s / 13.20 | **0.72 s / 15.02** |
-| Python: TTFT / decode | 2.33 s / 10.80 | 4.86 s / 10.75 | **2.00 s / 11.81** |
-| thinking (40-token prompt): TTFT / decode | 2.73 s / 13.50 | 6.12 s / 13.50 | 3.07 s / 12.86 |
-
-Answers checked: the nine circles, Beatrice (dead in 1290, guide from the Earthly Paradise). Gate (default flags,
-`code_review.i32`): tokens and tier counters identical to `local/gate-before.txt`.
-
-4. **`STRATA_VRAM_BG=1`**: with `--pcie 0` card 0's cache stopped changing (its promotions rode on the PCIe misses'
-   DMA): ~99 VRAM hits per token in the chat. Now one recurring miss per call is promoted into card 0 after the call,
-   off the critical path: the copies go on the tier's stream behind the call's kernels (a later kernel reading the slot
-   is ordered after them), the mapping is published at once, and a victim without an arena copy is demoted into the
-   slot the newcomer leaves. One-shot: Sposi 14.63 -> **15.74**, Python 12.35 -> **13.53** (`=2`: 10.48 / 13.35).
-   Server: ~167 VRAM hits per token; Divina Commedia 13.48 cold / **17.40** repeated, nine circles 15.82, Promessi Sposi
-   15.76, Python 10.83, thinking 14.37, two new questions 16.01 / 16.03 tok/s.
-
-5. **DSpark on this configuration** (one-shot, `STRATA_TIER_BATCH_PCIE=0`, the peer in the verify pass): Python at depth 4
-   **18.58** tok/s (3.7 tokens/pass) against 13.53 single-step, but Promessi Sposi 10.55 (depth 4) / 12.78 (depth 2)
-   against 15.74 - the drafter accepts ~1 draft per pass on Italian prose. Promotions inside the verify pass
-   (`STRATA_VRAM_BG_PASS=1/2`) gave Python 16.60 / 12.10 (depth 4), 15.27 / 15.38 (depth 2) and prose 11.84 / 11.99,
-   10.70 / 13.73: no clear gain inside the spread, so they are a separate opt-in, off. The chat stays single-step.
-6. **Where a token goes at the ceiling** (`rocprofv3`, all-VRAM, graphs on): 28.5 ms of kernels, then **3,751
-   inter-kernel gaps of ~3.6 us = 13.5 ms** (the dispatch cost of ~3,500 kernels a token, inside the graphs too) and
-   ~120 host round trips of ~40 us = ~7 ms. The next large lever is the kernel COUNT of the dense layer (~88 per layer).
-
-7. **Fewer kernels in the dense layer + a stable machine** (2026-10-18). With the CPU at `performance` and the cards'
-   clocks raised (the user's LACT settings), the all-VRAM ceiling stopped swinging (17.97-22.58 -> 22.3-22.5 tok/s).
-   `STRATA_DENSE_NOCONT=1` skips 21 `ggml_cont` calls whose input is already contiguous (a pure copy each; tokens
-   identical): ceiling 22.3-24.2 -> 24.2-24.6. `STRATA_DENSE_ALIAS=1` computes five layer outputs (hap, comb_f,
-   shexp, o_fn, o_wts) straight into the persistent state - the op becomes a view of its destination, as ggml's
-   in-place ops are - instead of copying them at the end: prose steady state 16.61/17.18 -> 17.26/17.39, Python
-   12.73/13.31 -> 13.30/13.53, the prose argmax-change positions identical. Measured along the way: ggml's own
-   fusion off (`GGML_CUDA_DISABLE_FUSION=1`) is not faster (ceiling 20.31/22.29 vs 22.19/22.58 on), pinning the
-   engine to cores is much slower (5.8-9.0 vs 11-16 tok/s), and the pool's spin time (`STRATA_POOL_SPIN_US`) changes
-   nothing measurable. **The second card is worth it**: same configuration without `--peer-device 1`, prose
-   14.08/14.16 vs 15.83/16.24 tok/s (+13%), Python 11.97/12.18 vs 12.73/13.31 (+8%); `local/ds41-local-1gpu.json`
-   is the one-card config. A fresh process pays a warm-up (the first ~64 tokens at up to 116 ms of attn_router), so
-   one-shot numbers understate a running server; `local/bench-v41/steady.py` prints the steady state.
-   Server now: Divina Commedia 15.37 cold / **18.95** repeated, nine circles 16.02, Promessi Sposi 16.35, Python 12.27,
-   thinking 14.75, two new questions 17.08 / 17.19 tok/s.
-
-8. **The dense half in Q6_K at load** (`STRATA_DENSE_REQUANT=q6_K`, the existing switch; elsewhere measured at KL vs FP8 0.2281 -> 0.2306 and API top-1 85.87 -> 85.76 % with a 1,200-token greedy edit
-   text identical to Q8_0). The file is untouched; 321 Q8_0 matrices are re-quantized in memory, 7.59 -> 5.86 GB, and
-   card 0's expert slots grow 14.58 -> 16.19 GiB. This is a weight-precision change, not a routing one. One-shot:
-   ceiling 22.46/22.53 -> **25.71/26.73** tok/s; on the forced exact stream 4 of 300 positions differ (Q8_0 itself: 6);
-   the free Divina Commedia and nine-circles answers are correct. Server (now the chat default): Divina Commedia 16.52
-   cold / 18.32 repeated, nine circles **18.63**, Promessi Sposi **18.45**, Python 12.63, thinking **16.35**, two new
-   questions 18.19 / 18.45 tok/s; 7,491-token prompt TTFT 30.5 -> **26.75 s** (280 tok/s), decode after it 12.02 -> 14.14.
-
-**Thinking budget: 192 -> 1024** (2026-10-18). The 192 came from the biased-routing state (`HANDOVER.md`: 384 leaked
-the deliberation into the answer, 2048 gave no answer). With exact routing, `local/bench-v41/think-budget.py` ran four
-prompts at budgets 192 / 512 / 1024 / 2048 (thinking on, temperature 0.8): all 16 `finish=stop`, no think tags or
-loops in the answers. Checked by hand: the ordering puzzle right at every budget; Manzoni and the 1840-1842 edition
-right at every budget, but at **192** (thinking cut by the budget) the first part is placed "mainly in Milan" - wrong;
-from 512 up it is Lecco and the lake of Como, right; the four Divina Commedia answers right (34/33/33 cantos, the
-guides, 9 circles / 7 terraces / 9 heavens + Empyrean); the interval-merge code passes 6/6 tests at every budget, but
-the 2048 answer had one corrupted token (`return risultato talents`, a SyntaxError; 6/6 with it removed). Eight more
-runs of the code prompt at budget 1024 (`code-corrupt.py`, repetition_penalty 1.1 and 1.0 alternated) passed 5/5
-tests each, so that corruption is rare (1 in 12 code answers) and not tied to the penalty in this sample. Cost: the
-facts question thought 2,167 tokens (133 s) at 2048, 1,156 (76 s) at 1024. The chat configs now set
-`reasoning_budget_tokens` 1024; a request can still set its own.
-
-**One card by default** (2026-10-18). On an agent-like session at 25-27K context the second card measured 14.31 /
-15.16 tok/s against 15.51 / 13.47 on card 0 alone - no difference inside the spread - so `local/ds41-local.json` now
-runs on card 0 only (`HIP_VISIBLE_DEVICES=0`, no `--peer-device`, no `STRATA_PEER_*`) and card 1 stays free. The
-two-card chat was `./run-v41-gsq.sh --config local/ds41-local-2gpu.json` (both gone since).
-
-**The rank from the chat's own routing.** The chat config also runs `--dump-routes local/routes-chat`: in `--serve`
-the engine loads the counts already there at start and writes them after every request, so they accumulate across
-restarts (git-ignored: they are this user's routing). `local/rebuild-rank.sh [chat-weight]` adds them to the
-calibration counts and writes `local/rank-gsq-chat.bin`; point `--rank` at it and restart to use it.
-
-**The small-turn prefill and the conversation-adaptive arena** (2026-10-18). Four ds41 engine commits are taken in: 716cf901 (the span-index upload memo and the lazy
-prestage below `STRATA_PRESTAGE_MIN` rows), 5429b5ad / cff4bb24 / 8d43fe1b (`STRATA_ARENA_REBAL`, the
-conversation-adaptive arena, with its cancel fix). Measured with `local/bench-v41/ab-rebal.sh` on the agent replay
-(`agent-replay.py`, 25,563-token first turn, then follow-ups of +19, +28, +304 and +16 tokens, 15 s between turns,
-a fresh server per run, the chat config, one card); `rebal-summary.py` prints the table:
-
-| build / setting | runs | 25K prompt | +304 turn | file-tier experts, +19 / +304 turn |
-|---|---:|---:|---:|---:|
-| before the commits | 4 | 68.3-70.0 s | 4.8-5.0 s | 261-278 / 1,814-1,904 |
-| new, as committed (lazy below 4096 rows), arena off | 4 | 69.8-72.9 s | 4.0-4.3 s | 246-288 / 1,783-1,932 |
-| new, arena on (`STRATA_ARENA_REBAL=1`) | 2 | 72.5-73.2 s | 4.0-4.9 s | 361-377 / 1,609-1,635 |
-| new, lazy prestage off (`STRATA_PRESTAGE_MIN=0`) | 2 | 68.6-69.3 s | 4.9-5.1 s | 268-279 / 1,866-1,918 |
-| **new, lazy below 512 rows** (`STRATA_PRESTAGE_MIN=512`, the chat now) | 2 | **69.5-69.6 s** | **4.1-4.4 s** | 270-271 / 1,850-1,857 |
-
-Decode (400 tokens a turn, 9-16 tok/s) and the one-token "exact passes" follow-ups (1.3-3.4 s) do not differ
-beyond the spread in any row. So:
-- The lazy prestage is the small-turn gain (the 304-row turn's experts 3.8-4.0 -> 3.2-3.5 s, its dense 0.96 -> 0.78 s), but
-  at the commits' 4,096-row threshold the 25K prompt's last 987-row batch also goes lazy and its 40 layers lose the DMA
-  overlap: +2-3 s. At 512 rows the long prompt is back to the old time and the 304-row turn keeps the gain.
-  `local/ds41-local*.json` set `STRATA_PRESTAGE_MIN=512`.
-- The adaptive arena does not pay here and stays off (opt-in again, as it first was): with a 75 GiB arena the
-  file tier is small, the swaps it plans from the 25K document push out experts the short chat follow-ups route
-  (+19 turn: 361-377 file-tier experts against 246-288), and only the +304 turn reads less (-12%).
-- Temperature 0 is not reproducible across runs of the same binary (base-r1 and base-r2 part after 113 characters):
-  where an expert is served from (VRAM, prestage region, streamed) picks MMVQ or MMQ, and that placement depends on
-  timing (`--arena-adapt`, the background promotions). A quality gate here has to be read by hand, not diffed.
-
-Not taken: dee2af6c (prompt-lookup drafts up to 14 tokens, DSpark eviction during long prompts) needs DSpark, which
-loses on Italian prose here; 60f2c020 (keep-cache) never engages with `--vram-lru`; f7c561b7 (`--tier-batch-pcie`)
-is a flag for a setting the config already sets.
-
-**DeepSeek-V4.1-Flash-1017 tried and dropped** (2026-10-18). DeepSeek's 2026-10-17 checkpoint has the same
-config.json as V4.1-Flash (new weights, Engram tables included, same tokenizer: tokenizer.json and
-tokenizer_config.json have the same sha256). The one 1017 quant in this engine's GGUF format was
-[lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit](https://huggingface.co/lxe/DeepSeek-V4.1-Flash-1017-ds41-2bit) (148 GB, 2.03
-bpw: 11,147 of 15,360 experts' gate/up are ternary PTQ1_0, against 7,152 in the GSQ; map from
-`local/gguf-expert-map.py`). Fetched with `local/fetch-1017.sh` (pinned revisions, every file checked against its
-Hugging Face sha256; the Engram straight from the official shards 47/48 with an index, no extraction). It loads and
-runs unchanged: 15.4-19.1 tok/s in the chat (Divina Commedia 17.8, nine circles 18.9, Promessi Sposi 19.1, Python
-15.4, thinking 16.3), with a rank from its own routing (`local/calib-1017/stats-corpus`; that routing correlates 0.99
-per layer with the September model's on the same corpus). But its answers had facts wrong in 3 of 5 prompts
-(`local/bench-v41/v1017-chat.txt`): the 6th circle given as the envious, Don Rodrigo "converting", Perpetua as Fra
-Cristoforo's servant, a Python test whose expected values fail (`[(1, 11)]` for `[(1, 4), (4, 8), (8, 12)]`).
-
-To rule out this engine's loading, Lucebox's held-out set (8 x 1024 tokens with the FP8 1017 teacher's top-256
-log-probs, `local/eval-lucebox/`, `run-eval.sh` + `score.py`) was run through it:
-
-| | ppl | top-1 vs teacher | KL top-256 |
-|---|---:|---:|---:|
-| FP8 1017 teacher (published) | 8.56 | 100 % | 0 |
-| lxe's quant on his engine (published) | 11.66 | 71.51 % | 0.462 |
-| lxe's quant on this engine, dense Q8_0 | **11.63** | **71.49 %** | 0.475 |
-| lxe's quant on this engine, dense Q6_K (`STRATA_DENSE_REQUANT=q6_K`) | 11.73 | 70.87 % | 0.488 |
-| Lucebox ROCMFP 2.5 bpw (published, another engine) | 9.78 | 78.7 % | 0.253 |
-
-So the loading is faithful (ppl and top-1 match the author's within 0.3 %) and the Q6_K dense costs +0.9 % ppl; the
-errors come from the 2.03 bpw quant itself. The quant was deleted and the GSQ restored from the USB backup
-(`local/restore-gsq.sh`, sha256-checked); the 1017 Engram shards stay in `models/engram-1017/` for a better 1017 quant.
-
-**An agent session, and two levers from it** (2026-10-18). A Pi session against the chat (23 turns, context
-18K -> 41.5K, `local/serve-engine.log`): decode took 1,263 s of the 1,460 s and ran at 10-12 tok/s, 11.5 on average
-(8.2 on the last turn); per decoded token 60-65% of the expert lookups hit VRAM (~1,785 experts there), ~85 were
-computed on the CPU and ~10 read from NVMe - against 69-75%, 60-70 and 3-5 on short Italian chats. Prompts were 13% of
-the time: the layer-major batch costs ~4-6 s even for 372-600 new tokens, and the one 171-token turn, which the exact
-passes served (`STRATA_SERVE_STEP_MAX` 256), took 9.3 s. Two levers were measured with `local/bench-v41/ab-levers.sh`
-(fresh server per run, two runs each):
-
-- **`STRATA_SERVE_STEP_MAX` 256 -> 96**, `followup-sizes.py` (25K first turn, then +171, +256, +341, +425-token
-  follow-ups): +171 turn 9.71-9.80 s -> 3.92-4.10 s, +256 turn 12.85-14.37 s -> 4.35-6.45 s; the batch then re-opens
-  the VRAM cache (seed 1.7-2.9 s, before the first token), so time to first token 9.7-9.8 -> 6.3-6.8 s and 12.9-14.4
-  -> 6.0-9.4 s. The +341 and +425 turns run the batch either way (4.8-6.3 s). The passes read ~17.5 new tokens a
-  second, the batch has a ~4 s floor: the crossover is near 70-100 tokens. **Adopted** in `local/ds41-local*.json`.
-- **A rank from the chat's own routes** (`local/rebuild-rank.sh 1`: the calibration counts plus 48K routed chat
-  tokens, mostly this agent session; half of the VRAM head and a fifth of the arena change), agent replay: decode
-  11.85 / 12.19 tok/s against 11.81 / 11.73 with `rank-gsq-mixed.bin`, VRAM hits 63.1-63.4% against 63.9%, CPU
-  experts 83-84 against 82 a token. Inside the spread, **not adopted**.
-
-## ggml's HIP graphs pay now (`GGML_CUDA_DISABLE_GRAPHS` removed from the chat config)
-
-`AMD_HIP_NOTES.md` measured the graphs as a loss (biased routing, an older state: 20 captures per token). In this
-configuration they replay: `rocprofv3 --hip-runtime-trace` on the all-VRAM decode counts **69 `hipGraphLaunch` and
-1.3 captures per token** (613 direct launches are the tier's). Measured with and without
-`GGML_CUDA_DISABLE_GRAPHS=1`, same binary:
-
-| | graphs off | graphs on |
-|---|---:|---:|
-| one-shot Promessi Sposi (`--pf-b 0`) | 12.15 | **12.98** |
-| one-shot all-VRAM ceiling | 18.68 | **20.54** |
-| server, 7,491-token prompt: TTFT / decode after it | 37.5 s / 10.41 | **30.5 s / 12.02** |
-| server, Divina Commedia cold / repeated | 12.10 / 14.51 | 11.71 / **15.18** |
-| server, nine circles / Promessi Sposi / Python / thinking | 13.70 / 13.40 / 10.94 / 12.95 | **14.04 / 13.69** / 10.80 / **13.50** |
-
-So the graph replay the dense half needs already works; what is left between the kernels at the ceiling is the
-per-layer hand-off to the expert tier (the router ids to the host, the tier's plan and launches, the sum), which a
-graph cannot hold because the plan is made on the host from the ids (the decode overlap plan, §5, in the git history before 2026-10-21: the miss service
-is host work keyed on the ids, so the layers cannot run ahead).
-
-## Where the time goes now
-
-`STRATA_DEC_PROF=1`, 300-token Divina Commedia, the configuration above: begin 3.5, attn_router 48.7, tier 31.0,
-finish 5.1 ms/token (11.2 tok/s). With every expert in VRAM (`--route-bias 20`, quality meaningless, speed only):
-begin 4.0, attn_router 30.4, tier 7.9, finish 4.7 = **20.7 tok/s**, so the remaining misses cost ~42 ms/token and the
-dense half alone caps single-token decode near 21 tok/s at 8K context. DSpark verify pass (5.5 tokens): dense 55-78
-ms, tier 105-195 ms.
-
-Prompt (5,783 tokens, 12 threads): 246.4 tok/s, split dense 7.2 s / experts 16.0 s (file wait 5.1 s).
-
-## How long card 0 waits for card 1 (2026-10-20)
-
-`STRATA_PEER_PROF=1` (opt-in diagnostic, `PeerGpu::prof_handoff`): at each layer's hand-off card 0's stream is synced
-first, then the peer's event, so the host sees when card 0 (its own launches and the CPU rows) was ready and how
-much longer the peer's rows took. One-shot runs, the chat configuration's flags and env (`--arena-gib 75`, Q6_K dense
-half, `--pcie 0`, `--pf-b 0`, the peer adaptive), forced on the 1-card run's tokens, 2 repetitions
-(`local/bench-v41/ab-peerwait.sh`, results in `local/sweep-peerwait/`):
-
-| | 1 card | 2 cards | 2 cards + profiler |
-| --- | ---: | ---: | ---: |
-| Promessi Sposi, 265 tokens, decode tok/s | 14.74 / 14.13 | 15.34 / 14.94 | 15.27 / 14.92 |
-| 17,349-token prompt, 128 tokens, decode tok/s | 8.78 / 8.49 | 9.65 / 9.77 | 9.21 / 9.63 |
-
-| profiler, per hand-off (one layer that used the peer) | Sposi | 17K |
-| --- | ---: | ---: |
-| hand-offs per token | 22.2 | 30.3 |
-| card 0 ready after the peer's issue | 0.62-0.63 ms | 1.27-1.51 ms |
-| peer later than card 0 | 69% | 45% |
-| card 0 idle waiting for it | 0.135 ms (3.0 ms/token, ~5% of a token) | 0.097 ms (2.9 ms/token, ~3%) |
-| issue -> peer rows back on the host, when late | 0.40 ms | 0.47 ms |
-| host time to issue the peer's work | 0.017 ms | 0.018 ms |
-
-The round trip over the x2 chipset link is ~0.4-0.5 ms and mostly hides behind card 0's own work; removing the wait
-entirely is worth at most ~3-5%. What the second card changes is the CPU work: CPU-computed misses 18,134 -> 9,506
-(Sposi) and 14,759 -> ~9,130 (17K), `cpu` 3.9 -> 2.1 s and 3.0 -> 1.95 s. The NVMe reads do not go down (Sposi 1,528
--> 1,432, 17K 1,818 -> ~1,900; `file` 3.7-4.2 s either way, ~30 ms/token at 17K): the peer's store is filled from the
-arena, so it holds copies of arena experts, not experts that would otherwise be read from disk. The prompt is the
-same with one or two cards (337-346 tok/s at 17K).
-
-**A store disjoint from the arena.** Two opt-in envs (`tools/v41/engine/ds41_moe.cpp`), both off by default:
-
-- `STRATA_PEER_DISJOINT=1` (`peer_seed`): card 1's store takes the ranked experts the arena does *not* hold (card 0's
-  resident ones still left out), read from the model file by 8 threads through pinned bounces: 2,353-2,364 experts
-  in 7.2-8.5 s, as long as the copy from the arena takes (7.2-8.4 s). `STRATA_PEER_ADAPT` still admits recurring
-  arena misses over the least recently used peer slots.
-- `STRATA_ARENA_EVICT_PEER=1` (`arena_victim`): with `--arena-adapt`, a file-tier read takes the arena slot of an
-  expert card 1 holds first (the least recently used of those), since that copy is redundant.
-
-The first was the plan's option (a); the second is the eviction half of option (b), measured alone and with (a). (a)
-was the simpler one to make disjoint: one change in the seed, and the store holds no arena expert from the first
-token on, where (b) only frees one duplicate per file read. Same flags and env as above, 2 repetitions alternated
-with a fresh 2-card run in the same session, forced on the same reference tokens
-(`local/bench-v41/ab-peerdisjoint.sh`, results in `local/sweep-peerdisjoint/`):
-
-| Promessi Sposi, 265 tokens | 2 cards | + disjoint | + evict peer | + both |
-| --- | ---: | ---: | ---: | ---: |
-| decode tok/s | 13.53 / 14.61 | 14.89 / 15.77 | 15.50 / 15.50 | 14.89 / 16.26 |
-| NVMe reads (`file`) | 1,432 | 964 / 953 | 1,272 / 1,265 | 836 / 831 |
-| `file` ms | 4,457 / 3,839 | 2,870 / 3,180 | 3,546 / 3,582 | 2,491 / 2,680 |
-| CPU-computed misses | 9,506 | 11,298 / 11,297 | 9,430 / 9,420 | 11,112 / 11,136 |
-| card 0 VRAM hits | 82.6% | 79.5% | 82.4-82.5% | 79.4-79.5% |
-| margin lines (forced) | 6 / 6 | 4 / 2 | 5 / 6 | 4 / 3 |
-
-| 17,349-token prompt, 128 tokens | 2 cards | + disjoint | + evict peer | + both |
-| --- | ---: | ---: | ---: | ---: |
-| decode tok/s | 9.67 / 10.14 | 10.93 / 10.20 | 10.78 / 10.63 | 11.60 / 10.03 |
-| NVMe reads (`file`) | 1,894 / 1,916 | 1,235 / 1,247 | 1,676 / 1,665 | 1,119 / 1,132 |
-| `file` ms | 4,211 / 3,948 | 3,204 / 3,043 | 3,552 / 3,579 | 2,852 / 3,023 |
-| CPU-computed misses | 9,114 / 9,149 | 9,562 / 9,641 | 9,047 / 9,080 | 9,531 / 9,523 |
-| card 0 VRAM hits | 61.6 / 61.3% | 58.3 / 58.1% | 60.6% | 55.8 / 55.9% |
-| margin lines (forced) | 0 | 0 | 0 | 0 |
-
-The reads go down as intended and the counts repeat run to run: both envs together cut them 42% on Sposi (1,432 ->
-~834) and 41% at 17K (~1,905 -> ~1,126), `file` 4.1 -> 2.6-2.9 s (17K: ~32 -> ~23 ms/token); disjoint alone 33-35%,
-evict alone 11-12%. Two costs eat part of it. Experts the peer serves from outside the arena have no arena copy, and
-`STRATA_VRAM_BG` promotes a recurring miss into card 0 only from its arena copy, so card 0's VRAM hits fall (82.6 ->
-79.5% on Sposi, 61.5 -> 55.9% at 17K with both). And the arena's hottest experts start off card 1, so more misses
-go to the CPU (Sposi 9,506 -> ~11,100-11,300) until `STRATA_PEER_ADAPT` brings them over. The tokens stay as close to
-the reference as the plain 2-card runs' tokens do (2-4 margin lines against 6 on Sposi, 0 at 17K).
-
-Decode, mean of 2: Sposi 14.07 (2 cards) -> 15.33 / 15.50 / 15.58 tok/s (disjoint / evict / both), +9% / +10% / +11%;
-17K 9.91 -> 10.57 / 10.71 / 10.82, +7% / +8% / +9%. Against all four plain 2-card runs of the day (both sessions,
-Sposi mean 14.61, 17K mean 9.81) both envs give +7% and +10%. The three variants are not separated by 2 runs: their
-means are within 0.25 tok/s of each other, and one 17K run with both (10.03) was slower than its own 2-card run (10.14),
-while evict alone was the steadiest (15.50 / 15.50, 10.78 / 10.63).
-
-Verdict: make `STRATA_PEER_DISJOINT=1 STRATA_ARENA_EVICT_PEER=1` the 2-card config's default. It has the highest mean
-on both prompts, no loss in token agreement, the fewest NVMe reads, and the same startup time. Whether evict alone is as
-fast needs more than 2 runs; it does not cut reads nearly as much (11-12%).
-
-## Where a two-card token goes (2026-10-20)
-
-The default two-card configuration (`local/ds41-local.json`), one-shot, forced on reference tokens
-(`local/bench-v41/prof-decode.sh`, results in `local/sweep-prof/`).
-
-**Stages** (`STRATA_DEC_PROF=1`, ms/token):
-
-| | begin | attn_router | tier | finish | tok/s |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Promessi Sposi (246 tokens) | 2.8 | 27.9 | 30.8 | 1.5 | 15.8 |
-| 17,349-token prompt (128 tokens) | 0.6 | 37.3 | 59.6 | 2.0 | 10.7 |
-
-Inside the tier, per token: Sposi 42.9 experts computed on the CPU (`cpu` 10.5 ms) and 3.2 file reads (`file` 9.2
-ms); 17K 74 on the CPU (16.9 ms) and 8.8 file reads (25.9 ms). A file read costs 2.5-2.9 ms in the engine.
-
-**Card 0's kernels** (`rocprofv3 --kernel-trace --memory-copy-trace`, a run of 80 tokens minus one of 16 = 64 decode
-tokens, `local/bench-v41/trace-summary.py`): 3,582 kernels and 25.7 ms busy per token (card 1: 115 kernels, 2.8 ms).
-`mul_mat_vec_q` (the Q6_K dense half) 321 launches, 10.7 ms: ~5.6 GB at ~530 GB/s, 55% of the card's 960 GB/s (in
-steady state 7.9 ms, ~740 GB/s: the difference includes one launch that stalled for 186 ms - see "The dense half's
-Q6_K matvecs at decode" below). The
-expert kernels 3.4 ms (card 1: 2.1 ms), 377 `copyBuffer` 1.2 ms, and 164 host-to-device + 72 device-to-host copies a
-token at 39 / 61 us each. Card 0's idle gaps over 20 us (last 3 s of the profiled run): **25.7 ms/token after its
-own expert kernels, waiting for the CPU tier's rows** (once per layer), 2.8 ms between layers, ~4.4 ms of copies
-queued behind each other. So the card waits for the CPU tier most of the token.
-
-**The CPU tier's limits, measured apart from the engine:**
-- RAM (`local/bench-v41/membw.c`): 12 threads streaming an 8 GiB buffer read 51.6-54.3 GB/s, the same with 4 KiB pages and transparent huge
-  pages (6 / 24 threads: 52.0-54.3). The CPU experts run at ~47-50 GB/s (`cpu` ms against 9.7 MiB per expert), so
-  they are at the RAM's limit: faster CPU kernels or huge pages cannot help them, only fewer of them or faster RAM.
-  **Corrected 2026-10-22:** those 51.6-54.3 GB/s were read with power-tune off. With it on (`local/ram-bench.sh`,
-  performance governor, C3 off) the same read is 60.8-62.5 GB/s, and the CPU experts of today's runs read ~44 GB/s
-  (Promessi Sposi: 10,992 experts x 9.7 MiB in 2.54 s). So they run ~25-30% under what the RAM gives: the limit is in
-  the CPU tier itself (threads, kernels, waits), and that is an open lever.
-- NVMe (Lexar NM1090 PRO, PCIe 5.0 x4, ext4; `local/bench-v41/nvme-blob-read.c`): O_DIRECT reads of 9.7 MiB at random offsets of the GSQ file take 3.01
-  ms on 1 thread, 1.65 ms on 8, 1.24-1.27 ms on 16-32 (8.0-8.2 GB/s), and two to four blobs in flight reach 9.5-11
-  GB/s. The engine pays 2.5-2.9 ms per read.
-
-**ROCm runtime knobs** (Sposi, against 14.99 / 14.19 / 15.52 tok/s): `HIP_FORCE_DEV_KERNARG=1` 15.17 / 15.48 and
-`HSA_ENABLE_INTERRUPT=0` 15.58 / 15.03, both inside the spread; `HSA_ENABLE_SDMA=0` (copies by blit kernels)
-11.58 / 11.72, -22%; all three 12.52 / 11.37. Checked and fine as they are: both cards in identity (pass-through)
-IOMMU domains, Resizable BAR on (32 GiB BAR), the memory clock at its top level in ~97% of decode samples. The core
-clock's median during decode was 2.2 GHz on Sposi and **1.3 GHz at 17K** (level `auto`): the card idles between
-layers and the clock drops meanwhile (`local/gpu-perf.sh` sets `high` / `compute`, with root; not measured yet).
-
-**Noise:** single runs of the same configuration differ by 5-10% here (16.46 against 15.67, 16.33 against 14.87), so
-every comparison below has at least two runs each.
-
-**Fast runs and slow runs.** The same configuration lands in one of two modes, and the split of the token time
-(`local/sweep-prof/`, 30+ runs per prompt across the variants below) shows what differs:
-
-| ms/token | total | CPU experts | file reads (per read) | the rest |
-| --- | ---: | ---: | ---: | ---: |
-| 17K, fast runs | 71-74 | 16-18 | ~11 (~1.25 ms) | ~44 |
-| 17K, slow runs | 89-103 | 16-18 | 22-26 (2.5-2.9 ms) | 49-59 |
-| Sposi, fast runs | 53-55 | 9.4-10.4 | ~4 (~1.3 ms) | ~40 |
-| Sposi, slow runs | 59-70 | 9.3-10.5 | 9-12 (2.9-3.7 ms) | 42-49 |
-
-In the fast runs a file read costs what the drive delivers when busy; in the slow ones twice that, and the rest of the
-token is slower too. The default configuration's 17K runs: 2 fast of 5 (mean 12.11 tok/s, 10.92-13.93).
-
-**Idle power states** (`local/bench-v41/nvme-idle-read.c`: one 9.7 MiB O_DIRECT read on 8 threads every GAP,
-60 reads; "CPU tick" = a thread waking every 0.5 ms and doing nothing; "NVMe keep-alive" = a 4 KiB read every 0.5 ms):
-
-| a read every | alone | + CPU tick | + NVMe keep-alive |
-| --- | ---: | ---: | ---: |
-| 10 ms | 2.16-2.77 ms (p90 4.6-6.0) | 1.17 | 1.19-1.29 |
-| 20 ms | 5.54 | 4.92 | 1.25 |
-| 30 ms | 5.59 | - | 1.36 |
-
-Two states add up: at 10 ms the CPU's deep idle state (C3, 350 us exit latency on this box) is what costs, from
-~20 ms the drive's own power saving (APST, enabled: `pm_qos_latency_tolerance_us` 100000). Decode's reads come 10-20
-ms apart. Twelve busy-waiting threads (the CPU pool parked) did not change the microbench (2.69 ms at 10 ms).
-
-**`local/power-tune.sh on`** (root: APST off, C3 off, the `performance` governor) brings the microbench's spaced reads
-to 1.15 / 1.51 / 1.17 ms at 10 / 20 / 30 ms, and the engine (default two-card configuration, 5 runs each):
-
-| | before (tok/s) | mean | with `power-tune.sh on` (tok/s) | mean | file read |
-| --- | --- | ---: | --- | ---: | ---: |
-| 17K | 10.96 10.92 13.93 10.92 13.84 | 12.11 | 12.92 13.83 13.83 13.85 13.72 | **13.63 (+12.6%)** | 2.04 -> 1.40 ms |
-| Sposi | 16.68 18.72 18.34 16.05 16.06 | 17.17 | 17.60 18.70 18.69 15.34 18.15 | 17.70 (+3%) | 2.18 -> 1.45 ms |
-
-At 17K every run is now a fast one (ms/token 83.0 -> 72.8: file 17.8 -> 12.1, the rest 48.8 -> 44.5). On Sposi one
-run of five is still slow, and not because of the reads: its file and CPU time are the others' (5.4 / 9.4 ms/token)
-and the rest is 50.2 ms against 39.7-41.3 - a second source of spread, in the dense half or the host. The settings
-cost idle power and do not survive a reboot; `local/power-tune.sh off` restores the boot values.
-
-**Through the server, the ds4 1017 Q2 (2026-10-21).** `local/bench-v41/serve-bench.py`: the same requests to the
-running server (300-token answers at temperature 0, thinking off; 3 short, then a ~25.5K-token document and 3 answers
-after it), each state from a freshly started server:
-
-| | `power-tune.sh off` | `power-tune.sh on` | |
-| --- | --- | --- | ---: |
-| short answer | 16.81 19.15 20.12 = 18.69 tok/s | 18.99 21.31 21.76 = **20.69** | +11% |
-| at ~25.5K context | 15.83 16.34 16.42 = 16.20 tok/s | 19.46 19.55 19.64 = **19.55** | +21% |
-| the 25,552-token prompt, fresh | 373.0 tok/s | 349.4 tok/s | one run each |
-
-A run on a warm server (the same requests repeated after an `off` series) gave 20.54 / 19.84: the gain is the
-settings', not the warmer cache.
-
-**The cards' clock level `high`** (`local/gpu-perf.sh high`, on top of `power-tune.sh on`, 5 runs each) is slower:
-17K 13.23 13.14 12.99 12.86 13.22 = 13.09 tok/s against 13.63 at `auto`, Sposi 17.37 17.34 17.18 16.82 15.75 = 16.89
-against 17.70 (the rest of the token 44.5 -> 47.5 and 42.4 -> 45.1 ms; the first 17K run overlapped another session's
-GPU benchmark and was repeated as r6). The reason is the memory: on this card and driver `high` holds the memory
-clock at 772 MHz (`pp_dpm_mclk` level 2 of 0-3, not 1249), and a plain streaming read on card 0 got ~580 GB/s
-against ~920 at `auto` (measured by the Q6_K kernel session the same day). Card 0's core clock averaged 1.74 GHz while
-busy, 29% of the samples under 1.5 GHz. Keep `auto`.
-
-**Host-path options** (all opt-in, the default path unchanged; tokens identical to the reference where checked):
-
-| tok/s, one value per run | 17K | Sposi |
-| --- | --- | --- |
-| default | 10.96 10.92 13.93 10.92 13.84 | 16.68 18.72 18.34 16.05 16.06 |
-| `STRATA_SUM_ZEROCOPY=1` (the sum reads the CPU's and the peer's rows from pinned host memory: ~105 fewer copies a token) | 13.49 10.55 | 15.92 18.83 |
-| `STRATA_FILE_POOL=1 STRATA_FILE_THREADS=16` (file reads on persistent threads, 16 parts) | 11.11 10.41 | 18.61 16.27 |
-| `STRATA_FILE_THREADS=16` / `32` without the pool (threads created per layer) | 9.77 / 9.12 | 14.87 / 14.33 |
-| `STRATA_POOL_SPIN_US=300` (the CPU pool sleeps after 300 us instead of 20 ms) | 13.49 13.62 13.54 13.35 10.20 | 18.20 14.39 15.17 15.37 14.30 |
-| `STRATA_POOL_SPIN_US=100` / `1000` | 10.19 11.28 10.13 / 9.61 9.77 13.34 | 15.64 16.76 18.64 / 16.80 14.86 15.17 |
-| `STRATA_SPEC_TOP=4 STRATA_SPEC_ADAPT=1` + the pool (speculative reads two layers ahead under `--arena-adapt`) | 8.77 9.12 | 14.99 15.32 |
-| `STRATA_SPEC_TOP=2 STRATA_SPEC_ADAPT=1` + the pool | 11.88 11.08 | 15.27 13.82 |
-
-None separates from the two modes, except the speculative reads, which lose: at 17K 8,443 reads issued for 333 used
-of ~1,140 file misses (TOP 4), 3,845 for ~200 (TOP 2) - 4-5% of what they read is used, and the rest costs RAM
-bandwidth (`cpu` 2.1 -> 2.7-3.1 s). `STRATA_NVME_KEEPALIVE_US=500` (the keep-alive inside the engine) and
-`STRATA_POOL_YIELD=1` (the parked pool yields its CPU) were only smoke-tested.
-
-**Prompt-lookup drafting** (`local/bench-v41/pld-sim.py`, the model's tokenizer, no model run): the next tokens
-copied from the conversation after the last 4/3/2-token match. On the Pi session of 2026-10-18 that used ds41e (10,240
-output tokens) 1.42-1.51 tokens per step (drafts of 4-16), 2.5-3.1 per drafted pass; on two coding-agent sessions of
-2026-10-19 (another model, 19,415 and 47,614 output tokens) 1.33-1.40. The reasoning text is mostly new, so a verify
-pass (which costs several single steps here) would rarely pay.
-
-## The dense half's Q6_K matvecs at decode: `GGML_CUDA_Q6K_MMVQ=1` (2026-10-20)
-
-Opt-in, off by default. With `STRATA_DENSE_REQUANT=q6_K` a decode token runs 321 Q6_K matrix-vector products (8 a
-layer and the vocabulary head), each as two ggml kernels: `quantize_q8_1` (the f32 column to 8 bits, one scale per
-32 values) and `mul_mat_vec_q`. `GGML_CUDA_Q6K_MMVQ=1` sends them to one kernel, `q6k_mmvq_f`
-(`third_party/llama.cpp/ggml/src/ggml-cuda/mmvq-q6k.cuh`, recorded in `tools/v41/ggml/q6k-mmvq.patch`). It reads the
-standard Q6_K blocks (so the prompt passes keep reading the same tensors) with 64-bit loads, 8 lanes a block - the
-blocks are 210 B, so most loads are only 2-byte aligned, which the card takes - and multiplies the f32 column as it
-is: each 6-bit value is converted with `v_cvt_f32_ubyte` and multiplied in with an f32 fma, the -32 taken off as 32 x
-the sum of 8 activations. So there is no `quantize_q8_1` launch (321 fewer kernels a token) and the products are
-exact. Every other matvec (prompt passes, other types and shapes) takes ggml's path, and so does everything with the
-variable unset.
-
-**What the matvecs cost.** Re-read token by token from `local/sweep-prof/trace-80` (tokens 20-78): 7.8-8.1 ms a token
-(mean 7.92) for ~5.86 GB (40 x 132.9 MB + the 543 MB head), ~740 GB/s; `quantize_q8_1` 0.49 ms more. The 10.7 ms of
-the trace difference in the section above includes one 5120-row launch that stalled for 186 ms in the 80-token run
-(186 / 64 = +2.9 ms a token).
-
-**In isolation** (`local/bench-v41/q6k-mmvq.hip`, card 0, level `auto`: core ~2.5 GHz, memory at its top level;
-random weights rotated through >= 768 MB so the 96 MB Infinity Cache does not hold them). Launches back to back,
-medians of 3, us a product (ggml's with its `quantize_q8_1` launch), and the kernels' own durations from a
-`rocprofv3` trace of the same sweep (no launch gaps):
-
-| | rows x K | ggml, back to back | `q6k_mmvq_f` | | ggml kernels (traced) | `q6k_mmvq_f` (traced) | plain read of the bytes |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| attn_q_a | 1280 x 5120 | 13.07 | 9.71 | -26% | 7.80 + 1.68 | 7.96 | 9.25 |
-| attn_q_b | 32768 x 1280 | 49.31 | 43.17 | -12% | 43.96 + 1.64 | 41.00 | 39.22 |
-| attn_kv | 512 x 5120 | 10.75 | 6.60 | -39% | 5.44 + 1.68 | 4.72 | 5.93 |
-| attn_output_a | 8 x 1024 x 4096 | 38.80 | 34.18 | -12% | 33.36 + 1.80 | 32.28 | 31.88 |
-| attn_output_b | 5120 x 8192 | 46.62 | 40.88 | -12% | 41.16 + 1.68 | 39.00 | 38.94 |
-| ffn_gate/up_shexp (x2) | 2304 x 5120 | 18.40 | 14.36 | -22% | 13.16 + 1.68 | 12.60 | 13.57 |
-| ffn_down_shexp | 5120 x 2304 | 19.28 | 14.89 | -23% | 14.04 + 1.68 | 12.88 | 13.59 |
-| output (head) | 129280 x 5120 | 594.35 | 585.09 | -2% | 576.32 + 1.68 | 570.64 | 573.0 |
-| **a token** | | **9.18 ms** | **7.71 ms** | **-16%** | 8.00 ms | 7.09 ms | 7.21 ms |
-
-(The plain read is the same benchmark's `roof`, launches back to back, so it includes the launch gaps the traced
-columns do not.) ggml's matvec alone is close to the bandwidth already; most of what is left is the quantize launch.
-The 321 products of 40 distinct layers and the head in decode order (`token`, GPU time a token, two rounds each):
-9.44 / 9.56 -> 8.09 / 8.10 ms at full clock; with 700 us idle between layers - the core clock then sits at
-1.26 GHz, as during decode at 17K - 13.24 / 13.38 -> 10.44 / 10.44 ms. Traced at 1.26 GHz the kernel is still
-shorter than ggml's matvec + quantize on every shape (attn_q_b 66.72 + 3.00 -> 55.04 us, attn_output_a 39.56 + 3.00
--> 40.96, the head 669.7 + 3.0 -> 659.6).
-
-**In the engine** (`rocprofv3 --kernel-trace`, the default two-card configuration, Sposi forced, 80 tokens, steady
-state tokens 20-78): the Q6_K matvecs with their quantization 8.43 -> 7.98 ms a token (-0.45 ms), card 0's kernels
-3,578 -> 3,257 a token and 23.32 -> 22.88 ms busy. Inside the engine the matvec kernels themselves come out even with
-ggml's (attn_q_b 45.3 -> 43.5 us, the head 577.8 -> 573.4, but attn_output_b 40.3 -> 42.4, attn_output_a 36.3 ->
-37.6): the saving there is the quantize kernels and their launches.
-
-**Accuracy** (`check`: every row of every shape against the CPU product in double with the exact f32 column; error
-relative to the row's sum of |w x|, the maximum over the rows): ggml 3.6e-4 to 1.2e-3 (the 8-bit column),
-`q6k_mmvq_f` 1.4e-8 to 4.0e-8.
-
-**Decode** (`local/bench-v41/ab-q6kmmvq.sh`: the default two-card configuration, forced on the reference tokens,
-5 runs each interleaved, level `auto`, `power-tune.sh on`; `local/sweep-q6k/summary.txt`, tags `q6k-*`):
-
-| tok/s, one value per run | 17K | Sposi |
-| --- | --- | --- |
-| default | 13.57 13.12 13.56 13.21 12.15 (mean 13.12) | 18.02 17.02 18.19 18.16 18.00 (mean 17.88) |
-| `GGML_CUDA_Q6K_MMVQ=1` | 13.59 13.84 12.28 12.16 13.11 (mean 13.00) | 18.30 18.84 16.87 17.01 18.40 (mean 17.88) |
-
-No difference above the runs' spread; an earlier series with the 4-lane version measured the same (17K 12.96 ->
-12.86, Sposi 17.94 -> 17.86, tags `q6k4-*`). The ~0.45 ms a token the engine trace shows is under 1% of a 56-77 ms
-token, inside the 3-5% that single runs vary. Forced-token argmax differences on Sposi: default 1-4 a run, the new
-path 5-8 - its products are exact, ggml's rounded the column to 8 bits, so it leaves the reference text (made with
-ggml's path) at a few more near-ties.
-
-Hidden states (`STRATA_DUMP_MAIN`: the state after layers 36, 37, 38 at each of 263 decode steps, Sposi forced,
-`local/bench-v41/dump-main-diff.py`, relative L2 difference, mean; measured with the 4-lane version, the same
-arithmetic per product): two runs of the default 6.2%, two runs of the new path 4.3%, default against new
-7.2-7.9% - a small systematic shift on top of the engine's own run-to-run spread, which is of the same size.
-
-`STRATA_DEC_NLL=1` (with `STRATA_FORCE_IDS`) now prints the decode path's perplexity of the forced text, and
-`local/bench-v41/dec-nll.sh` runs Lucebox's held-out sequences through it; not run yet for this comparison.
-
-**What did not pay** (the same benchmark; the kernels are kept in `q6k-mmvq.hip`):
-- the same weight loads with ggml's 8-bit column (`q6k_mmvq`, 4 lanes a block, 128-bit loads): even with ggml's
-  matvec alone (7.96 against 7.97 ms a token), and still after a `quantize_q8_1` launch each;
-- each workgroup quantizing the column into LDS exactly as `quantize_q8_1` (`q6k_mmvq_fq`, bit-identical results):
-  the in-kernel quantization (IEEE divisions, then a barrier) costs what the launch did, 9.20 against 9.18 ms;
-- f16 arithmetic (`q6k_mmvq_h`: the column converted to f16, `v_dot2_f32_f16`): 8.25 ms (-10%), slower than f32 on
-  attn_output_b and the head, and f16 overflows past 65504 (attn_output_b's input is not normalized);
-- f32 with 4 lanes a block and 128-bit loads (`q6k_mmvq_f4`, the first version): 64 activation registers a step,
-  6-10 waves a SIMD, 11.8 ms a token at 1.26 GHz against 10.44 for 8 lanes. It also spilled registers at K = 4096 /
-  8192 (75-95 us on attn_output_b) until a memory fence at the top of each row and step kept the compiler from
-  loading the steps' activations once, before the row loop;
-- ggml's own kernel with other launch parameters (1-8 waves a row, 1-4 rows a workgroup): 1-15 us on some shapes
-  (attn_kv 5.44 -> 4.24 us with 4 waves, the head 576.3 -> 561.4 with 8 waves and 2 rows), still after the quantize
-  launch.
-
-At the cards' `high` level (above) every product runs on the 772 MHz memory clock: a plain read reached ~580 GB/s on
-every size, ggml's head matvec 573 GB/s against 920 at `auto`.
-
-So `GGML_CUDA_Q6K_MMVQ=1` stays opt-in: fewer kernels and exact products, no measured decode speed. The matvecs were
-already within ~10% of a plain read of their bytes; the dense half's time is in its ~3,600 launches a token, not here.
-
-## The ds4 1017 Q2 as the model (2026-10-20)
-
-DeepSeek-V4.1-Flash-1017 (DeepSeek, 2026-10-17) as antirez/ds4's Q2, `DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf`
-(366 GB, `antirez/deepseek-v4.1-flash-gguf`; ds4's download script switched to it on 2026-10-19). Its header against
-the September Q2 the engine ran on 2026-10-17 (`DS4_Q2_STATUS.md`): the same 1,046 tensors, names, shapes and types,
-the same metadata (geometry, Engram encoding, tokenizer tables) except the source revision and the imatrix hash. So it
-loads unchanged. The Engram tables are inside the GGUF (rows of 256 E4M3 + 8 E8M0 bytes, checked against the
-September tables) and differ from the September ones; `local/ds4-engram-extract.py` writes them as the engine's
-safetensors (24 rows per table checked against the GGUF). Configuration: the default `local/ds41-local.json`
-(`--rank local/rank-q2.bin`, the September Q2's routing rank), `local/fetch-model.sh` fetches it.
-
-Nine circles: all nine right, 17.6 tok/s. Quality on Lucebox's held-out set (`local/eval-lucebox`, `run-eval.sh`
-with `MODEL`/`RANK`/`ENGRAM`, one card, exact routing, dense half Q6_K), against the 1017 FP8 teacher:
-
-| | ppl | top-1 agreement | KL (top-256) |
-| --- | ---: | ---: | ---: |
-| 1017 FP8 (teacher) | 8.56 | - | - |
-| **ds4 1017 Q2** | **9.78** | **78.8%** | **0.269** |
-| lxe's 1017 2-bit (2026-10-18, dropped) | 11.73 | 70.9% | 0.488 |
-
-Speed, default two-card configuration with `local/power-tune.sh on`, 5 runs each (`local/bench-v41/ab-1017.sh`,
-`local/sweep-1017/`): 17K **14.48 13.96 14.51 14.27 14.61 = 14.37 tok/s** (the GSQ the same day: 13.63), Promessi Sposi
-19.80 19.95 17.71 16.44 19.89 = 18.76 (the GSQ: 17.70; a different model writes a different text - 300 tokens here,
-246 there).
-
-A rank from the 1017's own routing (`ROUTES=local/routes-1017 MAP= OUT=local/rank-1017.bin local/rebuild-rank.sh`:
-one agent session through the server, 113,170 tokens = 27.2 M selections, plus the September Q2's corpus, 2.0 M) does
-not pay (`local/bench-v41/ab-rank1017.sh`, 3 runs each, interleaved): 17K 14.09 (`rank-q2.bin`) against 14.08, VRAM
-hits 57.5% against 58.8%; Promessi Sposi **19.98 against 17.73**, VRAM hits 82.4% against 80.4%, file reads 843
-against 1,080. One session's routing fits that session's kind of text and costs prose; `local/rank-q2.bin` stays.
-`local/update-rank.sh` does the rebuild, this measurement and the decision in one go (apply only if neither prompt is
->2% slower and the two together >=1% faster); on these runs it answers KEEP, and APPLY with the two ranks swapped.
-
-## Conversation reuse after a side request is exact (2026-10-22)
-
-The serve loop keeps one conversation through an unrelated request (park / unpark). Its partial resume, at the
-longest common prefix below the parked end, re-fed from there with the side request's window ring and ratio-2
-compressor state still live, and never wrote the Engram history back. The fix: a
-partial resume only at an even position at most 16 below the parked end (`RAW - SWA`), after `restore()`; anything
-further back is a full prefill; on every resume the 3 Engram history positions before it are rewritten with the
-prompt's own tokens; after a DSpark decode that rejected drafts, a continuation at an odd position re-feeds one token.
-
-`tools/v41/engine/check_conv_reuse.py --backend gpu --tail 20` (card 0, exact routing, ctx 8192): each reused request
-against a fresh prefill of the same prompt, last-row logits and the last 20 prompt rows. On this GPU a fresh prefill
-of the same prompt twice differs by KL 0.006-0.016 (the engine is not bit-reproducible), so KL is the measure:
-
-| scenario | before | after |
-| --- | --- | --- |
-| resume 20 back (220 of 240) | resume 220: KL 1.39, rows top-1 4/20, 2nd token differs | full prefill: KL 0.003, same tokens |
-| then 8 back of the re-parked one | resume 220: KL 1.17, **top-1 wrong** (3608 vs 764) | full prefill: KL 0.004, same tokens |
-| resume 8 back (232 of 240) | - | resume 232: KL 0.0035, rows top-1 19/20, same tokens |
-| full unpark after a longer side request | KL 0.004 | KL 0.007 (the Engram history case: no difference visible at GPU noise) |
-| a growing dialogue, regenerate | - | KL 0.002-0.02, same tokens |
-
-The cost: a partial resume more than 16 positions back is now a full prefill. In `local/serve-engine.log` (2026-10-21,
-the agent sessions) 19 conversations were parked, 4 fully unparked and none resumed partially.
-
-## The conversation pool (2026-10-22)
-
-`--conversation-cache-mib N`: every conversation a request does not continue is
-saved at its turn boundary (the snapshot rings + every position-indexed row before it, its tokens and image keys) in
-pinned host RAM, and a request resumes from whichever holds the longest prefix of its prompt, the live state or a pool
-record. The single park it replaces kept one conversation, and only when the next request's prompt + max tokens fit
-65,536 positions: a 148K-token side request on 2026-10-21 dropped a 197K-token session, whose next turn re-read it all.
-The engine's default is 0 (the single park); the four configurations set 4096.
-
-`tools/v41/engine/check_conv_reuse.py --backend gpu` against fresh prefills (card 0, the GPU's KL noise is 0.006-0.016):
-
-| scenario | without the pool | with the pool |
-| --- | --- | --- |
-| `abc`: A B C A B C A (A and B share a system prompt) | B2, C2 re-read (21.7 s, 15.5 s) | B2, C2 resume 196 / 137 (1.8 s, 1.5 s), restore ~2 ms; KL 0.00007-0.047, top-1 right everywhere |
-| `single`: a growing dialogue, regenerate | - | the same decisions, tokens and KL as without the pool |
-| `park16`: 8 back, then 21 back | 21 back: full prefill | 21 back: resume 230 from the record's boundary at 240 (10 below it), KL 0.005 |
-
-`local/bench-v41/pool-turns.py`: the two-card flags, ctx 65536, power-tune on; two conversations taking turns, A the
-17K prompt and B 25.5K tokens of another text, each turn ~200 new tokens, 16 decoded:
-
-| turn | without the pool | with the pool (8192 MiB) |
-| --- | --- | --- |
-| 0 A, 1 B (first reads) | 71.4 s, 73.4 s | 67.5 s, 71.1 s |
-| 2 A | 7.4 s (the park) | 7.3 s |
-| 3 B | 66.1 s (re-read) | 6.9 s |
-| 4 A | 7.0 s | 6.9 s |
-| 5 B | 66.9 s (re-read) | 6.5 s |
-| mean of turns 2-5 | 36.9 s | **6.9 s** |
-
-A record is ~1.9 KB a position (`--kv-q8`): 49 MB for 25.5K tokens, ~380 MB for a 200K session; a save is queued in
-0.1-0.3 ms, a restore takes 4-7 ms. Pinned memory is taken in 256 MiB pieces as records need it, up to the budget.
-
-## DSpark with the 1017 drafter: slower here (2026-10-22)
-
-The 1017 drafter (`V41-MTP-Vision-1017.Q2_K.gguf` from kaushikvira/DeepSeek-V4.1-Flash-1017-GSQ-agentic-strata, 5.66 GB,
-the checkpoint's mtp.0-2 stack; the vision tower in it is not loaded), one-shot greedy (`STRATA_DSPARK`), the default
-two-card flags, power-tune on, 200 tokens (`local/sweep-dspark/summary.txt`):
-
-| | code-en | Promessi Sposi |
-| --- | ---: | ---: |
-| single-step | 16.47 tok/s | 18.70 tok/s |
-| depth 2 | 14.84 (2.78 tokens/pass) | 12.77 (1.88 tokens/pass) |
-| depth 4 | 15.28 (4.02 tokens/pass) | 10.06 (2.07 tokens/pass) |
-
-5.14 GB of weights on card 0 (the VRAM expert cache shrinks around them), a verify pass 167 ms at depth 2 against
-~55 ms a single-step token: even 4 accepted tokens a pass on code do not pay it back, because each pass reads the
-experts of every drafted token from RAM and the NVMe. The chat stays single-step. (The drafted text first differs from
-the single-step one after 24-177 tokens: the verify pass's batch shapes, as any GPU run here.)
-
-## Conversations on disk (2026-10-22)
-
-`--conversation-disk DIR` (`tools/v41/engine/ds41_conv_disk.hpp`, with the pool; the four configurations set
-`local/conv-cache` and `--conversation-disk-gib 32`): after every answer the live conversation's turn boundary is
-written there - the rows the pool keeps (every stream's rows `[0, n / ratio)`) and the snapshot rings - and a request
-resumes from a record when that is the longest prefix of its prompt. After a restart the engine has no live state and
-an empty pool, so this is what gives a long session back. A conversation that goes on only writes its new rows; the
-files are written in the background; `meta.txt` is written last, so a crash leaves the last whole boundary; records of
-another model or cache layout are skipped at start. The Monitor shows the folder, the space used and a button that
-clears the pool, the files and the live conversation (`POST /conversation-cache/clear`, the engine's `CONVCLEAR`).
-
-`tools/v41/engine/check_conv_reuse.py --backend gpu --scenario disk` (two turns, the engine restarted, the same prompt
-and one more turn): the same prompt resumes all 320 positions from disk at KL 0.0036 against a fresh prefill, the next
-turn 320 of 340 at KL 0.009, the fresh tokens both times. `local/bench-v41/disk-restart.py` (two-card flags, power-tune
-on, `local/sweep-disk/summary.txt`):
-
-| turn | resumed | prompt |
-| --- | ---: | ---: |
-| 25,500 tokens from scratch | 0 | 65.24 s |
-| +200 | 25,500 | 4.13 s |
-| the engine restarted, +200 | **25,700 from disk** (restore 51 ms) | **6.47 s** (a full read: ~65 s) |
-
-A save costs 1-11 ms on the engine's thread after the answer; 47.8 MB on disk for 25.9K positions (~1.9 KB a position,
-~380 MB for a 200K session).
-
-## The CPU tier's pool, profiled; the zero-copy sum on (2026-10-23)
-
-`STRATA_POOL_PROF=1` (new, measurement only; printed when the engine ends) times the CPU pool's phases: on Promessi
-Sposi 14,164 phases woke in 0.3 us each, spent 2.1 ms in all waiting for the workers to park, and kept 13 threads busy
-88% of the wall, reading 48.3 GB/s (17K: 89%, 47.8 GB/s). So the pool loses little to waking and joining; what is left
-against the 61 GB/s a plain read gets is the kernel reading and computing at once. `DS4_TIER_PROF=1` shows the stage
-after it, "sum", at 0.19-0.22 ms a layer (~8-9 ms a token): the CPU and peer rows to the card, the wait for card 1,
-the sum's launch.
-
-`STRATA_SUM_ZEROCOPY=1` (the sum reads the CPU's and card 1's rows from pinned host memory, ~105 fewer copies a token)
-was measured on 2026-10-20 in the bimodal runs, 2 each, unreadable. Again, power-tune on, six alternated rounds
-(`local/sweep-sumzc/summary.txt`), tok/s:
-
-| | Promessi Sposi, 300 tokens | 17K context, 128 tokens |
-| --- | --- | --- |
-| default | 20.19 18.64 20.05 19.57 19.68 19.87 = 19.67 | 13.37 13.09 14.86 13.94 14.32 14.23 = 13.97 |
-| `STRATA_SUM_ZEROCOPY=1` | 17.69 17.89 20.37 19.65 19.84 20.04 = 19.25 | 14.91 14.77 15.02 14.78 14.83 14.95 = **14.88** |
-
-+6.5% at 17K in every round, and steadier; on prose the last three rounds (zero-copy run first) are each a little ahead,
-the two low ones of the first rounds stand alone. The configurations now set it.
-
-## Route bias, measured again (2026-10-22)
-
-The same two-card flags, power-tune on, one run each (`local/sweep-routebias/summary.txt`), not adopted (the route
-bias picks experts by where they are, so the answers change; HANDOVER.md section 3):
-
-| routing | Promessi Sposi | 17K context | VRAM hits |
-| --- | --- | --- | --- |
-| exact (`--route-bias 0 --route-bias-file 0`, the configuration) | 19.09 tok/s | 13.19 | 82.6% / 57.3% |
-| the engine's default bias (+1.0 / -0.6) | 23.13 (+21%) | 23.24 (+76%) | 96.3% / 94.6% |
-| `--route-bias 20` (everything in VRAM, speed only) | 27.90 | 26.98 | 100% |
-
-antirez/ds4 and project-maya route exactly too (their routers add only the model's own `exp_probs_b`).
-
-## The RAM arena: 80 GiB (2026-10-22)
-
-`local/bench-v41/ab-arena.sh`: the default two-card flags, power-tune on, 70 / 75 / 80 / 85 GiB in a rotating order, two
-rounds (`local/sweep-arena/summary.txt`); tok/s, and the file-tier wait of the run:
-
-| `--arena-gib` | Promessi Sposi, 300 tokens | 17K context, 128 tokens | file ms (Sposi / 17K) |
-| --- | --- | --- | --- |
-| 70 | 19.61 / 16.80 | 12.50 / 13.78 | 1352-1460 / 1481-1735 |
-| 75 (until now) | 19.61 / 17.32 | 14.11 / 14.12 | 1101-1157 / 1269-1320 |
-| **80** | 18.37 / 18.48 | **14.96 / 15.24** | 949-955 / 980-1020 |
-| 85 | 18.68 / 20.78 | 14.95 / 15.67 | 708-743 / 869-880 |
-
-At 17K both runs of 80 and 85 beat both runs of 75 (+7% / +9%) and the file-tier wait falls at every step; short prose
-stays inside its spread. On one card with the September GSQ (2026-10-15) 80 and 85 were worse than 75: the second
-card's disjoint store and the adaptive arena changed that. The configurations now set 80: the engine holds ~94 GiB and
-~15-17 GB stay free beside it (85 would leave ~10-12 with the conversation pool full).
-
-## enc-skip and the candidate fast-path, measured (2026-10-22)
-
-`local/bench-v41/ab-cand-encskip.sh`: the default two-card flags, one-shot runs alternated, 3 each, power-tune on.
-Results in `local/sweep-cand/summary.txt` and the `.out` files.
-
-**enc-skip** (`--enc-skip`, on by default since 2026-10-11: the prompt tokens before the last 2560 stop after layer
-20's KV-writing part) against `--no-enc-skip`, prompt speed, 8 tokens decoded:
-
-| prompt | `--no-enc-skip` | default (enc-skip) | |
-| --- | ---: | ---: | ---: |
-| 8,192 tokens | 226.3 / 230.2 / 230.0 tok/s | 321.5 / 313.3 / 331.7 tok/s | +39% |
-| 17,349 tokens | 226.7 / 226.0 / 222.9 | 365.7 / 360.2 / 363.9 | +61% |
-| 25,500 tokens | 223.7 / 225.4 / 223.7 | 396.0 / 392.7 / 385.1 | +74% |
-
-The same 8 greedy tokens in every run. The gain grows with the prompt: the share of tokens that skip layers 21-39
-grows.
-
-**Candidate fast-path** (`STRATA_CAND_FAST=1`, opt-in, antirez/ds4 b290d83b): below 2048 blocks of 8 compressed rows
-(~32K positions at ratio 2) every block is a candidate, so layer 20's block sort and the masks of layers 21-39 change
-nothing; the switch leaves them out of the graph. Decode, tok/s:
-
-| prompt | default | `STRATA_CAND_FAST=1` |
-| --- | --- | --- |
-| Promessi Sposi, 300 tokens | 18.22 / 20.11 / 20.34 | 20.29 / 19.86 / 20.35 |
-| 17K context, 128 tokens | 14.26 / 14.79 / 14.66 | 13.84 / 10.99 / 14.84 |
-
-The same within the spread, and the same argmax counts (`diff=` 0-4 in both), so it stays opt-in.
-
-## Reproduce
-
-```
-./run-v41-gsq.sh        # local/ds41-local.json = local/ds41-local-fast-exact.json (the old one: .pre-fast-exact)
-```
-
-One-shot (stop the chat first, `fuser -k 8150/tcp`):
-
-```
-bash tools/ds4/memguard.sh 110 82 -- env STRATA_PF_NO_DUMMY=1 STRATA_PEER_GIB=22 ./build-hip-fused/ds41_generate \
-  -m models/V41-GSQ/V41-GSQ.gguf --ids-file local/prompts/divina-breve.i32 -n 300 --temp 0 --backend cuda \
-  --experts gpu --arena-gib 90 --ctx 8192 --kv-q8 --threads 12 --rank local/rank-gsq-mixed.bin \
-  --engram models/engram/layers14:models/engram/layers1 --arena-skip-vram --route-bias 0 --route-bias-file 0 \
-  --arena-adapt --vram-margin 0.5 --peer-device 1
-```
-
-All runs and logs: `local/sweep-gsq/` (`summary.txt` has one line per run). The server needs `HIP_VISIBLE_DEVICES=0,1`
-in the config's `env` (the server otherwise exposes only `"gpu"`).
-
-## Gate
-
-Default flags (no `--peer-device`), greedy 96 tokens on `local/prompts/code_review.i32`: tokens identical to
-`local/gate-before.txt`, and the arena/file/VRAM counts (8229 / 7131 / 1622) and hit counters too.
-
-## Next levers, by expected value (2026-10-20)
-
-1. **The machine's settings**: keep `local/power-tune.sh on` across reboots (`nvme_core.default_ps_max_latency_us=0`
-   and the C3 / governor settings at boot): +12.6% at 17K, measured.
-2. **RAM bandwidth**: the CPU experts run at ~47-50 of the RAM's 52-54 GB/s (10 ms a token on short prose, 17 at
-   17K); faster RAM (EXPO, if the DIMMs run under their rating) is the only lever on them short of fewer misses.
-3. **The spread left**: one short-prose run in five still loses ~10 ms a token in the dense half or the host, cause
-   not found.
-4. **The dense half's small kernels** (~3,500 launches a token on card 0): fusion; the Q6_K matvec itself is no longer
-   the lever (`GGML_CUDA_Q6K_MMVQ=1` is faster alone, decode unchanged).
-5. **A better expert predictor** for speculative file reads: today's uses 4-5% of what it reads and loses.
-
-Done since the earlier list: the adaptive peer store (`STRATA_PEER_ADAPT`), graph replay (on).
-
-## CPU i-quant expert rows: IQ1_M in AVX-512 (2026-10-24)
-
-The CPU-pool kernel `src/kernels/cpu/iq_avx512.cpp` covers IQ2_XXS, IQ2_XS, IQ3_XXS, IQ3_S and IQ2_S, and now also
-IQ1_M; the same format list is in `include/strata/kernels/cpu/iq_avx512.hpp`. IQ1_M matters here because the published
-GSQ-RCO pack mixes it into its routed experts: over its 40 layers, 60 of the 120 gate/up/down role tensors are IQ1_M
-(14 layers all IQ1_M, 9 IQ2_XXS gate/up with IQ1_M down, 5 IQ2_XS gate/up with IQ1_M down, 2 IQ1_M gate/up with
-IQ2_XXS down; mean expert blob 8,598,528 B against our Q2's 9,953,280 B), so those rows can be served by this
-machine's CPU pool at ~25K context and above.
-
-Measured with `test_strata_iq1m` (48 rows x 4096 columns, five alternating trials per token count, Ryzen 9 9900X):
-ns per row-token, the AVX-512 kernel against ggml-cpu's dispatched vec_dot.
-
-| tokens | ggml-cpu | AVX-512 IQ1_M |
-|---:|---:|---:|
-| 1 | 131.58 | 356.51 |
-| 2 | 132.61 | 195.47 |
-| 3 | 133.44 | 141.97 |
-| 4 | 140.22 | 121.66 |
-| 5 | 135.12 | 116.42 |
-| 6 | 133.46 | 111.79 |
-| 7 | 133.87 | 111.20 |
-
-A separate check used the published pack itself (`blk.12.ffn_down_exps.weight`, IQ1_M): a 131072-byte range
-read from shard one of https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF starting at file offset
-34722813824 covered 96 complete rows of 2304 columns (504 B a row); all 480/480
-dots were bit-exact against ggml-cpu's generic dot (max abs difference 0). On those real blocks ggml-cpu took
-75.74 ns per row-token at four tokens and this kernel 67.71.
-
-One to three tokens stay on ggml-cpu (`native_gu_mt_min` returns four for IQ1_M without `STRATA_IQ_MT_MIN`, measured
-356.51 / 195.47 / 141.97 ns per row-token there); from four the kernel wins, 121.66 -> 111.20 ns.
-The integer sums times d_x*d_y reproduce ggml-cpu bit-exactly in every comparison above: 168 of 168 dots in the synthetic test,
-480 of 480 in the published slice, max abs difference zero.
-
-The expert API was checked too (`native_fmt`, `native_gu_rows`, `native_down_rows` on a quantized synthetic layer):
-at three tokens it calls ggml-cpu's per-token dot, at five this kernel; gate/up rows agree within 2.72759e-06 relative and
-down rows within 2.32107e-05 (ggml-cpu's own dispatched dot differs from its generic reference in 1787 of 3072 comparisons,
-max abs 7.6e-06). Against that generic reference through silu(gate)*up the gate/up rows are exact in 2304 of 2304
-comparisons (max relative difference 0), and the down rows served by this kernel are bit-exact in 3072 of 3072
-with max abs difference zero.
-
-Down projections take the same kernel when their format is IQ1_M at the same token threshold; other down formats keep
-their existing paths.
-
-The engine A/B (below, `local/sweep-rco2`) says the kernel is **not on this box's decode path at all**: with the same
-pack and everything else equal, `rco` decodes 20.01 tok/s on Promessi Sposi and 13.44 on the 17K prompt, and the same
-pack with `STRATA_NO_IQ512=1` - ggml-cpu's fallback for every IQ1_M row - 20.15 and 13.23, inside the run-to-run spread
-(the Q2 arm alone spans 18.72-19.50 and 11.59-12.90). Decode hands the CPU pool one token at a time, and one token is
-below the four-token threshold, so both arms call the same ggml-cpu dot: their expert counters match to the unit in all
-four Promessi Sposi runs (55080 hit / 10566 cpu / 172 file). Nothing in the tier changes that: `cpu_run` builds one
-job per expert with `nt = 1`, and the CPU-only tier runs "token by token (no sharing)"
-([ds41_moe.cpp:5445](../../tools/v41/engine/ds41_moe.cpp)), so an `--experts cpu` run does not engage the kernel
-either. The only place the engine gives the pool a group of four or more is the speculative verify path, and DSpark
-with the 1017 drafter is measured slower than single-step here (the section above), so today the kernel's win is a
-*guard*: it is what the pool will do when a CPU-served expert is handed several tokens, at 1.12-1.28x on IQ1_M rows.
-
-## The published GSQ-RCO IQ2_XXS pack, loaded through a metadata overlay (2026-10-25)
-
-`DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS` (ISTA-DASLab, four shards, 138.2 GB, sha256 verified, downloaded with
-`aria2c -x4` to the NVMe) is the same checkpoint quantized the RCO way, with expert formats mixed per layer:
-gate/up IQ1_M, IQ2_XXS or IQ2_XS and down IQ1_M, IQ2_XXS or IQ2_XS - eight (gate,down) classes over the 40 layers,
-against our Q2's one (IQ2_XXS gate/up, Q2_K down). Its GGUF carries llama.cpp/HF metadata and the Engram arrays as
-tensors, so it has none of the `deepseek41.*` keys this engine reads.
-
-`local/fetch-rco-1017.sh` (or `tools/v41/ds41_pack_meta.py --pack SHARD1 --ref-keys
-local/rco-iq2xxs-meta/geometry-keys.json --engram ENGRAM.gguf --out local/rco-iq2xxs-meta/meta.gguf`) writes the 511 KB
-overlay with exactly those keys: 51 of them, geometry and the config JSON from `geometry-keys.json` - the 68 reference
-keys of the checkpoint, taken once from the reference Q2's header with `--dump-ref-keys` and kept in the repo as 8 KB of
-JSON, so a fresh clone needs no reference download; `--engram` (which supplies the two table row counts) is optional
-beside it, those rows are in the same JSON,
-compress ratios and the kv/index source layers derived from which compressor tensors the pack holds (a ratio is a
-regime carried forward, not a per-layer flag), and the Engram token map / primes / multipliers read out of the pack's
-own I32/I64 tensors - 129280 map ids, and the primes must tile the two Engram tables' 384006168 and 384016682 rows
-exactly, so a wrong read fails there and then. `DS41_META=<that file>` is opt-in: geometry and the Engram arrays come
-from it, the tensor data stays in the pack.
-
-Three things in the engine were missing for it. Expert blobs assumed one file: an expert class lives in whichever
-shard holds its stacked tensor, so every span now carries a shard id and `Ds41FileBlobs` opens one fd pair (buffered
-+ O_DIRECT twin) per shard; the second-drive blob mirror stays single-file because it validates the source by size.
-The grouped GPU expert kernels had IQ1_M/IQ2_XXS/IQ2_XS for gate/up but none of them for down
-(`STRATA_D_FMTS`), so the tier init refused the pack. And the Engram name family is a property of the pack
-(`q_norm`/`k_norm`/`kv` on a ds4 pack, `q`/`k`/`wkv` on an RCO one, stored BF16 and Q5_K instead of F32/F16),
-`attn_output_a` is flattened there (4096x8192 for the 4096x1024x8 the engine reshapes), and `token_embd` is Q5_K
-rather than F16, so the embedding rows go through the type traits. The pack also has no `exp_probs_b_vl.bias`: the
-VL router bias tensor is only required of a pack that carries it.
-
-`test_ds41_geometry` passes on the pack with the overlay, and on the antirez Q2 with and without a stray `DS41_META`
-(its tensor map, tiers and mutation checks). Sizes, from the two headers: the Q2 file is 365.7 GB of which **202.8 GB
-are the Engram I8 tables inside it**, which the engine never loads (it read `models/engram-1017`, extracted from
-those tables, until 2026-10-26 - see the next section); what runs is
-experts 152.9 -> 132.1 GB and dense 8.0 -> 5.2 GB, a mean expert blob 9.49 -> 8.20 MiB (-13.6%).
-
-A/B 2026-10-25 with `local/bench-v41/ab-rco-iq2xxs.sh`, 2 runs each, every arm forced on one reference token stream,
-Promessi Sposi 300 tokens and the 17K prompt 128 tokens at ctx 24576, arena 80 GiB, 12 threads:
-
-| arm | Promessi Sposi | 17K prompt | VRAM hits / cpu / file (Sposi) |
-|---|---:|---:|---|
-| our Q2 (`rank-q2.bin`) | 19.11 (18.72-19.50) | 12.25 (11.59-12.90) | 81.8% / 11470 / 685 |
-| RCO pack | 20.01 (19.74-20.28) | 13.44 (13.27-13.61) | 83.9% / 10566 / 172 |
-| RCO pack, ggml-cpu IQ1_M rows | 20.15 (20.09-20.21) | 13.23 (13.16-13.31) | 83.9% / 10566 / 172 |
-
-So the RCO pack decodes 4.7% faster than our Q2 on Promessi Sposi and 9.7% faster on the 17K prompt: at the same
-80 GiB its smaller blobs fill 10005 arena slots against the Q2's 8630 and leave 3428 to the file tier against 5203,
-the card's VRAM budget holds 1594 experts against 1231, and a CPU-served expert costs 181.5 us against 198.4. The two
-packs are not the same model either: forced on the Q2's own stream, the RCO arm's argmax disagreed with it at 51 of
-the 300 Sposi positions and at 1 of the 128 on the 17K prompt (`margin:` lines), against 0 and 1 for the Q2 arms from
-their own reference.
-
-Bytes, not the CPU kernel, is what moved the tier: on real rows of the two packs (`local/bench-v41/fmt-cost/fmt_cost.cpp`, one
-core of the 9900X, ns per row-token against ggml-cpu's dispatched dot) IQ1_M's 56-byte block is the more expensive
-format to dot - its down rows are 79.04 against Q2_K's 32.39, while its gate/up rows are 168.44 against IQ2_XXS's
-179.39, so an all-IQ1_M expert is +19% when it is compute-bound. A cache-resident 96-row slice is compute-bound;
-the tier's 8 MB blobs are not, and there the -13.6% of bytes wins. The same probe times the kernel on those rows:
-at four tokens IQ1_M gate/up 150.23 against 168.00 ns per row-token (1.12x) and down 67.51 against 78.53 (1.16x),
-IQ2_XXS 38.28 against 83.25 (2.17x), IQ2_XS 89.97 against 198.60 (2.21x); at eight, 138.86 / 61.54 / 38.32 / 93.06.
-The IQ1_M rows are bit-exact against ggml-cpu's generic reference on the pack's own weights (680 of 680 at eight
-tokens, 340 of 340 at four, max abs difference 0). The IQ2_XXS and IQ2_XS rows are not: they differ from it, and from
-the dispatched dot, by a few float32 ulps - on the Q2 pack's gate rows the sums reach 1.4e7 and the difference there
-is 3, which is the same size as the dispatched dot's own difference from generic on those rows (2 to 3), and 1e-6 or
-less on the RCO rows whose sums stay near 7. Bit-exactness is always claimed against generic, as above.
-
-## The Engram tables read from the pack's own iq4_nl GGUF (2026-10-26)
-
-The GSQ-RCO release ships the Engram rows as a file of its own, `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` (110.6 GB),
-with one tensor per Engram layer - `blk.1.engram_embd.weight` and `blk.14.engram_embd.weight`, shape [256, rows] with
-rows 384006168 and 384016682, exactly the counts the pack's primes tile, and iq4_nl. Until now the engine read those
-rows only in the checkpoint's own form: the two HF safetensors with F8_E4M3 weight bytes and F8_E8M0 scales, 264 bytes
-a row, which `local/fetch-model.sh` extracts from antirez's Q2 pack (203 GB, `models/engram-1017`). The reader now
-takes either: `--engram` gets a `.gguf` path instead of the two safetensors directories, and one 144-byte row comes
-back from a single pread instead of 256 + 8 bytes from two. Geometry, hashing and the row cache are unchanged; the
-cache entry shrinks to the row (144 against 264 bytes), and the coalescer groups by the page the row *starts* in, so a
-group can span the page plus one row - an iq4_nl row is not page-aligned, the tensor begins at byte 416.
-
-iq4_nl is not linear: a block is a binary16 scale and 16 nibble bytes, and the value is `d * k`, where `k` runs over
-ggml's 16-entry `kvalues_iq4nl` table (-127 to 113), the low nibbles of the 16 bytes giving the block's first 16 values
-and the high nibbles its second 16. `ds41_dequant_iq4_nl_row` in `ds41_engram.cpp` is that arithmetic, written there
-rather than called through ggml's type traits because `bench_ds41_engram` compiles the module without ggml;
-`tools/v41/engine/test_ds41_engram.cpp` gates it - 1,028,096 of 1,028,096 values bit-identical to ggml's own
-`to_float` over random rows (every nibble pair, every finite binary16 scale, and the codebook endpoints).
-
-Row reads, this box, tables on the internal NVMe (ext4), 4096-token sequence `local/prompts/huge17k.i32`, 16 threads,
-`build-hip-fused/bench_ds41_engram`, rows per pass 96 / 49152 / 393216:
-
-| pass | warm: reference / batch (rows/s) | cold (`drop_cache` between reps): reference / batch |
-|---|---:|---:|
-| 1 token | 1,135,020 / 2,466,598 (2.2x) | 29,539 / 2,671,119 (90.4x) |
-| 512 tokens | 10,004,445 / 7,001,799 (0.70x) | 700,548 / 7,464,885 (10.7x) |
-| 4096 tokens | 7,913,110 / 5,951,369 (0.75x) | 3,395,262 / 7,150,841 (2.1x) |
-
-So cold - which is what a decode token actually pays, ~48 rows of a 110 GB file it has not seen - the batched path is
-90x the old per-row reader at one token and 2.1x at 4096, and it reads 45% fewer bytes per row. Warm the coalescer
-loses on the 144-byte rows: it pulls the page plus a row where the reference path reads the row alone, and on a table
-that already sits in the page cache a plain pread is cheaper. `--check 200` says the two paths return identical rows
-(0 of 2 slots differ), as they must.
-
-The CPU dense path needed one fix to run the pack at all: RCO stores `blk.N.engram_q.weight` and
-`blk.N.engram_k.weight` as BF16, and ggml-cpu has no f32 x bf16 binary op, so `test_ds41_dense` aborted in
-`binary-ops.cpp` ("unsupported types: dst: f32, src0: f32, src1: bf16") as soon as the Engram was on. The GPU path
-already re-typed them to F32 at load; the zero-copy CPU path now converts them into their own buffer with ggml's
-traits (20,480 values each). With that, `test_ds41_dense <pack> --engram <iq4 gguf> --zero-experts --no-actquant`
-runs, and the Engram is doing something: logits against the same pass with `--engram` off move by max abs 10.287 and
-mean abs 1.199 over 1,034,240 values.
-
-What the pack's iq4_nl rows cost in quality against the checkpoint's FP8 rows is measured with Lucebox on the same
-pack in the next section ("The RCO pack measured...").
-
-Ranking a pack by bytes needs to know which format each expert is in: `tools/v41/engine/v41_pack_map.py` writes that
-map from the pack's headers (`{"map": {"<layer>": {"gu": [...], "dn": [...]}}}`, 40 layers, the (gate, down) classes of
-the table above), and `v41_rank.py` now prices iq1_m / iq2_xxs / iq2_xs / q2_k (56 / 66 / 74 / 84 bytes a 256) rather
-than only q2_0 / q3_k / ptq1. Over the calibration corpus (`local/calib-q2/stats-merged`) the pack's own byte-correct
-order puts 40.8% of routed tokens in the first 8 GiB of experts, 74.6% in 32 and 97.1% in 80; against the
-`local/rank-q2.bin` this box runs, its first 10005 pairs overlap 99.1% and its first 2198 - the VRAM budget - 94.5%.
-So the rank file for this pack exists (`local/rank-rco-calib.bin` plus the map) and is **not** taken: like the two rank
-swaps measured before (14.09 against 14.08), it changes nothing until it is measured.
-
-Lucebox with the pack's own tables, run on 2026-10-26 (`MODEL=…GSQ-RCO-IQ2_XXS-00001-of-00004.gguf`,
-`ENGRAM=models/rco-iq2xxs/DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`, `RANK=local/rank-q2.bin`, `local/eval-lucebox/run-eval.sh
-rco-iq2xxs-iq4eng`, 8 x 1024 tokens, arena 75 GiB, ctx 4096, `--kv-q8`, 12 threads): **ppl 10.33, the run's own top-1
-next-token accuracy 50.6%** over 8184 rows (`local/eval-lucebox/rco-iq2xxs-iq4eng/score.json`). Against that, our Q2
-pack with the FP8 tables measured **ppl 9.78** (`local/eval-lucebox/ds4q2-q6k/score.json`) - but that run also had the
-dense half re-quantized to q6_K, which this one did not, and the two packs are different quants, so the 5.6% is the
-pack, the tables and the dense load together. Top-1 agreement with the teacher (78.8%) and KL (0.269) cannot be
-reprinted: `teacher_8x1024.npz`, the 1017 FP8's top-256 log-probs taken on 2026-10-20, is no longer on this box and
-nothing in the tree regenerates it. What `score.py` does now: always ppl and the run's own top-1, the teacher's two
-numbers when its file is present, and with `--against <run dir>` the KL and top-1 agreement **between two runs** -
-which isolates one change (a table form, a rank, a kernel) on one pack, no teacher needed, `KEEP_LOGITS=1` keeping the
-8 x 528 MB of logits that makes it possible. The clean read of the iq4_nl tables - the same pack with both table
-forms - is in the next section.
-
-Both table forms, measured side by side (same box, same sequence `local/prompts/huge17k.i32`, 16 threads,
-`build-hip-fused/bench_ds41_engram`, rows/s of the batched reader; cold = `drop_cache` between reps):
-
-| pass | FP8 safetensors warm | iq4_nl GGUF warm | FP8 cold | iq4_nl cold |
-|---|---:|---:|---:|---:|
-| 1 token | 592,878 | 2,466,598 | 577,617 | 2,671,119 |
-| 512 tokens | 3,014,128 | 7,001,799 | 1,962,231 | 7,464,885 |
-| 4096 tokens | 5,630,238 | 5,951,369 | 5,062,294 | 7,150,841 |
-
-The iq4_nl table is 144 B a row read in one pread against the FP8's 264 B in two, and cold it delivers 4.6x / 3.8x /
-1.4x the rows per second. What that speed buys is paid back in row values: running the CPU dense half over the same
-tokens with each form (`test_ds41_dense <pack> --zero-experts --no-actquant`, experts zeroed so only the dense half and
-the Engram move), the logits of the two forms differ by **max abs 1.759, mean abs 0.170** - against the Engram's own
-effect on the same pass (max abs 10.637, mean abs 1.249 against `--engram` off). So the pack's own tables move the model
-by about a seventh of what the Engram itself moves it, and read 45% fewer bytes; two rows only, taken on the CPU half,
-so it is a size estimate of the gap, not the Lucebox number. This box runs the FP8 tables (they are the checkpoint's
-own rows and they came back for free from the pack it already had); the iq4_nl form stays supported - `--engram <file>.gguf` -
-and is what a pack that ships only that form would use.
-
-One incident worth keeping, because the failure mode is silent: the extraction of `engram-L14.safetensors` was killed by
-a full disk, and the file it left had its whole size (reserved by `truncate()` before writing) with zeros past 46 GiB -
-it opened fine and would have fed the model an all-zero n-gram row for half the table. Two guards now:
-`local/ds4-engram-extract.py` writes `<name>.part` and renames only after `fsync`, samples 256 weight rows before
-calling a table complete (the hole-filled one: 139 of 256 zero), and refuses to start without room; and the engine
-samples 512 rows at open (that same file: 278 of 512 zero -> `reads as zeros over a third of the sample`,
-`STRATA_ENGRAM_NO_ZERO_CHECK=1` to skip). A complete table samples clean: 0 zero rows in 400. The re-extracted L14 was
-checked row by row against the pack: 300 random rows, weight and scale bytes identical, 0 mismatch.
-
-## The RCO pack measured: FP8 against iq4_nl tables, the q6_K requant, prompts from the NVMe (2026-10-26)
-
-**Quality, Lucebox** (`local/eval-lucebox/run-eval.sh`, 8 x 1024 tokens, one card, arena 75 GiB, ctx 4096, `--kv-q8`,
-12 threads, `RANK=local/rank-q2.bin`, the pack with `DS41_META`; `--against` scores one run's logits against another's):
+# DeepSeek-V4.1-Flash-1017 with exact routing on this box
+
+The model is DeepSeek-V4.1-Flash-1017 as the
+[ISTA-DASLab GSQ-RCO IQ2_XXS pack](https://huggingface.co/ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF), run with
+the model's own routing (`--route-bias 0 --route-bias-file 0`): every expert the router picks is computed, wherever it
+is. The box: two RX 7900 XTX (`gfx1100`, 24 GB; card 1 behind a PCIe 4.0 x2 chipset link), Ryzen 9 9900X (12 cores,
+AVX-512), 122 GiB RAM, the pack on a PCIe 5.0 NVMe (ext4), ROCm 7.14. Every number below was measured on this box with
+this pack; one-shot runs are greedy and, unless they say otherwise, forced on one reference token stream
+(`STRATA_FORCE_IDS`, `STRATA_DEC_MARGIN=1` counting the positions whose argmax differs) so that the arms of a
+comparison decode the same text.
+
+## The pack
+
+Four shards, 138.2 GB: per layer, gate/up IQ1_M, IQ2_XXS or IQ2_XS and down IQ1_M, IQ2_XXS or IQ2_XS - eight
+(gate, down) classes over the 40 layers (14 all IQ1_M, 9 IQ2_XXS/IQ1_M, 5 IQ2_XS/IQ1_M, 5 IQ2_XXS/IQ2_XXS,
+3 IQ2_XXS/IQ2_XS, 2 IQ1_M/IQ2_XXS, 1 IQ2_XS/IQ2_XS, 1 IQ2_XS/IQ2_XXS); experts 132.1 GB, a mean expert blob of
+8,598,528 bytes; the dense half 5.2 GB, Q5_K except `attn_q_a` and `attn_kv` (Q8_0) and the BF16 router, indexer and
+Engram q/k.
+
+Its GGUF carries llama.cpp metadata, not the `deepseek41.*` keys this engine reads. `tools/v41/ds41_pack_meta.py`
+writes them into a 511 KB overlay (`local/rco-iq2xxs-meta/meta.gguf`, read through `DS41_META`): geometry and the
+config JSON from `local/rco-iq2xxs-meta/geometry-keys.json` (68 keys of the checkpoint, 8 KB, in the repo), compress
+ratios and kv / index source layers derived from which compressor tensors the pack holds, and the Engram token map,
+primes and multipliers read from the pack's own I32/I64 tensors (129,280 map ids; the primes must tile the two Engram
+tables' 384,006,168 and 384,016,682 rows exactly, so a wrong read fails at once). Rebuilt from the JSON alone it is
+byte-identical to the one in use. In the engine: expert blobs are read from whichever shard holds their stacked
+tensor (one buffered and one `O_DIRECT` descriptor per shard); the Engram tensors `engram_q` / `engram_k` /
+`engram_wkv` are stored BF16 and Q5_K and re-typed to F32 at load (on the CPU path too: ggml-cpu has no f32 x bf16
+binary op); `attn_output_a` is stored flattened; the embedding rows are Q5_K and go through the type traits; the VL
+router bias `exp_probs_b_vl.bias` is only required of a pack that has it, and this one has none, so images are off.
+`test_ds41_geometry <shard 1>` passes with the overlay.
+
+## Where an expert is computed
+
+| tier | what | experts |
+| --- | --- | ---: |
+| card 0's VRAM | the ranked head, then an LRU cache with background promotion (`STRATA_VRAM_BG`) | ~2,100-2,200 |
+| card 1's VRAM | `--peer-device 1`: a 22 GiB store (`STRATA_PEER_GIB=22`) of ranked experts the arena does not hold (`STRATA_PEER_DISJOINT=1`), adaptive (`STRATA_PEER_ADAPT=1`); a miss it holds is computed there and only n_embd floats cross the link | ~2,750 |
+| CPU | the RAM arena: `--arena-gib 80` of pinned RAM with the ranking past the VRAM head (`--arena-skip-vram`); a file-tier read takes a slot (`--arena-adapt`), an expert card 1 holds first (`STRATA_ARENA_EVICT_PEER=1`); 12 threads compute those experts' rows (`--threads 12`, the physical cores) | ~10,000 |
+| NVMe | everything else, read when routed | ~3,100-3,400 |
+
+The order the tiers are filled in is the rank (`local/rank.bin`; `local/update-rank.sh` rebuilds it, below).
+
+## The configuration (`local/ds41-local.json`)
+
+Flags: `--backend cuda --experts gpu --threads 12 --ctx 262144 --kv-q8 --prompt-batch 8192 --arena-gib 80
+--arena-skip-vram --arena-adapt --vram-margin 0.5 --peer-device 1 --pf-b 0 --pcie 0 --route-bias 0
+--route-bias-file 0`, the Engram tables, the rank, `--dump-routes local/routes-rco` and the conversation pool and
+disk store (below). `--pf-b 0` turns the predicted-expert prefetch off and `--pcie 0` the PCIe-staged compute of
+misses: a miss outside the cards is computed by the CPU from the arena. `--vram-margin 0.5` leaves 0.5 GiB of card 0
+free beside the expert cache. `--kv-q8` keeps the compressed KV and the indexer keys in q8_0. Prompts of more than 2560
+tokens skip layers 21-39 for all but their last 2560 tokens (enc-skip, on by default): those layers see earlier
+tokens only through layer 20's compressed KV and index keys, and the last row is byte-identical to the full pass.
+
+Environment: `STRATA_DENSE_REQUANT=q6_K` (the 84 Q8_0 dense matrices to q6_K, below), `STRATA_DENSE_NOCONT=1` (no
+`ggml_cont` of an already contiguous tensor), `STRATA_DENSE_ALIAS=1` (results written straight into the persistent
+state tensors), `STRATA_SUM_ZEROCOPY=1` (the weighted sum of a layer's experts reads the CPU's and card 1's rows from
+their pinned host buffers), `STRATA_PRESTAGE_GIB=1.5` / `STRATA_PRESTAGE_MIN=512` (a device region the prompt path
+stages the next layer's experts into), `STRATA_VRAM_BG=1`, `STRATA_PF_NO_DUMMY=1`, `STRATA_NO_LARGEPAGES=1`, the
+peer switches above, `STRATA_SERVE_STEP_MAX=96` (up to 96 new prompt tokens run as decode passes, more as a batch),
+`STRATA_SERVE_PASS_BATCH=1`, `STRATA_SERVE_PASS_BIAS=0`.
+
+## Speed (2026-10-26)
+
+One-shot, the configuration's flags, power-tune on (`local/power-tune.sh`: NVMe APST and CPU C3 off, `performance`
+governor), 3 runs each (`local/bench-v41/ab-rco-requant.sh`, `ab-rco-levers.sh`; `local/sweep-rco-rq`,
+`local/sweep-rco-lev`):
+
+| | tok/s |
+| --- | ---: |
+| decode, Promessi Sposi (19-token prompt, 300 tokens) | 23.2-23.7 |
+| decode at 17K context (128 tokens; one-shot with the server's elastic state columns, `STRATA_ELASTIC_COLS=1`) | 18.4-19.2 |
+| prompt from scratch, 8,192 tokens | 371-414 |
+| prompt from scratch, 17,349 tokens | 433-459 |
+| prompt from scratch, 25,500 tokens | 458-484 |
+
+A from-scratch 123,416-token prompt read at 483-493 tok/s (`local/bench-v41/repro-mmq-crash.py`, 2026-10-27).
+Through the server, in a coding-agent session at 120-190K context: 16-20 tok/s decode, a turn's new tokens (tens to
+~1,500) resumed on the saved conversation in 0.6-10.5 s (`local/serve-engine.log`, 2026-10-27).
+
+## Quality (2026-10-26)
+
+Lucebox's held-out set (8 x 1024 tokens; `local/eval-lucebox/run-eval.sh`, one card, arena 75 GiB, ctx 4096,
+`--kv-q8`, 12 threads; `--against` scores one run's logits against another's):
 
 | run | ppl | own top-1 | against | KL | same top-1 |
 | --- | ---: | ---: | --- | ---: | ---: |
-| iq4_nl tables (`rco-iq2xxs-iq4eng`) | 10.334 | 50.6% | | | |
-| FP8 tables (`rco-iq2xxs-fp8eng`) | 10.369 | 50.7% | iq4_nl | 0.026 | 93.6% |
-| FP8 tables, repeated (`rco-iq2xxs-fp8eng-rep`) | 10.369 | 50.7% | FP8 | 0.000 | 100% |
-| FP8 + `STRATA_DENSE_REQUANT=q6_K` (`rco-iq2xxs-fp8eng-q6k`) | 10.372 | 50.7% | FP8 | 0.018 | 94.7% |
+| the pack's iq4_nl Engram table (`rco-iq2xxs-iq4eng`) | 10.334 | 50.6% | | | |
+| the checkpoint's FP8 Engram rows (`rco-iq2xxs-fp8eng`) | 10.369 | 50.7% | iq4_nl | 0.026 | 93.6% |
+| FP8 rows, repeated (`rco-iq2xxs-fp8eng-rep`) | 10.369 | 50.7% | FP8 | 0.000 | 100% |
+| FP8 rows + `STRATA_DENSE_REQUANT=q6_K` (`rco-iq2xxs-fp8eng-q6k`) | 10.372 | 50.7% | FP8 | 0.018 | 94.7% |
 
-The repeat is bit-identical to the first run (KL 0, every row the same argmax): this one-card eval is deterministic,
-so 0.026 and 0.018 are real differences, not placement noise. Both are small and neither moves the ppl: the FP8 rows
-read 10.369 against the iq4_nl rows' 10.334, and the requant adds 0.003. So on this set the pack's own iq4_nl table is
-as good as the checkpoint's FP8 rows, and the q6_K requant costs nothing measurable. `score.py`'s `--against` KL
-had its sign inverted until this run (it printed -KL); fixed.
+The one-card eval is deterministic (the repeat is bit-identical), so the two small KLs are real; neither moves the
+ppl. The FP8 1017 checkpoint itself reads ppl 8.56 on this set.
 
-What the requant touches on this pack: the dense half is Q5_K already (attention output, q_b, shared expert, output,
-token_embd) except `attn_q_a` and `attn_kv`, Q8_0, so `dense requant: 84 Q8_0 matrices -> q6_K, 0.39 -> 0.30 GB`.
+## The q6_K dense requant
 
-**Speed, requant against the pack's own types** (`local/bench-v41/ab-rco-requant.sh`, the chat configuration's flags:
-two cards, arena 80 GiB, zero-copy sum, 12 threads, power-tune on; arms alternated, tok/s per run;
-`local/sweep-rco-rq/`):
+On this pack it re-types the 84 Q8_0 matrices (`attn_q_a`, `attn_kv`; 0.39 -> 0.30 GB). Speed, arms alternated:
 
-| | q6_K (the chat config) | the pack's own types |
+| | q6_K | the pack's own types |
 | --- | --- | --- |
-| Promessi Sposi, 300 tokens | 20.99 / 22.97 / 23.20 | 23.61 / 23.26 / 23.30 |
-| 17K context, 128 tokens | 17.66 / 18.30 / 18.32 | 15.11 / 17.88 / 18.30 / 18.33 |
-| prompt 8,192 tokens | 379.1 / 392.3 / 371.2 | 413.7 / 384.7 / 378.6 |
-| prompt 17,349 tokens | 436.1 / 433.4 / 450.0 | 435.3 / 459.2 / 447.5 |
-| prompt 25,500 tokens | 482.2 / 483.5 / 470.5 | 460.3 / 458.3 / 477.3 |
+| Promessi Sposi | 20.99 / 22.97 / 23.20 | 23.61 / 23.26 / 23.30 |
+| 17K context | 17.66 / 18.30 / 18.32 | 15.11 / 17.88 / 18.30 / 18.33 |
+| prompt 8,192 | 379.1 / 392.3 / 371.2 | 413.7 / 384.7 / 378.6 |
+| prompt 17,349 | 436.1 / 433.4 / 450.0 | 435.3 / 459.2 / 447.5 |
+| prompt 25,500 | 482.2 / 483.5 / 470.5 | 460.3 / 458.3 / 477.3 |
 
-The two arms are the same within their spread (the low first runs of each column are the first engine starts of the
-series), so the chat config keeps `STRATA_DENSE_REQUANT=q6_K`: it saves 0.09 GB of VRAM and costs nothing measured.
-(The 17K row's first q6_K run is not in the table: unforced, the model ended its answer at the first token; the
-other runs are forced on the 128-token stream of `local/sweep-rco2`.)
+The same within the spread, ppl +0.003: the configuration keeps it (0.09 GB of VRAM).
 
-Prompts from zero with the pack on the internal NVMe: 371-414 tok/s at 8K, 433-459 at 17K, 458-484 at 25.5K, file
-wait 6-11 s, against our Q2's 314-332 / 360-366 / 385-396 on 2026-10-22 (the enc-skip table above, same flags but
-arena 75 GiB): **+18-23% prompt speed** from the smaller blobs. Decode on the same flags is 23.3 tok/s on Promessi
-Sposi and ~18.2 at 17K; the 2026-10-25 A/B on this pack read 20.01 and 13.44, and whether power-tune was on for it was
-not recorded (power-tune measured +11% short / +21% at ~25K on 2026-10-21, the size of that gap).
+## Where a token goes (2026-10-26)
 
-## Where an RCO token goes, and three levers that did not move it (2026-10-26)
+`STRATA_DEC_PROF=1` / `DS4_TIER_PROF=1` / `STRATA_POOL_PROF=1`, ms per token (`local/sweep-prof-rco/`):
 
-`STRATA_DEC_PROF=1` / `DS4_TIER_PROF=1` / `STRATA_POOL_PROF=1` on the chat flags (two cards, arena 80 GiB, power-tune
-on, `local/sweep-prof-rco/`), ms per token:
-
-| | begin | attn_router (dense) | tier | finish | tok/s |
+| | begin | attention + router | tier | finish | tok/s |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Promessi Sposi | 1.0 | 24.8 | 14.7 | 1.4 | 23.6 |
 | 17K context | 0.5 | 27.8 | 27.5 | 1.6 | 18.4 |
 
-Inside the tier: the CPU pool 7.4 ms (Sposi, 35 experts a token) / 16.8 ms (17K, 74 a token), at 47 GB/s - the RAM's
-limit, as before; waiting for card 1's rows and the sum 6.2 / 7.1 ms. Card 0's kernel trace (64 Sposi tokens): 3,378
-kernels and 19.9 ms busy a token (`mul_mat_vec_q` 7.2 ms, the expert kernels 3.6 ms); of its idle time, 8.6 ms a token
-is the gap between its own expert kernels and the sum (waiting for the CPU's rows) and ~6 ms is spread over the 40
-per-layer host round trips (router readback, the tier's decision, the next graph). Neither gap is a kernel cost, so
-fusing the dense half's small kernels cannot remove them; removing the round trips means routing on the card.
+In the tier: the CPU pool 7.4 ms (35 experts a token) / 16.8 ms (74), reading at 47 GB/s - the RAM's limit with
+power-tune on (`local/ram-bench.sh`: 61-62 GB/s streaming); waiting for card 1's rows and the sum 6.2 / 7.1 ms. Card
+0's kernel trace (`rocprofv3`, 64 Promessi Sposi tokens): 3,378 kernels and 19.9 ms busy a token (`mul_mat_vec_q` 7.2
+ms, the expert kernels 3.6 ms). Of its idle time, 8.6 ms a token is the gap between its own expert kernels and the
+sum (waiting for the CPU's rows) and ~6 ms is spread over the 40 per-layer host round trips (router readback, the
+tier's decision, the next graph). Neither is a kernel cost: fusing the dense half's small kernels cannot remove them.
+Routing on the card would remove a round trip only where all six of a layer's experts are on the card - ~35% of
+layers on short prompts, ~6% at 17K (from the measured hit rates) - so it was not built.
 
-A one-shot run keeps the prompt's 8192 state columns (~2.5 GiB) after the prompt; `--serve` gives them back
-(`elastic_cols`), so the one-shot 17K numbers above read card 0 with 1594 experts where the server has ~2170.
-`STRATA_ELASTIC_COLS=1` now opts a one-shot run in: the 17K prompt then holds 2176 experts on card 0 and decodes
-**18.50 / 19.22 / 18.42 tok/s** against 17.67 / 16.69 / 18.50 without (`local/sweep-rco-lev`, `elastic-r*`).
+Card 1's link: a hand-off moves a few KB each way, so it is latency-bound, not bandwidth-bound; a wider link would
+not change it.
+
+## Levers measured and not taken (2026-10-26)
 
 `local/bench-v41/ab-rco-levers.sh`, 3 rounds alternated, tok/s (VRAM hits):
 
 | | 17K, 128 tokens | Promessi Sposi, 300 tokens |
 | --- | --- | --- |
-| chat flags | 17.67 / 16.69 / 18.50 (62.7%) | 23.69 / 23.31 / 23.68 (84.0%) |
-| `STRATA_DOWN_AMD_IQ=1` (the pack's IQ2_XXS/IQ2_XS/IQ1_M down rows on the AMD layouts) | 18.44 / 18.33 / 18.28 | 23.55 / 23.65 / 23.74 |
-| `--rank local/rank-rco-calib.bin` (the pack's byte-correct order) | 18.92 / 18.45 / 18.39 (62.6-64.9%) | 23.88 / 22.97 / 23.79 (84.2%) |
+| the configuration | 17.67 / 16.69 / 18.50 (62.7%) | 23.69 / 23.31 / 23.68 (84.0%) |
+| the configuration again (a third arm; see below) | 18.44 / 18.33 / 18.28 | 23.55 / 23.65 / 23.74 |
+| `--rank local/rank-rco-calib.bin` (the pack's byte-correct order over the calibration corpus) | 18.92 / 18.45 / 18.39 (62.6-64.9%) | 23.88 / 22.97 / 23.79 (84.2%) |
 
-All three inside the spread; the argmax counts (`diff=`) are the base's. `STRATA_DOWN_AMD_IQ` stays opt-in and the rank
-stays `rank-q2.bin`. A release of ggml's device memory pool after the prompt (tried as the cause of the one-shot VRAM
-loss) gave back 0.22 GiB and was removed.
+The rank is inside the spread, with the configuration's argmax counts. The third arm was meant to put the pack's
+IQ2_XXS / IQ2_XS / IQ1_M down rows on the AMD expert layouts, but those layouts are not compiled for gfx1100
+(`STRATA_EXP_LAYOUTS` is 0 there), so it ran the default kernels: it is a repeat of the configuration, and the switch
+was removed. A release of
+ggml's device memory pool after the prompt gave back 0.22 GiB and was removed. A one-shot run keeps the prompt's 8192
+state columns (~2.5 GiB) after the prompt where the server gives them back (`elastic_cols`); `STRATA_ELASTIC_COLS=1`
+lets a one-shot run do as the server does (2,176 experts on card 0 after the 17K prompt instead of 1,594).
 
-## The live conversation resumes a few tokens before its end (2026-10-27)
+## The Engram tables, in either form
 
-A client that rewrites the tail of the last turn (here after a cancelled answer) sent a prompt that matched the live
-176,619-token snapshot up to 176,616: the engine treated it as unrelated, moved the conversation to the pool, and read
-all 176K tokens again (~7 minutes). The live snapshot now resumes the way a parked conversation does: `restore()`, then
-re-feed from the even position `ps = lcp & ~1` when `P - ps <= 16` (the window ring's reach). `check_conv_reuse.py
---scenario single` (its "re-render 12 back" step resumes at 298 of a 310-token snapshot): **bit-exact** against a fresh
-prefill on the CPU backend (maxdiff 0 on every step); on the GPU the same step reads KL 0.069 with the same top-1, the
-run-to-run noise of that engine. `STRATA_SERVE_LIVE_PARTIAL=0` restores the old path. A client that cuts the middle of
-a conversation (the other re-read that day: lcp 67,762 of 190,505) still re-reads it: there is no state to resume
-from there.
+The Engram rows come as the pack's own iq4_nl GGUF (`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`, 110.6 GB, one tensor a
+layer, 144 bytes a row read in one pread) or as the checkpoint's FP8 rows (two safetensors a layer, F8_E4M3 weights
+and F8_E8M0 scales, 256 + 8 bytes a row in two preads; 203 GB in `models/engram-1017`). `--engram` takes either.
+iq4_nl is not linear: `ds41_dequant_iq4_nl_row` is ggml's `block_iq4_nl` arithmetic, gated by
+`tools/v41/engine/test_ds41_engram.cpp` (1,028,096 of 1,028,096 values bit-identical to ggml's `to_float`).
+
+Rows per second of the batched reader (`build-hip-fused/bench_ds41_engram`, 4096-token sequence, 16 threads, internal
+NVMe; cold = `drop_cache` between reps):
+
+| pass | FP8 warm | iq4_nl warm | FP8 cold | iq4_nl cold |
+|---|---:|---:|---:|---:|
+| 1 token | 592,878 | 2,466,598 | 577,617 | 2,671,119 |
+| 512 tokens | 3,014,128 | 7,001,799 | 1,962,231 | 7,464,885 |
+| 4096 tokens | 5,630,238 | 5,951,369 | 5,062,294 | 7,150,841 |
+
+Quality: the Lucebox table above. The configuration names the FP8 rows; where they are missing the engine uses the
+iq4_nl table beside the pack and prints that it does. Two guards against a table cut short by a crash (a
+`truncate()`-reserved file keeps its size and reads as zeros): the extractor writes `.part`, renames after `fsync` and
+samples 256 rows, and the engine samples 512 rows at open (`STRATA_ENGRAM_NO_ZERO_CHECK=1` skips it).
+
+## CPU expert rows: IQ1_M in AVX-512
+
+`src/kernels/cpu/iq_avx512.cpp` computes IQ1_M rows (and IQ2_XXS / IQ2_XS / IQ3_XXS / IQ3_S / IQ2_S) for several
+tokens at once: it decodes a block once and applies it to every token. Real rows of the pack, one core, ns per
+row-token against ggml-cpu's dispatched dot (`local/bench-v41/fmt-cost/fmt_cost.cpp`):
+
+| rows | ggml-cpu | kernel, 4 tokens | kernel, 8 tokens |
+|---|---:|---:|---:|
+| IQ1_M gate/up @5120 | 168.00 | 150.23 (1.12x) | 138.86 |
+| IQ1_M down @2304 | 78.53 | 67.51 (1.16x) | 61.54 |
+| IQ2_XXS gate/up @5120 | 83.25 | 38.28 (2.17x) | 38.32 |
+| IQ2_XS gate/up @5120 | 198.60 | 89.97 (2.21x) | 93.06 |
+
+IQ1_M rows are bit-exact against ggml's generic dot (680 / 680 at eight tokens). Below four tokens ggml-cpu is faster
+(`native_gu_mt_min` = 4 for IQ1_M), and decode hands the CPU pool one token at a time, so the kernel serves only
+multi-token groups; in decode it is not on the path (`STRATA_NO_IQ512=1` decodes the same).
+
+## Conversations
+
+Every conversation a request does not continue is kept in a 4 GiB pool of pinned RAM
+(`--conversation-cache-mib 4096`) and on disk (`--conversation-disk local/conv-cache-rco --conversation-disk-gib 32`,
+saved in the background after each answer); a request resumes the longest saved prefix it shares. Resuming is exact:
+a resume a few tokens before a saved end (a client that re-renders the tail of the last turn) re-feeds from the even
+position `ps = lcp & ~1` after `restore()`, only when `P - ps <= 16` (the window ring's reach), for the live and for a
+parked conversation, and the Engram history of the first new positions is rewritten.
+`tools/v41/engine/check_conv_reuse.py --scenario single` (a re-render 12 tokens back, resumed at 298 of 310) is
+bit-exact against a fresh prefill on the CPU backend. A client that cuts the middle of a conversation is read again
+from the cut: there is no state to resume from there. `STRATA_SERVE_LIVE_PARTIAL=0` turns the live-conversation
+partial resume off.
+
+## Fixed: the prompt MMQ read past its id buffer (2026-10-27)
+
+The MMQ product reads up to J_best - 1 (<= 127) ids past a run's last row; the down product took them from a buffer
+allocated to exactly n x top_k entries, so the last run of a batch read past it - a GPU page fault ("chunk sync: an
+illegal memory access") on a 3,918-token batch over a 123K conversation. Reproduced at 8,000 + 3,918 and 123,416 +
+3,918 tokens (`local/bench-v41/repro-mmq-crash.py`); with 128 ints of slack on those buffers both run through three
+turns, at the same prompt speed.
+
+## The expert rank
+
+`local/update-rank.sh` adds the chat's own routing counts (`local/routes-rco`, written by `--dump-routes`) to the
+calibration corpus's (`local/calib/stats-merged`), ranks the experts per byte with the pack's formats
+(`local/rco-iq2xxs-map.json`), measures the candidate against the rank in use on a code review and a documentation
+prompt (`local/make-dev-prompts.py`: `dev-code`, 16.7K tokens of C++, and `dev-docs`, 10.8K tokens of docs) and
+applies it only if it is at least 1% faster with neither prompt more than 2% slower.
+
+Run on 2026-10-27 (the chat's 41.4M routed selections against the corpus's 2.0M, 3 runs a side, power-tune on;
+`local/sweep-rank`): rank in use 19.15 / 19.77 / 19.56 on `dev-code` and 16.79 / 17.99 / 16.42 on `dev-docs`, the
+candidate 19.68 / 17.20 / 17.36 and 19.14 / 18.00 / 18.92 - code -7%, docs +9%: kept.
+
+## Reproduce
+
+```
+./build.sh
+./run.sh                                         # the server, local/ds41-local.json
+bash local/bench-v41/ab-rco-requant.sh           # decode and prompt speed (server stopped)
+bash local/eval-lucebox/run-eval.sh TAG          # quality; MODEL / RANK / ENGRAM as in the table above
+```
+
+## Gate
+
+`test_ds41_geometry <shard 1>` with the overlay, `test_ds41_engram`, `test_ds41_dense <shard 1> --engram <tables>` on
+the CPU, `bench_ds41_engram ... --check 200`, the server tests (`.venv/bin/python -m unittest discover -s serve -p
+"test_*.py" -t .`) and `check_conv_reuse.py` for anything that touches conversation reuse.

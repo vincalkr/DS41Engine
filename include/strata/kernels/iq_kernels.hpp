@@ -1,5 +1,5 @@
 // include/strata/kernels/iq_kernels.hpp - the i-quant formats (IQ1_M, IQ2_XXS, IQ2_XS, IQ2_S, IQ3_XXS, IQ3_S,
-// IQ4_NL) and Q2_0 on the GPU for the IQ2_XS / IQ3_XXS model files, Q4_K / Q5_K / Q5_1 / Q8_0 for Unsloth's
+// IQ4_NL) and Q2_0 on the GPU for the IQ2_XS / IQ3_XXS model files, Q4_K / Q5_K / Q5_1 / Q8_0 for K-quant
 // UD-Q4_K_XL (gate/up Q4_K or Q5_K, down Q5_1 or Q8_0, a Q8_0 embedding), and Q2_K for DeepSeek-V4-Flash's expert
 // down projections (with Q3_K, the Q2_0 file's embedding).
 //
@@ -46,7 +46,7 @@ struct NativeExpertLayout {
     size_t gu_row = 0, d_row = 0;       // bytes per row
     size_t up_off = 0, down_off = 0;    // byte offsets inside the blob
     size_t bytes = 0;                   // the whole blob
-    // MiMo GSQ-RCO: the up projection's own type when it differs from the gate's (-1 = gu_type, every other model);
+    // the up projection's own type when it differs from the gate's (-1 = gu_type, every other model);
     // set only by native_expert_layout3.  Gate and up rows are computed by different warps, so a block never mixes.
     int up_type = -1;
     size_t up_row = 0;
@@ -59,7 +59,7 @@ NativeExpertLayout native_expert_layout(int gu_type, int d_type, int64_t n_embd,
 /// prompt path's dequantizer takes both (checked for every layer at startup, before anything is allocated).
 bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept;
 
-/// Gate and up of different types (MiMo GSQ-RCO): equal types give exactly `native_expert_layout`'s layout.
+/// Gate and up of different types: equal types give exactly `native_expert_layout`'s layout.
 NativeExpertLayout native_expert_layout3(int gate_type, int up_type, int d_type, int64_t n_embd, int64_t n_ff);
 /// `native_expert_supported` for a gate/up/down triple: equal gate/up = the pair check; otherwise only the mixed
 /// pairs that have a kernel (Q2_K/Q3_K either way round).

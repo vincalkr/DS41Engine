@@ -1,7 +1,6 @@
 # ds41e - the DeepSeek-V4.1-Flash engine (tools/v41/engine) and the few Strata libraries it links.
 #
-# This tree used to be a fork of Strata (a Qwen engine with a DeepSeek-V4.1 port on top).  Only the DeepSeek engine
-# is left; of Strata's own sources, exactly the objects ds41_generate links remain (traced with -Wl,--trace on
+# Of the Strata libraries this tree started from, exactly the objects ds41_generate links remain (traced with -Wl,--trace on
 # 2026-10-18): the VRAM expert cache and VMM, pinned host memory, the CPU expert kernels, the HIP MMVQ / IQ kernels and
 # ggml's MMQ instances for the prompt path.  The flags below are the ones those files were built with in the full
 # tree, so the engine binary is the same.

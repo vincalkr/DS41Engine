@@ -32,7 +32,7 @@ def stdio(*args, **extra):
 
 
 def call_script(name, **params):
-    """The model's text for one tool call, as Qwen's template asks for it."""
+    """The model's text for one tool call, as the chat template asks for it."""
     body = "".join(f"<parameter={k}>\n{v}\n</parameter>\n" for k, v in params.items())
     return f"</think>\n\nLet me check.\n\n<tool_call>\n<function={name}>\n{body}</function>\n</tool_call>"
 

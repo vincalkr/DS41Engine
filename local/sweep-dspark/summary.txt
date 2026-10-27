@@ -1,7 +1,0 @@
-smoke                        sposi          diff=0    decode: 120 tokens in 10.93 s = 10.89 tok/s; experts 34483 hit / 0 cpu / 11190 pcie / 607 file (75.5% VRAM hits), cpu 0 ms, file 724 ms; spec reads 0 issued / 0 used; pre
-base                         code-en        diff=0    decode: 200 tokens in 12.08 s = 16.47 tok/s; experts 26821 hit / 12078 cpu / 0 pcie / 861 file (69.0% VRAM hits), cpu 2756 ms, file 1203 ms; spec reads 0 issued / 0 used;
-base                         sposi          diff=2    decode: 200 tokens in 10.64 s = 18.70 tok/s; experts 33503 hit / 8505 cpu / 0 pcie / 623 file (79.8% VRAM hits), cpu 1935 ms, file 843 ms; spec reads 0 issued / 0 used; p
-dsp2                         code-en        diff=0    decode: 200 tokens in 13.41 s = 14.84 tok/s; experts 28131 hit / 0 cpu / 16866 pcie / 852 file (62.5% VRAM hits), cpu 0 ms, file 963 ms; spec reads 0 issued / 0 used; pre
-dsp2                         sposi          diff=0    decode: 200 tokens in 15.58 s = 12.77 tok/s; experts 59511 hit / 0 cpu / 17900 pcie / 848 file (76.9% VRAM hits), cpu 0 ms, file 1052 ms; spec reads 0 issued / 0 used; pr
-dsp4                         code-en        diff=0    decode: 177 tokens in 11.52 s = 15.28 tok/s; experts 30198 hit / 0 cpu / 17289 pcie / 863 file (63.6% VRAM hits), cpu 0 ms, file 1029 ms; spec reads 0 issued / 0 used; pr
-dsp4                         sposi          diff=0    decode: 200 tokens in 19.78 s = 10.06 tok/s; experts 88850 hit / 0 cpu / 24888 pcie / 1040 file (78.1% VRAM hits), cpu 0 ms, file 1234 ms; spec reads 0 issued / 0 used; p

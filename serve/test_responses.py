@@ -518,7 +518,7 @@ class ToolRoundTrip(Server):
         self.assertEqual(r["output"][-1]["content"][0]["text"], "The file says before.")
 
     def test_namespace_call_written_with_double_underscore(self):
-        # Qwen writes Codex's MCP tools in their flat `mcp__server__tool` form; Codex only
+        # a model writes Codex's MCP tools in their flat `mcp__server__tool` form; Codex only
         # runs the call when it comes back with its namespace.
         self.engine.scripts = [self.tok.encode(
             "</think>\n\n<tool_call>\n<function=mcp__websearch__web_search>\n<parameter=query>\nstrata\n"

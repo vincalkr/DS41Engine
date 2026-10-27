@@ -1,4 +1,4 @@
-// include/strata/kernels/cpu/kq_avx2.hpp - AVX-2 multi-token dot products for Unsloth UD-Q4_K_XL's expert formats
+// include/strata/kernels/cpu/kq_avx2.hpp - AVX-2 multi-token dot products for K-quant expert formats
 // (Q4_K gate/up against Q8_K activations; Q5_1 down against Q8_1, Q8_0 down against Q8_0), bit-exact against
 // ggml-cpu's AVX2 vec_dot for every token.  See src/kernels/cpu/kq_avx2.cpp.
 #pragma once

@@ -1,10 +1,10 @@
 """ds41_image.py - DeepSeek-V4.1's image preprocessing without torch, and the SVP1 record the engine encodes.
 
-A port of inference/image_processor.py (deepseek-ai/DeepSeek-V4.1-Flash-1017, identical to September's) to PIL +
+A port of inference/image_processor.py (deepseek-ai/DeepSeek-V4.1-Flash-1017) to PIL +
 numpy: the same resize plan (plan_image_grid / safe_resize / solve_resize_ratio), the same ImageOps.pad to the plan
 with gray 127, the same normalization ((x / 255 - 0.5) / 0.5 in float32, then rounded to bfloat16) and the same patch
 order ([n_vit_h * n_vit_w, 3 * 14 * 14], channel-major inside a patch).  On the five reference images of
-docs/ds4/V41_VISION.md the patches are bit-identical to load_image's.
+the patches are bit-identical to load_image's.
 
 SVP1 record (ds41_generate's GENI, VisionInput): int32 {0x31505653 'SVP1', vit_h, vit_w, llm_h, llm_w, 588},
 uint64 key, float32 patches[vit_h * vit_w][588], little-endian.  The span the image takes in the prompt is

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# ab-rco-levers.sh - two opt-in levers on the GSQ-RCO pack, each against the chat configuration's flags (two cards,
+# ab-rco-levers.sh - an opt-in lever on the GSQ-RCO pack, each against the chat configuration's flags (two cards,
 # arena 80 GiB, zero-copy sum, q6_K requant), arms alternated, REPS (default 3) rounds; Promessi Sposi (300 tokens)
 # and the 17K prompt (128 tokens, ctx 24576), forced on local/sweep-rco-rq's reference streams:
-#   down  STRATA_DOWN_AMD_IQ=1    the pack's IQ2_XXS / IQ2_XS / IQ1_M down rows on the AMD layouts
-#   rank  RANK=local/rank-rco-calib.bin   the pack's own byte-correct expert order instead of local/rank-q2.bin
-# (A third arm, a release of ggml's device pool after the prompt, gave back 0.22 GiB and was removed.)
+#   rank  RANK=local/rank-rco-calib.bin   the pack's own byte-correct expert order instead of local/rank.bin
+# (Two more arms were removed: a release of ggml's device pool after the prompt gave back 0.22 GiB, and
+# STRATA_DOWN_AMD_IQ selected AMD layouts that this gfx1100 build does not compile, so it ran the default kernels.)
 # The chat server must be stopped.  Results in local/sweep-rco-lev/summary.txt.
 cd "$(dirname "$0")/../.."
 S=local/bench-v41/sweep.sh; O=${OUT:-local/sweep-rco-lev}
@@ -20,8 +20,7 @@ run() {   # arm extra-env rank
     RANK=$3 bash $S $O local/prompts/sposi.i32 300 $1-r$r "$E $2" $R
 }
 for r in $(seq 1 ${REPS:-3}); do
-    run base "" local/rank-q2.bin
-    run down "STRATA_DOWN_AMD_IQ=1" local/rank-q2.bin
+    run base "" local/rank.bin
     run rank "" local/rank-rco-calib.bin
 done
 echo ABLEVDONE >> $O/summary.txt

@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
-# fetch-rco-1017.sh [DEST] - the published GSQ-RCO IQ2_XXS pack (ISTA-DASLab) into the layout this box runs today:
+# fetch-rco-1017.sh [DEST] - the published GSQ-RCO IQ2_XXS pack (ISTA-DASLab) into the layout the engine runs:
 #
 #   DEST/../rco-iq2xxs/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-0000{1..4}-of-00004.gguf   138.2 GB
 #   DEST/../rco-iq2xxs/DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf                              110.6 GB, the pack's own
 #                                                                                          n-gram tables (IQ4_NL)
 #   local/rco-iq2xxs-meta/meta.gguf      the 511 KB geometry overlay (tools/v41/ds41_pack_meta.py), written last
 #
-# The engine reads the GGUF's weights plus the Engram tables of local/fetch-model.sh (the checkpoint's native FP8
-# rows: the engine's reader wants F8_E4M3 rows with F8_E8M0 scales, which the IQ4_NL file does not hold) and the
-# overlay through DS41_META, because this pack carries llama.cpp/HF metadata instead of the deepseek41.* keys.
-# The overlay's --ref is local/rco-iq2xxs-meta/ds4-q2-header.gguf: the 5.8 MB header (KV + tensor directory, no
-# weights) of the antirez Q2 pack this box ran until 2026-10-25, kept exactly so the overlay can be rebuilt without
-# re-downloading 366 GB.
+# The engine reads the GGUF's weights, the Engram tables in either form (this IQ4_NL file, or the checkpoint's FP8 rows
+# from local/fetch-model.sh) and the overlay through DS41_META, because this pack carries llama.cpp/HF metadata
+# instead of the deepseek41.* keys; the overlay is built from local/rco-iq2xxs-meta/geometry-keys.json (in the repo).
 #
 # Resumable: a file counts as complete when its size matches the Hugging Face API's, and each is checked against the
 # API's LFS sha256 once.  Env: CONN=4 (aria2c connections per file), SKIP_SHA=1, HF_TOKEN, DRY_RUN=1.
@@ -56,8 +53,8 @@ for x in json.load(sys.stdin):
     fi
 done
 
-# The tokenizer V4.1's own tables (the pack's GGUF metadata carries the September checkpoint's): the same four files
-# local/fetch-model.sh takes from the GSQ repo, kept beside the pack so a fresh clone has what the config names.
+# The tokenizer: V4.1's tables as separate files (vocab, merges, token types, chat template), from a repository that
+# hosts them, kept beside the pack so a fresh clone has what the server reads.
 TOKREPO=IndrasMirror/DeepSeek-V4.1-Flash-GSQ-Uncensored
 for f in vocab.json merges.txt token_type.json chat_template.jinja; do
     tmeta=$(curl -sf "${AUTH[@]}" "https://huggingface.co/api/models/$TOKREPO/tree/main?recursive=1" \

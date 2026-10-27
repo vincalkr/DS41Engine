@@ -19,10 +19,6 @@ __pycache__/
 # plan v0.3 P1 (repository hygiene, review E1): profiler captures and large diagnostic dumps stay out of git.
 *.nsys-rep
 
-bench/ds4-2026-10-05/goldens/
-bench/ds4-2026-10-05/profile-decode/
-bench/ds4-2026-10-08/ctx/
-
 # Pi harness metadata (local session state, not project source)
 *.sqlite
 *.npz
@@ -79,18 +75,16 @@ build-vision-cuda12.bat
 /local/engram/
 /local/prompts/
 /local/*.bin
-!/local/rank-1017.bin
+!/local/rank.bin
 /local/*.ids
 /.hf-cache/
 /.run/
 
 # our launcher is part of this branch (the run-*.sh files the setup generates are not)
 !/run.sh
-/local/calib-q2/stats/
-/local/calib-q2/stats-corpus/
-/local/calib-q2/stats-circles/
-/local/routes-chat/
-/local/routes-1017/
+/local/calib/stats/
+/local/calib/stats-corpus/
+/local/calib/stats-circles/
 /local/stats-chat-merged/
 
 # the per-run logs of the measurement sweeps stay local; the summaries and the reference tokens are kept
@@ -112,12 +106,7 @@ core
 core.[0-9]*
 /local/ram-bench/*
 !/local/ram-bench/summary.txt
-/local/conv-cache/
-/local/sweep-disk/*
-!/local/sweep-disk/summary.txt
 
-# the reference Q2 pack's 5.8 MB header, kept on this box only: the overlay rebuilds from geometry-keys.json
-local/rco-iq2xxs-meta/ds4-q2-header.gguf
 /local/conv-cache-rco/
 /local/routes-rco/
 # rocprofv3 traces (~50 MB a run): the per-token summaries are in the docs

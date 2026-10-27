@@ -1,4 +1,4 @@
-// src/kernels/cuda/fork/fork_helpers.cuh - DeepSeek/MiMo fork: byte-aligned int load and E8M0 -> float (MXFP4).
+// src/kernels/cuda/fork/fork_helpers.cuh - fork: byte-aligned int load and E8M0 -> float (MXFP4).
 // Fork code kept out of upstream's iq_kernels.cu (one #include line there) so upstream merges do not conflict
 // on it; included at a fixed point of that translation unit and uses its helpers (not a standalone header).
 #pragma once

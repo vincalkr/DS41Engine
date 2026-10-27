@@ -1,5 +1,4 @@
 {
- "deepseek41.calibration": "imatrix",
  "deepseek41.candidate_block_size": 8,
  "deepseek41.candidate_source_layer_id": 20,
  "deepseek41.candidate_topk_blocks": 2048,
@@ -157,7 +156,6 @@
  "deepseek41.o_lora_rank": 1024,
  "deepseek41.q_lora_rank": 1280,
  "deepseek41.qk_rope_head_dim": 64,
- "deepseek41.quantization": "IQ2_XXS gate/up; Q2_K down; Q8_0 attention/shared/head",
  "deepseek41.rms_norm_eps": 9.999999682655225e-21,
  "deepseek41.rope_scaling.beta_fast": 32.0,
  "deepseek41.rope_scaling.beta_slow": 1.0,
@@ -175,8 +173,6 @@
  "general.name": "DeepSeek V4.1 Flash",
  "general.source.revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
  "general.source.url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017",
- "quantize.imatrix.file": "bootstrap-calibration-8192.dat",
- "quantize.imatrix.sha256": "75fadebe6d743fe7f751a5e5cdc13d198e2f3aae2504afeaf7f6acd24cce052f",
  "tokenizer.ggml.add_bos_token": true,
  "tokenizer.ggml.add_eos_token": false,
  "tokenizer.ggml.bos_token_id": 0,

@@ -3,11 +3,7 @@
 
 The 1017 checkpoint (deepseek-ai/DeepSeek-V4.1-Flash-1017) keeps the vision tower in BF16: shard 1 holds exactly the
 263 ViT + aligner tensors (0.90 GiB), shard 2 the three span delimiters (image_start / image_newline / image_end,
-BF16 [5120] each) next to embed.weight.  This copies those 266 tensors byte for byte into a GGUF with the same tensor
-names and metadata keys as antirez's DeepSeek-V4.1-Flash-Vision.gguf, which is the SEPTEMBER checkpoint's tower: the
-1017 tower was retrained (0 of 266 tensors equal, per-tensor cosine 0.995-0.99999; on DeepSeek's example images the
-September tower's image rows differ from the 1017 ones by cosine 0.89-0.91 on average, 0.38 at worst - measured
-2026-10-21, docs/ds4/V41_VISION.md).  So the 1017 model needs this file, not the September one.
+BF16 [5120] each) next to embed.weight.  This copies those 266 tensors byte for byte into a GGUF the engine's image encoder reads.
 
 Only HTTP range reads: the two safetensors headers, shard 1's data (0.90 GiB) and 30 KB of shard 2.  --shard1 FILE
 uses a shard 1 already on disk instead of downloading it.  Standard library only.
@@ -24,7 +20,7 @@ import sys
 import urllib.request
 
 REPO = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
-REVISION = "1bae0e1088993b9b82de08f59de5be5a34e42170"   # the revision the Q2 GGUF names (general.source.revision)
+REVISION = "1bae0e1088993b9b82de08f59de5be5a34e42170"   # the 1017 checkpoint's revision
 SHARD1 = "model-00001-of-00048.safetensors"
 SHARD2 = "model-00002-of-00048.safetensors"
 SHARD1_SHA256 = "13bd121075f0b68cb7e8e8021a1011d42a81a83f557a2602fd9c07d52fddb0ec"   # HF LFS id at REVISION
@@ -32,7 +28,7 @@ DELIMITERS = ("image_start", "image_newline", "image_end")
 GGML_BF16 = 30
 ALIGN = 32
 
-# the vision config (inference/config.json at REVISION; the Q2 GGUF's deepseek41.config carries the same values)
+# the vision config (inference/config.json at REVISION)
 KV = [
     ("general.architecture", "str", "deepseek4-vision"),
     ("general.name", "str", "DeepSeek V4.1 Flash 1017 Vision Encoder"),

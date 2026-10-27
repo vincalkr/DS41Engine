@@ -352,15 +352,15 @@ inline std::string ds41_check_tensors(const GgufModel & m, Ds41Geometry & G, con
         }
         add(b + "ffn_gate_inp.weight", { D, NE }, ty::F32);
         add(b + "exp_probs_b.bias", { NE }, ty::F32);
-        // RCO packs carry no vision-bias vector; a ds4 pack with DS41_META set by mistake still has to show it.
+        // a pack without the vision-bias vector does not need it; one that has it must show it.
         if (!foreign || m.find(b + "exp_probs_b_vl.bias")) add(b + "exp_probs_b_vl.bias", { NE }, ty::F32);
         add(b + "ffn_gate_shexp.weight", { D, FF }, ty::Q8_0);
         add(b + "ffn_up_shexp.weight", { D, FF }, ty::Q8_0);
         add(b + "ffn_down_shexp.weight", { FF, D }, ty::Q8_0);
         if (G.engram_slot(l) >= 0) {
             const uint64_t ekv = (uint64_t) ((G.engram_ngram - 1) * G.engram_heads * G.engram_dim);
-            // Which of the two name families this pack uses is a property of the pack, not of the overlay: an antirez
-            // ds4 pack keeps q_norm / k_norm / kv, a GSQ-RCO one renamed them to q / k / wkv.
+            // Which of the two name families this pack uses is a property of the pack, not of the overlay: one family
+            // is q_norm / k_norm / kv, the GSQ-RCO pack's is q / k / wkv.
             if (!m.find(b + "engram_q_norm.weight")) {
                 add(b + "engram_q.weight", { D, HC }, ANY);
                 add(b + "engram_k.weight", { D, HC }, ANY);
@@ -438,13 +438,13 @@ inline std::string ds41_check_tensors(const GgufModel & m, Ds41Geometry & G, con
         if (!m.in_bounds(*t, s)) return n + ": out of bounds";
     }
     auto extra_ok = [&](const std::string & n) {
-        if (n.find(".engram_embd.") != std::string::npos) return true;   // ds4 packs the tables inside; read from --engram
+        if (n.find(".engram_embd.") != std::string::npos) return true;   // a pack with the tables inside: read from --engram
         return foreign && (n == "engram_token_map.weight" || n == "engram_primes.weight" ||
                            n == "engram_multipliers.weight" || n == "engram_offsets.weight");
     };
     for (size_t s = 0; s < m.size(); ++s)
         for (const auto & t : m.shard(s).tensors())
-            // A GGUF that carries its Engram tables inside (ds4's DeepSeek-V4.1-Flash-Q2 has blk.{1,14}.engram_embd,
+            // A GGUF that carries its Engram tables inside (blk.{1,14}.engram_embd,
             // 202.8 GB of I8) is accepted here: those tensors are not loaded, the engine reads the two tables
             // from the --engram safetensors, which hold the same native FP8 rows.
             if (!want.count(t.name) && !extra_ok(t.name))

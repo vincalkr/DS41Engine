@@ -1,9 +1,9 @@
-// src/kernels/cuda/fork/fork_gu_mixed.cuh - native_gu_mixed_kernel: gate and up in different formats (MiMo GSQ-RCO).
+// src/kernels/cuda/fork/fork_gu_mixed.cuh - native_gu_mixed_kernel: gate and up in different formats.
 // Fork code kept out of upstream's iq_kernels.cu (one #include line there) so upstream merges do not conflict
 // on it; included at a fixed point of that translation unit and uses its helpers (not a standalone header).
 #pragma once
 
-// native_gu_kernel with gate and up in DIFFERENT formats (MiMo-V2.6-Flash GSQ-RCO picks a format per tensor).  A
+// native_gu_kernel with gate and up in DIFFERENT formats (a pack that picks a format per tensor).  A
 // warp's row is a gate row or an up row; with n_ff % GU_ROWS == 0 a whole block is one or the other, so the branch is
 // block-uniform.  Same per-row arithmetic as native_gu_kernel<T> for each half.
 template<int TG, int TU>

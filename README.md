@@ -20,15 +20,12 @@ power-tune on, the GSQ-RCO pack (2026-10-26, one-shot runs, 3 each):
 | decode at 17K context (128 tokens) | 18.4-19.2 tok/s |
 | prompt from scratch, 8K / 17K / 25.5K tokens | 371-414 / 433-459 / 458-484 tok/s |
 
-On antirez/ds4's Q2, the pack this box ran until 2026-10-25, the same prompts read 314-332 / 360-366 / 385-396 tok/s,
-and through the server: 18.5-20.7 tok/s on short answers, 19.6 at ~25K context, 16.1-17.4 in an agent session at
-~120K, a +497-token agent turn on 121K context in 7.5 s (2026-10-20/21; not yet measured through the server on the
-GSQ-RCO pack).
+Through the server, in a coding-agent session at 120-190K context: 16-20 tok/s decode, and a turn's new tokens resumed
+on the saved conversation in 0.6-10.5 s.
 
 Quality on Lucebox's held-out set (8 x 1024 tokens, exact routing): ppl 10.37 with the checkpoint's FP8 Engram rows,
-10.33 with the pack's own iq4_nl table (KL 0.026 between the two). The FP8 1017 itself reads 8.56 and antirez/ds4's
-Q2 9.78 (measured 2026-10-20 with a teacher file that is no longer on this box, so the RCO pack's teacher agreement is
-not measured). Every number and how it was measured: [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
+10.33 with the pack's own iq4_nl table (KL 0.026 between the two); the FP8 1017 checkpoint itself reads 8.56. Every
+number and how it was measured: [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md).
 
 ## Requirements
 
@@ -55,12 +52,11 @@ local/fetch-rco-1017.sh                                               # everythi
   `tools/v41/ds41_pack_meta.py` (its reference geometry is `local/rco-iq2xxs-meta/geometry-keys.json`, 8 KB, in the
   repo) plus the rank byte map.
 - The Engram tables come in two forms and the engine reads either. `local/fetch-rco-1017.sh` brings the pack's own
-  (iq4_nl, 144 bytes a row, 111 GB), and that is all a new machine needs. The checkpoint's native FP8 rows (264 bytes
-  a row, 203 GB in `models/engram-1017`) measured the same on Lucebox (ppl 10.37 against 10.33, KL 0.026) and are only
-  had by downloading [antirez/ds4](https://github.com/antirez/ds4)'s 366 GB Q2 pack with `local/fetch-model.sh` and
-  cutting them out with `local/ds4-engram-extract.py`; the pack can be deleted afterwards (extracting again needs it
-  back). The default configuration names the FP8 tables; where they are missing the engine uses the iq4_nl table
-  beside the pack and prints that it does.
+  (iq4_nl, 144 bytes a row, 111 GB), and that is all a new machine needs. The checkpoint's FP8 rows (264 bytes a row,
+  203 GB in `models/engram-1017`) measured the same on Lucebox (ppl 10.37 against 10.33, KL 0.026);
+  `local/fetch-model.sh` extracts them (it downloads a 366 GB source pack, which can be deleted afterwards). The
+  default configuration names the FP8 rows; where they are missing the engine uses the iq4_nl table beside the pack
+  and prints that it does.
 - `./build.sh` builds the vendored ggml (`third_party/llama.cpp/ggml`) into `third_party/llama.cpp/build-hip`, then the
   engine into `build-hip-fused`; `ROCM`, `GFX`, `JOBS`, `REBUILD_GGML=1` from the environment.
 - `./run.sh` uses cards 0 and 1; `./run.sh --gpu 0` (or `--gpu 1`) one card, `--gpu 0,1` both. The number of cards
@@ -77,29 +73,25 @@ thinking and the model answers). A request's own `reasoning_budget_tokens` wins.
 
 ## Images (not with this pack)
 
-Images need the model's image routing bias, `blk.N.exp_probs_b_vl.bias`: the GSQ-RCO pack carries none, so the vision
-configurations were removed on 2026-10-25 and `--vision` says so when it is asked for. The encoder itself
-(`models/vision-1017`, 0.9 GiB, built by `local/fetch-model.sh`) stays; a pack that holds the bias gets a vision
-configuration back. Measurements of the path, on the pack that had it: [docs/ds4/V41_VISION.md](docs/ds4/V41_VISION.md).
-
-The encoder runs in the engine on the second card (0.2-5 s an image, exact against DeepSeek's code); a picture
-costs 189-1014 prompt tokens. The September encoder (antirez's `DeepSeek-V4.1-Flash-Vision.gguf`) does not match the
-1017 model. Details and measurements: [docs/ds4/V41_VISION.md](docs/ds4/V41_VISION.md).
+Images need the model's image routing bias, `blk.N.exp_probs_b_vl.bias`, and the GSQ-RCO pack carries none, so there
+is no vision configuration and `--vision` says so when it is asked for. The engine's image encoder
+(`tools/v41/engine/ds41_vision.cpp`) stays for a pack that has the bias.
 
 ## Conversations
 
 The engine keeps every conversation a request does not continue in a 4 GiB pool of pinned RAM
-(`--conversation-cache-mib`, ~380 MB for a 200K-token session) and resumes the one a request continues: two
-conversations taking turns, 17K and 25.5K tokens, went from 36.9 to 6.9 s a turn. They are also saved in
-`local/conv-cache-rco` (`--conversation-disk`, up to 32 GiB), so a restarted server resumes a 25.7K-token session in 6.5 s
-instead of reading it again (~65 s). The Monitor shows the folder and its size, and a button clears them all
+(`--conversation-cache-mib`, ~340 MB for a 190K-token session) and resumes the one a request continues, exactly (a
+re-rendered tail a few tokens back included). They are also saved in
+`local/conv-cache-rco` (`--conversation-disk`, up to 32 GiB), so a restarted server resumes a session instead of reading it
+again. The Monitor shows the folder and its size, and a button clears them all
 ([docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_FAST.md), "The conversation pool", "Conversations on disk").
 
 ## Power-tune (optional, root)
 
 Decode reads an expert from the NVMe every 10-20 ms; between reads the drive (APST) and the CPU cores (C3) fall
-asleep and each read costs twice as much. `local/power-tune.sh on` keeps them awake and sets the `performance`
-governor: through the server +11% on short answers and +21% at ~25K context. Install it once and `./run.sh` switches
+asleep and each read costs more. `local/power-tune.sh on` keeps them awake and sets the `performance`
+governor; it also raises the RAM's streaming bandwidth from 51-54 to 61-62 GB/s, which the CPU's experts read at.
+Install it once and `./run.sh` switches
 it on at start and off when the server ends:
 
 ```sh
@@ -111,7 +103,7 @@ sudo local/install-power-tune.sh             # a root-owned copy and a sudo rule
 
 ## Expert rank
 
-Which experts live in VRAM and in the RAM arena follows a rank of the most used ones (`local/rank-q2.bin`). The server
+Which experts live in VRAM and in the RAM arena follows a rank of the most used ones (`local/rank.bin`). The server
 counts what the router picks (`local/routes-rco`); `local/update-rank.sh` builds a new rank from those counts (experts
 ranked per byte with the pack's formats, `local/rco-iq2xxs-map.json`), measures it against the one in use on a code
 review and a documentation prompt (`local/prompts/dev-code`, `dev-docs`; ~30 minutes, the server stopped meanwhile)

@@ -1,32 +1,28 @@
 #!/usr/bin/env bash
-# fetch-model.sh [DEST] - DeepSeek-V4.1-Flash-1017 as antirez/ds4's Q2 (IQ2_XXS gate/up, Q2_K down, imatrix) into the
-# layout ./run.sh's configurations read:
+# fetch-model.sh [DEST] - the checkpoint's FP8 Engram rows (and the image encoder) for DeepSeek-V4.1-Flash-1017:
 #
-#   DEST/ds4-1017/DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf   366 GB (from antirez/deepseek-v4.1-flash-gguf)
-#   DEST/ds4-1017/tokenizer/{vocab.json,merges.txt,token_type.json,chat_template.jinja}
-#   DEST/engram-1017/layers1/engram-L1.safetensors     the two Engram tables, extracted from the GGUF
-#   DEST/engram-1017/layers14/engram-L14.safetensors   (local/ds4-engram-extract.py, 101 GB each) + their index
+#   DEST/engram-1017/layers1/engram-L1.safetensors     the two Engram tables, extracted from a source GGUF that carries
+#   DEST/engram-1017/layers14/engram-L14.safetensors   them (local/ds4-engram-extract.py, 101 GB each) + their index
+#   DEST/engram-src/                                   that source GGUF (366 GB); it can be deleted once both tables
+#                                                      are out
 #   DEST/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf   0.9 GiB, the image encoder, built from the 1017
 #                                                           checkpoint by tools/v41/vision/make_vision_gguf.py
 #
-# DEST defaults to <repo>/models.  Needs curl, python3 with numpy (the extraction), and aria2c for a fast download.
-# Space: 366 GB for the GGUF + 203 GB for the tables = ~570 GB, all of it kept (the engine reads the GGUF's weights
-# and the tables' rows).  Resumable: a file counts as complete when its size matches the Hugging Face API's; the GGUF
-# is checked against its sha256 (the API's LFS id) once.  The tokenizer tables are V4.1's (the GGUF's tokenizer
-# metadata is the September checkpoint's, byte for byte) and come from the GSQ repo, where they are separate files.
+# The pack's own iq4_nl table (local/fetch-rco-1017.sh) measures the same on Lucebox; these are the checkpoint's own
+# rows. DEST defaults to <repo>/models.  Needs curl, python3 with numpy (the extraction), and aria2c for a fast
+# download; ~570 GB free while both the source and the tables are there.  Resumable: a file counts as complete when its
+# size matches the Hugging Face API's; the source is checked against its sha256 (the API's LFS id) once.
 #
 # Env: CONN=4 (aria2c connections per file), ARIA2=0 (force curl), DRY_RUN=1 (print the plan, change nothing),
-#      SKIP_SHA=1 (skip the 366 GB sha256), HF_TOKEN, VISION=0 (no image encoder: ./run.sh then runs text only;
-#      docs/ds4/V41_VISION.md).
+#      SKIP_SHA=1 (skip the 366 GB sha256), HF_TOKEN, VISION=0 (no image encoder).
 set -euo pipefail
 export LC_ALL=C LANG=C
 trap 'trap - INT TERM; kill 0 2>/dev/null' INT TERM
 
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 DEST=${1:-$HERE/models}
-Q2_REPO=antirez/deepseek-v4.1-flash-gguf
-Q2_FILE=DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf
-TOK_REPO=IndrasMirror/DeepSeek-V4.1-Flash-GSQ-Uncensored
+SRC_REPO=antirez/deepseek-v4.1-flash-gguf
+SRC_FILE=DeepSeek-V4.1-Flash-1017-IQ2_XXS-Q2_K-imatrix.gguf
 CONN=${CONN:-4}
 DRY_RUN=${DRY_RUN:-0}
 TOKEN=${HF_TOKEN:-$(cat "$HOME/.cache/huggingface/token" 2>/dev/null || true)}
@@ -35,9 +31,9 @@ if [ -n "$TOKEN" ]; then AUTH=(-H "Authorization: Bearer $TOKEN"); ARIA2_HDR=(--
 ARIA2=${ARIA2:-}; if [ -z "$ARIA2" ]; then if command -v aria2c >/dev/null 2>&1; then ARIA2=1; else ARIA2=0; fi; fi
 PY=python3; [ -x "$HERE/.venv/bin/python" ] && "$HERE/.venv/bin/python" -c 'import numpy' 2>/dev/null && PY="$HERE/.venv/bin/python"
 
-Q2=$DEST/ds4-1017
+SRC=$DEST/engram-src
 ENG=$DEST/engram-1017
-mkdir -p "$Q2/tokenizer" "$ENG"
+mkdir -p "$SRC" "$ENG"
 say() { echo "$(date '+%F %T') $*"; }
 size() { stat -c%s "$1" 2>/dev/null || echo 0; }
 meta() {   # meta <repo> <path> -> "<size> <sha256 or ->"
@@ -62,20 +58,14 @@ get() {   # get <repo> <path-in-repo> <dest-file> <size>
   say "done  $path"
 }
 
-say "=== 1/3 tokenizer -> $Q2/tokenizer"
-for f in vocab.json merges.txt token_type.json chat_template.jinja; do
-  read -r s _ < <(meta "$TOK_REPO" "tokenizer/$f")
-  get "$TOK_REPO" "tokenizer/$f" "$Q2/tokenizer/$f" "$s"
-done
-
 free_gib() { df -BG --output=avail "$1" | tail -1 | tr -dc 0-9; }
-say "=== 2/3 the GGUF -> $Q2 ($(free_gib "$DEST") GB free; it needs 366 GB, the tables 203 more - the pack is only
+say "=== 1/2 the source GGUF -> $SRC ($(free_gib "$DEST") GB free; it needs 366 GB, the tables 203 more - the pack is only
 the tables' source: once both tables are written it can go, and LAYERS= one layer can be re-extracted from it)"
-read -r want sha < <(meta "$Q2_REPO" "$Q2_FILE")
+read -r want sha < <(meta "$SRC_REPO" "$SRC_FILE")
 # Preflight: never start a 366 GB download that fills the disk.  A disk that runs out mid-extraction leaves a table
 # file whose size was reserved up front and which reads as zeros past the hole - the engine refuses such a file
 # (ds41_engram.hpp's hole sample), but the honest fix is not to create it.
-have=$(size "$Q2/$Q2_FILE"); gib=$((1024*1024*1024))
+have=$(size "$SRC/$SRC_FILE"); gib=$((1024*1024*1024))
 need=$(( have == want ? 0 : want ))
 for l in 1 14; do
   f=$ENG/layers$l/engram-L$l.safetensors; [ -r "$f" ] || need=$(( need + 95 * gib ))
@@ -83,22 +73,22 @@ done
 if [ "$DRY_RUN" != 1 ] && [ $(( $(free_gib "$DEST") * gib )) -lt $(( need + 20 * gib )) ]; then
   say "refusing: $(free_gib "$DEST") GB free, this run needs $(( need / gib )) GB more for the pack and the Engram tables."
   say "  free space first (the pack of another model, or the tables you already have); to redo only what is missing:"
-  say "  LAYERS=14 local/ds4-engram-extract.py $Q2/$Q2_FILE $ENG"
+  say "  LAYERS=14 local/ds4-engram-extract.py $SRC/$SRC_FILE $ENG"
   exit 1
 fi
-get "$Q2_REPO" "$Q2_FILE" "$Q2/$Q2_FILE" "$want"
-if [ "$DRY_RUN" != 1 ] && [ -z "${SKIP_SHA:-}" ] && [ ! -f "$Q2/$Q2_FILE.sha-ok" ]; then
+get "$SRC_REPO" "$SRC_FILE" "$SRC/$SRC_FILE" "$want"
+if [ "$DRY_RUN" != 1 ] && [ -z "${SKIP_SHA:-}" ] && [ ! -f "$SRC/$SRC_FILE.sha-ok" ]; then
   say "      sha256 of the GGUF (expected $sha) ..."
-  [ "$(sha256sum "$Q2/$Q2_FILE" | cut -d' ' -f1)" = "$sha" ] || { say "ERROR sha256 mismatch: delete the file and re-run"; exit 1; }
-  touch "$Q2/$Q2_FILE.sha-ok"; say "      sha256 ok"
+  [ "$(sha256sum "$SRC/$SRC_FILE" | cut -d' ' -f1)" = "$sha" ] || { say "ERROR sha256 mismatch: delete the file and re-run"; exit 1; }
+  touch "$SRC/$SRC_FILE.sha-ok"; say "      sha256 ok"
 fi
 
-say "=== 3/3 the Engram tables -> $ENG"
+say "=== 2/2 the Engram tables -> $ENG"
 if [ "$(size "$ENG/layers1/engram-L1.safetensors")" -gt 100000000000 ] && [ "$(size "$ENG/layers14/engram-L14.safetensors")" -gt 100000000000 ] \
    && [ -f "$ENG/layers1/model.safetensors.index.json" ]; then
   say "have  both tables"
 elif [ "$DRY_RUN" != 1 ]; then
-  "$PY" "$HERE/local/ds4-engram-extract.py" "$Q2/$Q2_FILE" "$ENG"
+  "$PY" "$HERE/local/ds4-engram-extract.py" "$SRC/$SRC_FILE" "$ENG"
 fi
 # the image encoder (VISION=0 skips it) - the 1017 checkpoint's vision tower as a GGUF, 0.9 GiB of HTTP range reads
 if [ "${VISION:-1}" != 0 ]; then

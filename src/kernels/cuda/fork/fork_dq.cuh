@@ -27,7 +27,7 @@ __device__ void dq_q2_k(const void* vx, int64_t ibs, dst_t* yy, int tid) {
     }
 }
 
-// MXFP4 (MiMo's down projections on 3 layers): ggml's dequantize_row_mxfp4 - 32-value blocks, low nibbles are values
+// MXFP4: ggml's dequantize_row_mxfp4 - 32-value blocks, low nibbles are values
 // 0..15, high nibbles 16..31, value = kvalues_mxfp4[q] * 2^(e-127) / 2.  Same thread layout as dq_iq4_nl.
 template<typename dst_t>
 __device__ void dq_mxfp4(const void* vx, int64_t ibs, dst_t* yy, int tid) {

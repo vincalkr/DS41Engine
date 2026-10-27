@@ -25,7 +25,7 @@ struct ExpertLayout {
     std::vector<uint64_t> gguf_off;
     /// Per layer PER ROLE (3 x n_layers, `3 * layer + role`, matching `gguf_off`), the GGUF file - a name beside
     /// the --native shard - that holds that role's tensor.  Empty = the --native shard itself.  Per role because a
-    /// shard boundary can fall inside a layer: Unsloth's UD-Q4_K_XL has layer 11's down in shard 2 and its gate
+    /// shard boundary can fall inside a layer: a pack can have a layer's down in shard 2 and its gate
     /// and up in shard 3 (native_experts.txt v4, the `gate,up,down` shard column).
     std::vector<std::string> gguf_file;
     int version = 0;                      ///< native_experts.txt's header version (0 = none given)

@@ -76,13 +76,13 @@ struct Ds41MoeGeom {
     /// `deepseek4.swiglu_clamp_exp` (10.0 on every layer of the 0731 GGUF; one value - the tier has one format):
     /// gate -> min(gate, lim), up -> clamp(up, -lim, lim) before the SwiGLU.  +inf = no clamp.
     float swiglu_limit = std::numeric_limits<float>::infinity();
-    /// PER-LAYER FORMATS (MiMo-V2.6-Flash GSQ-RCO picks a format per tensor: gate, up and down independently).
+    /// PER-LAYER FORMATS (a pack can pick a format per tensor: gate, up and down independently).
     /// Empty = every layer is `gu_type`/`gu_type`/`d_type` (DeepSeek-V4: the uniform path, unchanged).  Otherwise
-    /// `n_layers` entries each, indexed by the MODEL's layer number; -1 = that layer has no routed experts (MiMo's
+    /// `n_layers` entries each, indexed by the MODEL's layer number; -1 = that layer has no routed experts (a dense
     /// dense layer 0).  `gu_type`/`d_type` then hold the first routed layer's types (reports only).
     std::vector<int> gate_types, up_types, down_types;
 
-    /// PER-EXPERT FORMAT CLASSES (DeepSeek-V4.1 GSQ mixed tiers): eclass[l * n_experts + e] is expert e's class; class
+    /// PER-EXPERT FORMAT CLASSES (mixed-format tiers): eclass[l * n_experts + e] is expert e's class; class
     /// c has gate = up = cls_gu[c] and down = cls_d[c] (at most 9: Q2_0 / Q3_K / PTQ1_0 squared).  Empty = an
     /// expert's class is its LAYER (the per-layer / uniform geometry, exactly as before).  Every format, blob size and
     /// GPU layout below is per class; the VRAM LRU swaps only within a (layer, class).
@@ -145,7 +145,7 @@ public:
     }
     /// The chunk-prefetch reader pool's read: the same bytes as `read`, through the fastest path the source has.  A
     /// source with a raw file layout overrides this to pread through an `O_DIRECT` twin fd via the aligned `scratch`
-    /// bounce (`read_staged_scratch()` bytes per thread, 4096-aligned).  Measured on the V41-GSQ GGUF: the scattered
+    /// bounce (`read_staged_scratch()` bytes per thread, 4096-aligned).  Measured on a single-file GGUF: the scattered
     /// 3 MiB expert pattern runs 2.25 GB/s buffered and 4.65 GB/s through O_DIRECT at 16 threads (buffered copies
     /// through the page cache; `dd` on the same file: 2.7 GB/s one stream, 5.1 GB/s at 16).  Default: `read`.
     virtual void read_staged(int64_t layer, int64_t expert, uint8_t* dst, uint8_t* scratch, size_t scratch_bytes) const {
@@ -290,7 +290,7 @@ struct Ds41MoeConfig {
     bool dither = true;           ///< error-diffused rounding for both the PCIe share and the prefetch budget
     bool cpu_only = false;        ///< no CUDA at all: the pool computes every expert
     bool no_cache = false;        ///< GPU tier without a VRAM cache (every miss is CPU or PCIe)
-    /// A SECOND card's expert tier (docs/ds4/V41_AMD_PEER_TIER.md), DECODE only.  -1 = off, the default path is then
+    /// A SECOND card's expert tier (docs/ds4/V41_EXACT_FAST.md), DECODE only.  -1 = off, the default path is then
     /// byte-identical.  >= 0: that device's memory gets a copy of the host arena's ranked head that this card's VRAM
     /// cache does NOT hold (up to STRATA_PEER_GIB, default 18 GiB), and a decode token's routed experts that the
     /// peer holds are computed there - the same kernels and q8_1 activations, so the rows are bit-identical - while
@@ -343,7 +343,7 @@ struct Ds41MoeConfig {
     /// Decode (run): the same rule for the FILE TIER only (experts neither in VRAM nor in the RAM arena: an NVMe read
     /// each, ~2 ms).  0 = off.  A quality trade: measure ppl.
     float skip_file = 0.0f;
-    /// Decode (MiMo and DS4): a PCIe-share miss (and a prefetched expert the routing used) takes
+    /// Decode: a PCIe-share miss (and a prefetched expert the routing used) takes
     /// the least-recently-used VRAM slot of its layer instead of a staging buffer, so the cache follows the
     /// conversation (route_probe sim, 1800 slots: static 40.5% held-out hit, LRU 61.6%; FINDINGS s16).  Same math per
     /// expert; only where the blob sits changes.  Off = the static seed, as before.
@@ -498,7 +498,7 @@ public:
     /// cudaProfilerStart / Stop (nsys --capture-range=cudaProfilerApi); a no-op without CUDA.
     static void profiler(bool on);
     /// A prompt chunk: `n` tokens (any count) of one layer, `ids`/`w` n*top_k token-major, `x`/`out` n*n_embd.  GPU
-    /// tier: every expert on the card - resident from its slot, the rest streamed once per chunk (MiMo prefill;
+    /// tier: every expert on the card - resident from its slot, the rest streamed once per chunk (prefill;
     /// MIMO_CHUNK_STAGE_MIB sizes the two streaming halves, default 1024).  CPU tier: token by token.
     bool run_chunk(int64_t layer, int n, const int32_t* ids, const float* w, const float* x, float* out);
     /// run_chunk writing the n * n_embd sums to device memory `out_dev` (same device, e.g. the dense half's chunk

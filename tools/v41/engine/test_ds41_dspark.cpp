@@ -1,6 +1,6 @@
 // tools/v41/engine/test_ds41_dspark.cpp - the engine's DSpark draft stack on the offline harness's records.
 //
-//   test_ds41_dspark --sidecar V41-MTP-Vision.gguf -m V41-GSQ.gguf --main main.bin --gen gen.txt [--max N] [--dump F]
+//   test_ds41_dspark --sidecar V41-MTP-Vision.gguf -m PACK.gguf --main main.bin --gen gen.txt [--max N] [--dump F]
 //
 // main.bin / gen.txt = what tools/v41/dspark_accept.py reads (engine STRATA_DUMP_MAIN records {int32 token, int32 pos,
 // 3 x n_embd f32}: the first 128 are the prompt tail that seeds the window, the rest decode steps).  The same loop as

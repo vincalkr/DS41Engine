@@ -5,8 +5,8 @@
 #
 # The default configuration runs the engine with --dump-routes local/routes-rco: the server adds every (layer,
 # expert) selection it routes and writes LNN.json there after each request (the counts survive restarts).  This
-# script sums those counts (times chat-weight) with local/calib-q2/stats-merged, ranks the sum and writes
-# local/rank-1017.bin.  It does not apply it: local/update-rank.sh measures it against the rank in use and applies it
+# script sums those counts (times chat-weight) with local/calib/stats-merged, ranks the sum and writes
+# local/rank-candidate.bin.  It does not apply it: local/update-rank.sh measures it against the rank in use and applies it
 # only if faster.  ROUTES, MAP (per-layer formats, default the GSQ-RCO pack's local/rco-iq2xxs-map.json; MAP= ranks as all Q2_0) and OUT
 # override the defaults.
 set -eu
@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 W="${1:-1}"
 ROUTES="${ROUTES:-local/routes-rco}"
 MAP="${MAP-local/rco-iq2xxs-map.json}"   # the pack's per-layer formats: experts ranked per byte, sizes right
-OUT="${OUT:-local/rank-1017.bin}"
+OUT="${OUT:-local/rank-candidate.bin}"
 STATS="${OUT%.bin}.stats"
 [ -f "$ROUTES/L00.json" ] || { echo "no chat routes yet in $ROUTES (start the chat, use it)" >&2; exit 1; }
 python3 - "$W" "$ROUTES" "$STATS" <<'EOF'
@@ -25,7 +25,7 @@ routes, out = sys.argv[2], sys.argv[3]
 os.makedirs(out, exist_ok=True)
 tot_c = tot_r = 0
 for l in range(L):
-    a = json.load(open(f"local/calib-q2/stats-merged/L{l:02d}.json"))["experts"]
+    a = json.load(open(f"local/calib/stats-merged/L{l:02d}.json"))["experts"]
     b = json.load(open(f"{routes}/L{l:02d}.json"))["experts"]
     ex = {}
     for e in range(NE):

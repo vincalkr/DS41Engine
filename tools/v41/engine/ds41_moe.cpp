@@ -168,7 +168,7 @@ struct Arena {
 
 /// RAII device switch: the runtime's current device is per host thread, and the peer block below is the only place
 /// in this file that changes it, so every peer CUDA call happens between the constructor and the destructor and the
-/// primary's device is current again after it (docs/ds4/V41_AMD_PEER_TIER.md, "streams/events on the wrong device").
+/// primary's device is current again after it (streams and events on the wrong device fail).
 struct DevGuard {
     int prev = 0;
     explicit DevGuard(int dev) {
@@ -505,7 +505,7 @@ struct Gpu {
     size_t tier_site_span = 0;       ///< bytes of one site's fixed metadata block
     size_t tier_w_off = 0;           ///< the out_dev sum weights, after the sites (never inside a captured block)
 
-    /// run_chunk (prompt chunks, MiMo prefill): allocated on first use, for up to `c_tok` tokens.  The streamed
+    /// run_chunk (prompt chunks): allocated on first use, for up to `c_tok` tokens.  The streamed
     /// experts go through two device halves of `c_half` bytes (copy stream `s_cp` fills one while `s` computes
     /// the other); file-tier blobs are read into the matching pinned bounce half first.
     int64_t c_tok = 0, c_half = 0;
@@ -675,7 +675,7 @@ struct Ds41MoeImpl {
     int64_t blob = 0;                 ///< the largest blob (buffer strides)
     std::vector<cpu::NativeFmt> fl;   ///< per MODEL layer; fl[l].bytes == 0 for a layer without routed experts
     std::vector<int64_t> bl;          ///< per layer blob bytes
-    bool mixed_sizes = false;         ///< blob size differs between routed layers (MiMo): cache opened at seed
+    bool mixed_sizes = false;         ///< blob size differs between routed layers: cache opened at seed
     std::unique_ptr<cpu::ExpertPool> pool;
     std::vector<uint8_t> nact;        ///< the Q8_K activation the CPU kernel consumes
     cpu::ActQ actq;                   ///< the same for a Q2_0 class on Strata's own Q2_0 kernels (q2_native_kernels)
@@ -759,7 +759,7 @@ void reserve_ftmp(Ds41MoeImpl& im, int n) {
 //
 // The measured prompt (4096 tokens, chunk 2048) spends 52.9 s of its 85 s waiting on its own file-tier reads:
 // run_chunk(l) reads layer l's file-tier experts on its critical path, so the NVMe reads never overlap the dense
-// half or the previous layer.  antirez's ds4 does the opposite during prefill - one background thread reads EVERY
+// half or the previous layer.  Another DeepSeek engine does the opposite during prefill - one background thread reads EVERY
 // routed expert of layer l+1 with its own fds while layer l computes (ds4.c:42471-42484, ds4_cuda.cu:29290-29393,
 // report §A4), which is what turns the latency-bound reads into a bandwidth-bound pipeline.  This is that
 // mechanism for our tier: two pinned host slabs ping-pong.  While layer l runs, a reader pool fills the other slab
@@ -1001,7 +1001,7 @@ int chunk_pf_prepare(Ds41MoeImpl& im, int64_t layer, int n) {
         }
         chunk_stage_run(im, s);
     }
-    chunk_stage_join(im, s);   // the whole layer must be in the slab before its DMAs start (antirez's publish rule)
+    chunk_stage_join(im, s);   // the whole layer must be in the slab before its DMAs start (the publish rule)
     cs.cur = s;                // the slab gpu_run_chunk consumes (and the covers check looks at)
     const int64_t nx = chunk_next_routed(im, layer);
     if (nx >= 0 && nx != layer) {
@@ -1150,7 +1150,7 @@ bool ds41_moe_geom_from_gguf(const std::string& gguf, Ds41MoeGeom& g, std::strin
             }
             *k.second = v;
         }
-        // every layer's three expert types; a layer with none of the tensors has no routed experts (MiMo's layer 0)
+        // every layer's three expert types; a layer with none of the tensors has no routed experts (a dense first layer)
         const char* roles[3] = {"gate", "up", "down"};
         std::vector<int> ty[3];
         for (int64_t l = 0; l < g.n_layers; ++l) {
@@ -1222,13 +1222,13 @@ struct Ds41GgufBlobs::Impl {
     std::vector<const uint8_t*> src[3];   // per role, per layer (null: no routed experts)
     std::vector<size_t> stride[3];        // per role, per layer: bytes of one expert's slice
     // pread() path: per role, per layer, the shard's fd and the slice array's file offset.  A cold mmap memcpy
-    // faults page by page (MiMo on ntfs3: ~1.1 GB/s even with 8 readers, FINDINGS s10); pread asks for each slice
+    // faults page by page (~1.1 GB/s even with 8 readers on ntfs3); pread asks for each slice
     // in one request.  Same bytes.  STRATA_BLOB_MMAP=1 keeps the memcpy path.
     std::vector<int> fd[3];
     std::vector<uint64_t> foff[3];
     std::vector<int> fds;
     // O_DIRECT twins of `fds` (-1 where the filesystem refused it): 4 KiB-aligned spans into a per-thread bounce,
-    // bypassing the page cache (MiMo's NVMe: 5.5 GB/s direct vs 2.6 buffered sequential).  STRATA_BLOB_DIRECT=0 off.
+    // bypassing the page cache (5.5 GB/s direct vs 2.6 buffered sequential on an NVMe).  STRATA_BLOB_DIRECT=0 off.
     std::vector<int> dfds;
     std::vector<int> dfd[3];
     ~Impl() {
@@ -1395,7 +1395,7 @@ void Ds41GgufBlobs::read_span(int r, int64_t layer, int64_t expert, size_t lo, s
 
 void Ds41GgufBlobs::read(int64_t layer, int64_t expert, uint8_t* dst) const {
     // The three role slices back to back, [gate rows | up rows | down rows] (native_expert.hpp's layout).
-    // Per-layer strides (gate and up may differ: MiMo).
+    // Per-layer strides (gate and up may differ).
     size_t at = 0;
     for (int r = 0; r < 3; ++r) {
         const size_t sz = im_->stride[r][(size_t) layer];
@@ -1705,7 +1705,7 @@ bool Ds41MoeTier::build_arena(const std::vector<std::pair<int32_t, int32_t>>& ra
         if (!im_->g.routed(l)) continue;
         if (gp.arena.slot_of[(size_t) (l * im_->g.n_experts + e)] >= 0) continue;
         const uint64_t b = (uint64_t) im_->bl[(size_t) im_->g.cls(l, e)];
-        if (gp.arena.off.back() + b > cap_bytes) {   // the budget in BYTES: blobs differ per layer (MiMo)
+        if (gp.arena.off.back() + b > cap_bytes) {   // the budget in BYTES: blobs differ per layer
             ++gp.arena.file_tier;
             continue;
         }
@@ -2021,7 +2021,7 @@ bool Ds41MoeTier::seed_from_ranked(const std::vector<std::pair<int32_t, int32_t>
     err = "the VRAM cache needs the CUDA tier (compiled without DS4_MOE_CUDA)";
     return false;
 #else
-    // A per-layer-sized geometry (MiMo) opens its cache now: one slot per ranked expert, each the size of ITS
+    // A per-layer-sized geometry opens its cache now: one slot per ranked expert, each the size of ITS
     // layer's blob, until `slots` experts or `slot_gib` bytes.  The seed below admits in the same order, so slot i
     // is ranked[i]'s and fits it exactly; the cache never evicts, so a slot never meets another layer's blob.
     if (im_->mixed_sizes && im_->gpu && !im_->gpu->cache && !im_->cfg.no_cache && im_->cfg.slots > 0) {
@@ -2059,7 +2059,7 @@ bool Ds41MoeTier::seed_from_ranked(const std::vector<std::pair<int32_t, int32_t>
         return true;
     }
     const int64_t want = std::min<int64_t>(im_->cfg.slots, im_->gpu->cache->full_slots());
-    // the order the slots fill in.  A per-layer-sized cache (MiMo) keeps the rank: its sizes list above pairs slot
+    // the order the slots fill in.  A per-layer-sized cache keeps the rank: its sizes list above pairs slot
     // i with ranked[i].  Everywhere else a preceding release_cache() supplies the warm set.
     const std::vector<std::pair<int32_t, int32_t>> fill_order = im_->mixed_sizes ? ranked : warm_first(*im_, ranked, want);
     int64_t filled = 0;
@@ -2078,7 +2078,7 @@ bool Ds41MoeTier::seed_from_ranked(const std::vector<std::pair<int32_t, int32_t>
         }
     };
     if (im_->mixed_sizes || !std::getenv("DS4_SERIAL_SEED")) {
-        // MiMo (and DS4 since 2026-10-08: the serial seed below took 8 s for 2226 slots after chunked prefill): the
+        // (the serial seed below took 8 s for 2226 slots after chunked prefill): the
         // same admissions in the same order, but the copies overlap - arena blobs queued straight from the
         // pinned arena, file-tier blobs read by 8 threads into pinned buffers (the serial seed read one blob at a time:
         // ~7 s for ~1850 experts after a prompt).  Same slots, same bytes.
@@ -3201,7 +3201,7 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
     if (nk > 0) {
         std::vector<const uint8_t*> held((size_t) nk, nullptr);
         // arena blobs by address; file-tier blobs read IN PARALLEL (an NVMe needs several reads in flight - serial
-        // 9 MB reads measured 1.6-5.3 ms each on MiMo, FINDINGS s9/s10) into their own ftmp slots - same bytes as
+        // 9 MB reads measured 1.6-5.3 ms each) into their own ftmp slots - same bytes as
         // acquire() reads one by one
         std::vector<int> fi;
         for (int i = 0; i < nk; ++i) {
@@ -3239,7 +3239,7 @@ bool gpu_run(Ds41MoeImpl& im, int64_t layer, const int32_t* ids6, const float* w
                 fdst[q] = im.ftmp.data() + (size_t) fi[q] * (size_t) im.blob;
                 if (!direct) continue;
                 // The victim's SLOT must hold the incoming blob: arena slots are packed at each seeded expert's own blob
-                // size, and DS4's 9 format classes differ in size - without this a larger blob read into a smaller slot
+                // size, and a pack's format classes differ in size - without this a larger blob read into a smaller slot
                 // ran over into the next slot and corrupted that expert (garbage output under --arena-adapt).
                 const int32_t victim = arena_victim(im, layer, (uint64_t) BLX(ids6[cpu_keep[fi[q]]]), fvic.data(), (int) q);
                 if (victim < 0) continue;
@@ -5929,7 +5929,7 @@ void Ds41MoeTier::rebalance_plan() {
         std::sort(cand.begin(), cand.end(), [&](int32_t a, int32_t b) { return sc[a] > sc[b]; });
         std::sort(vict.begin(), vict.end(), [&](int32_t a, int32_t b) { return sc[a] < sc[b]; });
         // each candidate takes the least-used victim whose SLOT holds its blob: the arena packs every slot at its
-        // seeded expert's own blob size and DS4's 9 format classes differ, so index-order pairing was rejected at
+        // seeded expert's own blob size and a pack's format classes differ, so index-order pairing was rejected at
         // retire time for nearly every pair ("slot small", s14: 3,178 of 3,178 rejections)
         std::vector<char> taken(vict.size(), 0);
         size_t lo = 0;   // victims before lo are all taken

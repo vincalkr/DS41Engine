@@ -245,7 +245,7 @@ def t_images(tok_dir=None):
             check("expansion: a count mismatch is refused", False)
         except ValueError:
             check("expansion: a count mismatch is refused", True)
-    # the plans DeepSeek's image_processor gives (docs/ds4/V41_VISION.md's reference images): (w, h) -> (llm_h, llm_w, bh, bw)
+    # the plans DeepSeek's image_processor gives (reference images): (w, h) -> (llm_h, llm_w, bh, bw)
     for (w, h), want in {(200, 150): (12, 15, 476, 630), (450, 308): (11, 16, 462, 658), (300, 1200): (29, 8, 1204, 308),
                          (1024, 701): (17, 25, 714, 1036), (2000, 1500): (27, 36, 1134, 1512)}.items():
         got = DI.plan_image_grid(w, h)

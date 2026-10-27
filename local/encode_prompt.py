@@ -18,10 +18,10 @@ sys.path.insert(0, str(ROOT / "tools"))
 import numpy as np  # noqa: E402
 import strata_tokenizer as ST  # noqa: E402
 
-# the tokenizer of whichever model is in models/ (the GSQ's and the ds4 1017 Q2's are the same tables);
+# the tokenizer in models/;
 # STRATA_TOKENIZER=<dir> picks one
 TPATH = Path(os.environ["STRATA_TOKENIZER"]) if os.environ.get("STRATA_TOKENIZER") else next(
-    (d for d in (ROOT / "models" / "rco-iq2xxs" / "tokenizer", ROOT / "models" / "V41-GSQ" / "tokenizer") if d.is_dir()),
+    (d for d in (ROOT / "models" / "rco-iq2xxs" / "tokenizer",) if d.is_dir()),
     ROOT / "models" / "rco-iq2xxs" / "tokenizer")
 
 

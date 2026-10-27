@@ -135,7 +135,7 @@ inline void prom_check(const char* what) {
 // pass either way), false to fall through to the default launch_gu.  `gy` is the caller's group-row count and
 // `large_groups` says the call averages >= 64 entries per group.
 //
-// THE GATE is the measured envelope (test_ds41_prom on the real GSQ blobs, 5 launches each, min): PTQ1_0 gate/up is
+// THE GATE is the measured envelope (test_ds41_prom on real PTQ1_0 blobs, 5 launches each, min): PTQ1_0 gate/up is
 // 1.21x / 1.37x / 1.45x the native kernel at 64 / 512 / 1024 entries per group but 0.33x / 0.64x at 1 / 7 (the
 // shared-memory weight tile costs more than the per-row decode it saves when the tile is used a few times), and Q2_0
 // is 0.57-0.80x at every size (its native multi kernel already reuses the decode 4x with every lane busy, so the

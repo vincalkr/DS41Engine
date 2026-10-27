@@ -218,7 +218,7 @@ def main():
     if a.backend == "cpu":
         dev = ["--backend", "cpu", "--experts", "cpu", "--arena-gib", "0", "--prefill-chunk", "64"]
     else:
-        dev = ["--backend", "cuda", "--experts", "gpu", "--arena-gib", "30", "--rank", str(root / "local/rank-q2.bin"),
+        dev = ["--backend", "cuda", "--experts", "gpu", "--arena-gib", "30", "--rank", str(root / "local/rank.bin"),
                "--kv-q8", "--route-bias", "0", "--route-bias-file", "0", "--arena-skip-vram"]
     common = ["-m", a.model, "--engram", a.engram, *dev, "--ctx", "8192", "--threads", str(a.threads),
               "--prompt-batch", "512", "--stop", "1"] + (["--vision"] if a.vision else []) + (a.extra.split() if a.extra else [])

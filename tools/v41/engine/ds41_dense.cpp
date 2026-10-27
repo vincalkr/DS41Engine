@@ -203,7 +203,7 @@ struct Ds41Dense::Impl {
     std::vector<float> host_fn, host_wts, host_logits, host_emb;
     std::vector<int32_t> host_ids;
     const uint8_t * embd = nullptr;       // token_embd rows on the mmap
-    uint32_t embd_type = 0;               // its ggml type (F16 in antirez packs, Q5_K in RCO ones)
+    uint32_t embd_type = 0;               // its ggml type (F16, or Q5_K in the GSQ-RCO pack)
     std::vector<std::vector<float>> eng_rows;
     // The pass's Engram reads, started (async) by upload_inputs and waited at the first Engram layer's span /
     // attn_router: the whole pass's rows are read from disk while the embeddings, the init graph and the layers below
@@ -701,7 +701,7 @@ static ggml_cgraph * build_attn(Ds41Dense::Impl & im, ggml_context * gc, int il,
                 sc = ggml_reshape_2d(gc, sc, cap, n);
                 // Every block kept (ncb == nblk: up to CB * CBS compressed rows, ~32K positions at ratio 2): the
                 // candidate ids are a permutation of all blocks, so the mask below is all zero and the selection is a
-                // no-op - STRATA_CAND_FAST=1 skips it on both sides (antirez/ds4 b290d83b).  cand_src and its users see
+                // no-op - STRATA_CAND_FAST=1 skips it on both sides (after an upstream DeepSeek engine's change).  cand_src and its users see
                 // the same cap (one ratio, the same pass or sub-batch), so they always agree on it.  Opt-in: decode
                 // measured the same with and without it (docs/ds4/V41_EXACT_FAST.md, 2026-10-22).
                 static const bool cand_fast = std::getenv("STRATA_CAND_FAST") && std::getenv("STRATA_CAND_FAST")[0] == '1';

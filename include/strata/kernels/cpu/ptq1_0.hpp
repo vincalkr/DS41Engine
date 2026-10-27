@@ -26,7 +26,7 @@ inline constexpr int kPtq1Bytes = 28;      ///< bytes per block
 /// Bytes of one PTQ1_0 row of n weights (n a multiple of 128).
 inline size_t ptq1_0_row_bytes(int64_t n) { return (size_t) (n / kPtq1Block) * kPtq1Bytes; }
 
-/// Packs ternary codes t in {-1, 0, +1} (n of them) with one scale per 128 into PTQ1_0 blocks (GSQ export).
+/// Packs ternary codes t in {-1, 0, +1} (n of them) with one scale per 128 into PTQ1_0 blocks.
 void ptq1_0_pack(const int8_t* t, const float* d, uint8_t* dst, int64_t n);
 /// Round-to-nearest reference quantizer (amax scale), bit-identical to llama-tq's quantize_row_ptq1_0_ref.
 void ptq1_0_quantize_ref(const float* x, uint8_t* dst, int64_t n);

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""ds4-engram-extract.py GGUF OUTDIR - the two Engram tables of a ds4 `deepseek41` GGUF (antirez/ds4: tensors
+"""ds4-engram-extract.py GGUF OUTDIR - the two Engram tables of a `deepseek41` GGUF that carries them (tensors
 blk.{1,14}.engram_embd.weight, I8 [264, rows], encoding e4m3_e8m0_32_row264) as the safetensors files the engine's
 --engram reads (OUTDIR/layers1/engram-L1.safetensors, OUTDIR/layers14/engram-L14.safetensors, each with its
 model.safetensors.index.json).
 
-A GGUF row is 256 E4M3 weight bytes then 8 E8M0 scale bytes (checked against the extracted tables of
-the September checkpoint: rows 0-3 of the ds4 Q2 GGUF match weight+scale byte for byte); the safetensors file holds
+A GGUF row is 256 E4M3 weight bytes then 8 E8M0 scale bytes (the checkpoint's own rows, byte for byte); the
+safetensors file holds
 `layers.N.engram.embed.scale` [rows, 8] F8_E8M0 first, then `layers.N.engram.embed.weight` [rows, 256] F8_E4M3.
 Same bytes, regrouped; nothing is converted.  Needs numpy.
 

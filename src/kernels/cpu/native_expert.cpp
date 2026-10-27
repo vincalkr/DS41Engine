@@ -174,7 +174,7 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     // them.  That path loops over tokens itself, so it is correct for any `nt`, not just one.
     static const bool avx2 = cpu_avx2_ok() && std::getenv("STRATA_NO_IQ256") == nullptr;
     const int mt_min = native_gu_mt_min(f.gu_type);   // #152
-    // Unsloth UD-Q4_K_XL's Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
+    // Q4_K gate/up: the multi-token kernel is bit-exact against ggml's per-token dot (any group
     // size, no #152 rule).  Opt-in, STRATA_KQ256=1: measured no faster in the engine (a window's expert groups hold
     // ~1.4 tokens and the weights stay in L1 across ggml's per-token calls; 1.01-1.13x in native_expert_parity).
     static const bool kq = [] { const char* v = std::getenv("STRATA_KQ256"); return cpu_avx2_ok() && v != nullptr && std::atoi(v) != 0; }();

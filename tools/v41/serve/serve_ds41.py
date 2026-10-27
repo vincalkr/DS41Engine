@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Strata's API server (~/AI/Strata/serve/server.py: OpenAI + Anthropic endpoints, streaming, sessions, llama.cpp-style
-metrics) in front of the DeepSeek-V4.1-Flash engine (`ds41_generate --serve`).  The server is Qwen3.8's; this shim
-swaps in V4.1's pieces (same shape as ~/AI/Strata-GLM/tools/glm/serve/serve_glm.py):
+metrics) in front of the DeepSeek-V4.1-Flash engine (`ds41_generate --serve`).  The server is generic; this shim
+swaps in V4.1's pieces:
 
 - tokenizer: the GGUF's BPE (tokenizer dir from export_tokenizer.py) with llama.cpp's `joyai-llm` pre-split
-  (Strata-DS4's strata_tokenizer.py; == HF tokenizers on 465,645 tokens)
+  (tools/strata_tokenizer.py; == HF tokenizers on 465,645 tokens)
 - chat template: DeepSeek's own encoder (dsv41_encoding.encode_messages), not Jinja
-- reasoning effort: V4.1's numeric 1-100 ("Reasoning Effort: N" system prefix).  Names as DwarfStar's server
-  (antirez/ds4 ds4_server.c parse_reasoning_effort_name + ds4_deepseek41_reasoning_effort_text): high / xhigh = 75,
-  max = 100, a number 1-100 as given, none / 0 = thinking off; low = 50 (DeepSeek's encoder; ds4 renders it as 75),
+- reasoning effort: V4.1's numeric 1-100 ("Reasoning Effort: N" system prefix).  Names: high / xhigh = 75,
+  max = 100, a number 1-100 as given, none / 0 = thinking off; low = 50 (DeepSeek's encoder),
   minimal / medium = 75
 - end of turn: <｜end▁of▁sentence｜>
 - tool calls: DSML (`<｜DSML｜ invoke name="X">` + `<｜DSML｜ parameter name="K" string="true|false">V</｜DSML｜ parameter>`,
@@ -53,7 +52,7 @@ class Ds41Tokenizer(_Tok):
 
     def token_bytes(self, i: int) -> bytes:
         # V4.1's special tokens (<｜User｜>, <｜end▁of▁sentence｜>, ...) are not in the byte alphabet: they decode to
-        # their own text, as llama.cpp detokenizes control / user-defined tokens (Qwen's are ASCII, so never hit this)
+        # their own text, as llama.cpp detokenizes control / user-defined tokens (ASCII ones never hit this)
         lit = self._literal.get(i)
         return lit if lit is not None else super().token_bytes(i)
 
@@ -186,12 +185,12 @@ _svc_init = S.Service.__init__
 
 def _svc_init_ds41(self, engine, tokenizer, template, *a, **k):
     _svc_init(self, engine, tokenizer, template, *a, **k)
-    # REPLACE, not add to: the server also encodes Qwen's "<|endoftext|>", which V4.1's vocabulary splits into plain
+    # REPLACE, not add to: the server also encodes its default "<|endoftext|>", which V4.1's vocabulary splits into plain
     # pieces ("<", "|", ...) - every DSML tag would then end the reply
     eos = tokenizer.encode(E.eos_token, parse_special=True)
     assert len(eos) == 1, eos
     self.stop_ids = set(eos)
-    self.effort_end = False      # #458's tail-turn trick is Qwen text; V4.1's effort lives in the first system turn
+    self.effort_end = False      # #458's tail-turn trick is the server's default template text; V4.1's effort lives in the first system turn
     # V4.1's own markers are GGUF type 4 (<｜User｜>, <｜Assistant｜>, <｜deepseek_image｜>, ｜DSML｜, ...), which the
     # server's literal list (type-3 control tokens only) leaves out.  Written inside a message's text - an agent
     # reading serve_ds41.py or a chat template - they opened a turn, or <｜deepseek_image｜> made DeepSeek's encoder
@@ -205,11 +204,11 @@ def _svc_init_ds41(self, engine, tokenizer, template, *a, **k):
 
 S.Service.__init__ = _svc_init_ds41
 
-# ---- the #123 thinking budget must close V4.1's thinking, not Qwen's </think>
-# serve/server.py holds Qwen's markers ("</think>"); both wrap-up texts go through tok.encode(..., parse_special=True),
+# ---- the #123 thinking budget must close V4.1's thinking token
+# serve/server.py holds plain-text markers ("</think>"); both wrap-up texts go through tok.encode(..., parse_special=True),
 # so putting the model's own end-of-thinking token there is what actually closes the thinking and lets it answer.
 # Nothing after it: DeepSeek's encoder writes the answer right after </think> when the client sends the turn back, and
-# Qwen's "\n\n" there (the reply's content drops it) made every turn after a budget wrap-up re-read the whole
+# the default "\n\n" there (the reply's content drops it) made every turn after a budget wrap-up re-read the whole
 # conversation (the engine held "</think>\n\n", the next turn "</think>" and the answer).
 S.REASONING_CLOSE = "\n" + E.thinking_end_token
 S.REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n" + E.thinking_end_token
@@ -255,7 +254,7 @@ def ds41_parse_tool_call(body: str, schema=None):
 
 # The served path TRANSLATES the DSML stream into the XML form the server's parser reads.
 #
-# `serve/frontend.py` detects a call with `_follower` / `_bare_opener` / `call_end` around Qwen's
+# `serve/frontend.py` detects a call with `_follower` / `_bare_opener` / `call_end` around the server's
 # `<tool_call><function=NAME><parameter=K>V</parameter></function></tool_call>`, and a DSML `invoke` is not in that
 # vocabulary.  Measured 2026-10-16 with the three hooks below merely overridden (CALL_START/CALL_END, call_end,
 # parse_tool_call): the DSML call came out as plain content - `tool_calls: null`, the markup in `content`, the tool
@@ -300,7 +299,7 @@ _op_init, _op_feed, _op_finish = F.OutputParser.__init__, F.OutputParser.feed, F
 
 def _op_init_ds41(self, *a, **k):
     _op_init(self, *a, **k)
-    self.stream_tools = False          # the streaming scanner reads Qwen's <function=...> body
+    self.stream_tools = False          # the streaming scanner reads the <function=...> body
     self.dsml_hold = ""
 
 

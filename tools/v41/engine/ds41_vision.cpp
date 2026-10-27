@@ -26,7 +26,7 @@ double now_ms() {
 }
 
 // DS41_VISION_PREC=f16 (opt-in): the matmuls in the backend's fast F16 mode (on RDNA3 hipBLAS accumulates and writes
-// F16).  Default f32: F16 weights, F32 accumulation.  docs/ds4/V41_VISION.md has the accuracy / time of both.
+// F16).  Default f32: F16 weights, F32 accumulation.
 bool prec_f16() {
     static const bool v = std::getenv("DS41_VISION_PREC") && std::strcmp(std::getenv("DS41_VISION_PREC"), "f16") == 0;
     return v;

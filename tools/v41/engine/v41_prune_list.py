@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """v41_prune_list.py RANK FRAC OUT - the coldest FRAC of the experts in a v41_rank.py ranking (int32 (layer, expert)
-pairs, hottest first) as "layer expert" lines: ds41_generate --prune OUT [--prune-penalty X] (soft pruning, GLM's recipe:
+pairs, hottest first) as "layer expert" lines: ds41_generate --prune OUT [--prune-penalty X] (soft pruning:
 the listed experts take no VRAM/arena space and get a selection bias -X; 0 = never routed)."""
 import sys
 

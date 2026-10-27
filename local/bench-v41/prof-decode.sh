@@ -4,7 +4,6 @@
 #  2. a rocprofv3 kernel + copy trace of 16 and 80 decode tokens (the difference is 64 tokens of decode);
 #  3. HIP_FORCE_DEV_KERNARG=1, HSA_ENABLE_INTERRUPT=0, HSA_ENABLE_SDMA=0 and all three, 2 runs each, on sposi.
 # Results: local/sweep-prof/summary.txt, the .out files, and local/sweep-prof/trace-{16,80}/.
-# The runs recorded there were made on antirez/ds4's Q2 pack; since 2026-10-25 the default is the GSQ-RCO pack.
 cd "$(dirname "$0")/../.."
 S=local/bench-v41/sweep.sh; O=local/sweep-prof
 export ARENA=75
@@ -22,7 +21,7 @@ for n in 16 80; do
     env $E STRATA_FORCE_IDS=$O/ref-sposi.ids bash tools/ds4/memguard.sh 110 82 -- \
         rocprofv3 --kernel-trace --memory-copy-trace --output-format csv -d $O/trace-$n -o run -- \
         ./build-hip-fused/ds41_generate -m models/rco-iq2xxs/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf --ids-file local/prompts/sposi.i32 -n $n --temp 0 \
-        --backend cuda --experts gpu --arena-gib 75 --ctx 8192 --kv-q8 --threads 12 --rank local/rank-q2.bin \
+        --backend cuda --experts gpu --arena-gib 75 --ctx 8192 --kv-q8 --threads 12 --rank local/rank.bin \
         --engram models/engram-1017/layers14:models/engram-1017/layers1 --arena-skip-vram $R > $O/trace-$n.out 2>&1
 done
 for r in 2 3; do

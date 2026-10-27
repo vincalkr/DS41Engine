@@ -4,9 +4,8 @@
 Always printed: ppl against the held-out tokens (`heldout_8x1024.npy`) and this run's own top-1 next-token accuracy.
 When the FP8 1017 teacher's top-256 log-probs are present (`teacher_8x1024.npz`: idx, lp for the 8 x 1023 next-token
 rows) it also prints top-1 agreement with the teacher and KL(teacher || ours) over that top-256 (teacher renormalized
-there), the measures lxe and Lucebox publish (lxe's quant on his engine: ppl 11.66, top-1 71.5 %, KL 0.462; teacher ppl
-8.56).  That npz came off the 1017 FP8 on 2026-10-20 and is not on this box any more, so those two print only when it
-is there; the numbers of the runs that had it are in those runs' score.json.
+there), the measures Lucebox publishes (the teacher's own ppl is 8.56).  That npz is not on this box, so those two
+print only when it is there.
 
 --against DIR2 compares the same rows with another run's logits instead: KL(other || ours) over the whole vocab and
 top-1 agreement between the two - how one change (an Engram table form, a rank, a kernel) is read without a teacher.

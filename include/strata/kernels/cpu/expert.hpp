@@ -38,7 +38,7 @@ inline constexpr int QK = 64;       // QK2_0: weights per fp16 scale
 inline constexpr int QKA = 32;      // QK8_1/QK8_0: ACTIVATION elements per scale
 inline constexpr int BB = 18;       // bytes per 64-weight Q2_0 block: 2 fp16-scale + 16 codes
 // Strata-DS4 fork: the widest activation an ActQ holds - DeepSeek-V4.1's n_embd 5120 through the native Q2_0
-// kernels (q2_rows_any); H stays Qwen's 2560 for the pack layouts below
+// kernels (q2_rows_any); H stays 2560 for the pack layouts below
 inline constexpr int kActMax = 5120;
 inline constexpr int MAXC = kActMax / QKA;       // activation chunks across the widest reduction
 inline constexpr int ROW_GU = H * 2 / 8;         // 640 B of codes per gate/up row

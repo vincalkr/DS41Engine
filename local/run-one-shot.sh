@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# local/run-one-shot.sh - one-shot DeepSeek-V4.1-Flash-1017 (ds4 Q2) run on THIS machine (AMD gfx1100, 2x RX 7900 XTX, 128 GiB RAM).
+# local/run-one-shot.sh - one-shot DeepSeek-V4.1-Flash-1017 (GSQ-RCO pack) run on THIS machine (AMD gfx1100, 2x RX 7900 XTX, 128 GiB RAM).
 #
 #   local/run-one-shot.sh --ids 1,2,3 -n 16 [extra ds41_generate args...]
 #   local/run-one-shot.sh --ids-file local/prompts/code_review.i32 -n 96
@@ -15,7 +15,7 @@ cd "$(dirname "$0")"
 
 MODEL="${MODEL:-$PWD/models/rco-iq2xxs/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf}"
 export DS41_META="${DS41_META-local/rco-iq2xxs-meta/meta.gguf}"
-RANK="${RANK:-$PWD/local/rank-q2.bin}"
+RANK="${RANK:-$PWD/local/rank.bin}"
 EXE="${EXE:-$PWD/build-hip-pre/ds41_generate}"
 ARENA="${ARENA_GIB:-60}"
 THREADS="${THREADS:-$(nproc)}"
