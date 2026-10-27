@@ -160,6 +160,33 @@ The CPU computes 15-30% fewer experts and its time goes down by as much (1.73 ->
 decode does not move beyond the spread: each expert card 0 takes costs it a copy of ~8 MB over PCIe in the same
 window. `--pcie 0` stays.
 
+## Lookup drafts: measured, opt-in, off (2026-10-27)
+
+`STRATA_LOOKUP=K` (one-shot, greedy): after each token the last `STRATA_LOOKUP_NGRAM` (default 3) tokens are looked up
+in the prompt and the text so far; where they occurred before, the up to K tokens that followed are verified with the
+token in one pass (`pass_v`) and the leading ones the model's argmax agrees with are emitted - the same tokens as
+plain decoding (the outputs below are identical to a plain run's, and where a run differs from the plain one, a second
+plain run differs at the same token: a near-tie). The width adapts by default (`STRATA_LOOKUP_ADAPT`): a fully
+accepted draft doubles the next, a rejection shrinks it. After a rejection a feed at an odd position re-feeds the last
+accepted token, as for any verify pass.
+
+One-shot, the configuration's flags with `STRATA_ELASTIC_COLS=1`, power-tune on, 400 tokens, tok/s
+(`local/sweep-lookup`):
+
+| | `dev-code` (a review with a patch) | `dev-edit` (a 1.7K-token header rewritten with one rename) |
+| --- | ---: | ---: |
+| plain | 21.77 / 22.75 | 21.17 |
+| K 8 | 16.41 (2.53 of 5.8 accepted a pass) | 23.65 (7.82 of 8) |
+| K 12 | | 26.43 (11.84 of 11.84) |
+| K 12, n-gram 8 | 19.55 (3.50 of 7.7) | 25.87 |
+| K 12, n-gram 6, adaptive | 19.34 (1.22 of 2.6) | 24.09 |
+| K 8, misses on the CPU (`STRATA_TIER_BATCH_PCIE=0`) | 14.72 | 19.16 |
+
+A verified token costs about what a plain step costs here (a 13-token pass 480 ms, 37 ms a token, against 46 ms a
+plain step): each token routes its own experts and the CPU computes them at the RAM's limit, so a verify pass shares
+little. Even text copied whole gains only 14-25%, and a review that writes new text loses 10-25%; the server keeps
+plain decoding.
+
 ## The Engram tables, in either form
 
 The Engram rows come as the pack's own iq4_nl GGUF (`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`, 110.6 GB, one tensor a

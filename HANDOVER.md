@@ -29,8 +29,8 @@ Where ds41e stands and what is open. How it runs and every measured number: [REA
 - **Where the time goes:** the CPU tier is at the RAM's bandwidth (47 GB/s of 61), and card 0 waits ~6 ms a token in
   40 per-layer host round trips. Faster RAM (`local/ram-bench.sh` compares BIOS settings) is the hardware lever;
   routing on the card was estimated at ~5% on short prompts and ~0 at long ones and not built.
-- **Speculative decoding:** a verify pass costs about as much as decoding its tokens here; lookup (prompt) drafting
-  for agent sessions that copy code is the one variant not tried.
+- **Speculative decoding:** a verify pass costs about as much as decoding its tokens here. Lookup drafts
+  (`STRATA_LOOKUP`, opt-in) gain 14-25% only on text copied whole and lose 10-25% on new text; off.
 - **The rank:** `local/update-rank.sh` measures a rank built from the chat's routing on code and documentation prompts
   and applies it only if faster.
 - **Images:** the pack has no VL router bias; a pack that has one would bring them back.

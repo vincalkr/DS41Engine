@@ -57,6 +57,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 // ---- repetition penalties: the state has to be declared before the argument parsing that sets it ----------
@@ -2410,6 +2411,37 @@ int main(int argc, char ** argv) {
     static const bool dec_nll = std::getenv("STRATA_DEC_NLL") != nullptr;
     double nll_sum = 0;
     long nll_n = 0;
+    // STRATA_LOOKUP=K (opt-in, greedy one-shot): lookup drafts.  After each token, the last STRATA_LOOKUP_NGRAM (default
+    // 3) tokens are looked up in the prompt + the text so far; when they occurred before, the up to K tokens that
+    // followed there are verified with the token in ONE pass (pass_v) and the leading ones the model's own argmax agrees
+    // with are emitted - the same tokens as plain decoding, fewer passes where the model copies text it has seen (code
+    // edits, repeated commands).  No match: the plain step.  The rejection rule is DSpark's: every cache is position-
+    // indexed except the ratio-2 compressor's 2-slot ring, so after a rejection a feed at an odd position re-feeds the
+    // last accepted token.
+    const int lk_max = std::getenv("STRATA_LOOKUP") ? std::max(0, std::min(15, std::atoi(std::getenv("STRATA_LOOKUP")))) : 0;
+    const int lk_n = std::getenv("STRATA_LOOKUP_NGRAM") ? std::max(1, std::atoi(std::getenv("STRATA_LOOKUP_NGRAM"))) : 3;
+    const bool lookup = lk_max > 0 && !spec && a.temp <= 0 && std::getenv("STRATA_FORCE_IDS") == nullptr && S >= lk_max + 2;
+    if (lk_max > 0 && !lookup) std::fprintf(stderr, "STRATA_LOOKUP: off (greedy one-shot only, no STRATA_FORCE_IDS, prefill columns >= K + 2)\n");
+    std::vector<int> lk_hist(prompt.begin(), prompt.end());
+    std::unordered_map<uint64_t, int> lk_last;   // n-gram key -> the end index of its latest occurrence (not the current one)
+    auto lk_key = [&](size_t end) {             // the n tokens ending before `end`
+        uint64_t h = 1469598103934665603ull;
+        for (size_t i = end - (size_t) lk_n; i < end; ++i) h = (h ^ (uint64_t) (uint32_t) lk_hist[i]) * 1099511628211ull;
+        return h;
+    };
+    size_t lk_indexed = (size_t) lk_n;          // n-grams ending before this index are in lk_last
+    auto lk_index = [&]() {                     // index every n-gram but the one ending at the history's end
+        for (; lookup && lk_indexed < lk_hist.size(); ++lk_indexed) lk_last[lk_key(lk_indexed)] = (int) lk_indexed;
+    };
+    lk_index();
+    long lk_pass = 0, lk_acc = 0, lk_drafted = 0, lk_refeed = 0, lk_steps = 0;
+    // STRATA_LOOKUP_ADAPT=0: always K drafts (default: the width adapts, starting at 2)
+    const bool lk_adapt = !(std::getenv("STRATA_LOOKUP_ADAPT") && std::getenv("STRATA_LOOKUP_ADAPT")[0] == '0');
+    int lk_k = std::min(2, std::max(1, lk_max));
+    double lk_vms = 0;
+    int lk_prev = prompt.back();
+    bool lk_dirty = false;
+    std::vector<int> lk_vt;
     for (; !spec && gen < a.n_predict; ++gen) {
         int tok = sample_p(lg.data(), nv, a.temp, 0, 1.0f, 0.0f, rng);
         if (dec_nll && gen < (int) forced.size()) {
@@ -2432,9 +2464,69 @@ int main(int argc, char ** argv) {
         std::fflush(stdout);
         if (std::find(a.stop.begin(), a.stop.end(), tok) != a.stop.end() || tok == (int) G.eos) { ++gen; break; }
         if (gen + 1 == a.n_predict) { ++gen; break; }
+        if (lookup) {
+            lk_hist.push_back(tok);
+            // drafts: what followed the latest earlier occurrence of the last n tokens (tok included)
+            int k = 0;
+            int dr[16];
+            if (lk_hist.size() > (size_t) lk_n) {
+                auto it = lk_last.find(lk_key(lk_hist.size()));
+                if (it != lk_last.end()) {
+                    const int kmax = std::min(lk_adapt ? lk_k : lk_max, a.n_predict - gen - 1);
+                    for (size_t j = (size_t) it->second; k < kmax && j < lk_hist.size(); ++j) dr[k++] = lk_hist[j];
+                }
+            }
+            lk_index();
+            const bool refeed = lk_dirty && (pos & 1);
+            if (k == 0 && !refeed) {
+                ++lk_steps;
+                if (!step(tok, pos) || !dense.logits(0, 1, lg.data())) { std::fprintf(stderr, "ds41_generate: decode: %s\n", ferr.c_str()); return 1; }
+                lk_prev = tok;
+                ++pos;
+                continue;
+            }
+            lk_vt.clear();
+            if (refeed) lk_vt.push_back(lk_prev);
+            lk_vt.push_back(tok);
+            for (int i = 0; i < k; ++i) lk_vt.push_back(dr[i]);
+            const int r0 = refeed ? 1 : 0, p0 = refeed ? pos - 1 : pos;
+            const double tv = now_ms();
+            if (!pass_v(lk_vt.data(), (int) lk_vt.size(), p0)) { std::fprintf(stderr, "ds41_generate: verify: %s\n", ferr.c_str()); return 1; }
+            lk_vms += now_ms() - tv;
+            int acc = 0;
+            while (acc < k) {
+                const float * row = vlog.data() + (size_t) (r0 + acc) * nv;
+                if ((int) (std::max_element(row, row + nv) - row) != dr[acc]) break;
+                ++acc;
+            }
+            ++lk_pass; lk_acc += acc; lk_drafted += k; lk_refeed += refeed;
+            // adaptive width: a fully accepted draft doubles the next one (up to K), a rejection shrinks it to what was
+            // accepted (at least 2) - a verify token costs about a plain step here, so a wrong draft is paid in full
+            if (k > 0) lk_k = acc == k ? std::min(lk_max, 2 * k) : std::max(2, acc);
+            bool stop = false;
+            for (int i = 0; i < acc && !stop; ++i) {   // the accepted drafts are emitted as the plain loop would
+                ++gen;
+                std::printf("%d\n", dr[i]);
+                std::fflush(stdout);
+                lk_hist.push_back(dr[i]);
+                stop = std::find(a.stop.begin(), a.stop.end(), dr[i]) != a.stop.end() || dr[i] == (int) G.eos || gen + 1 == a.n_predict;
+            }
+            lk_index();
+            if (stop) { ++gen; break; }
+            const float * row = vlog.data() + (size_t) (r0 + acc) * nv;
+            std::copy(row, row + nv, lg.begin());
+            lk_prev = acc == 0 ? tok : dr[acc - 1];
+            lk_dirty = acc < k;
+            pos += 1 + acc;
+            continue;
+        }
         if (!step(tok, pos) || !dense.logits(0, 1, lg.data())) { std::fprintf(stderr, "ds41_generate: decode: %s\n", ferr.c_str()); return 1; }
         ++pos;
     }
+    if (lookup)
+        std::fprintf(stderr, "lookup: %ld verify passes (%ld re-fed), %ld plain steps; %.2f drafts and %.2f accepted a pass; "
+                     "verify %.1f ms/pass\n", lk_pass, lk_refeed, lk_steps, (double) lk_drafted / std::max(1L, lk_pass),
+                     (double) lk_acc / std::max(1L, lk_pass), lk_vms / std::max(1L, lk_pass));
     const double dec_ms = now_ms() - td0;
     if (nll_n) std::fprintf(stderr, "decode nll: %ld forced tokens, mean %.5f, ppl %.4f\n", nll_n, nll_sum / nll_n, std::exp(nll_sum / nll_n));
     if (prof_decode) Ds41MoeTier::profiler(false);
