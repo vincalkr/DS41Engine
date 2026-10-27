@@ -146,6 +146,20 @@ ggml's device memory pool after the prompt gave back 0.22 GiB and was removed. A
 state columns (~2.5 GiB) after the prompt where the server gives them back (`elastic_cols`); `STRATA_ELASTIC_COLS=1`
 lets a one-shot run do as the server does (2,176 experts on card 0 after the 17K prompt instead of 1,594).
 
+**Misses split between the CPU and card 0** (`--pcie F`: a share F of the misses outside the cards is copied from the
+arena over PCIe x16 and computed on card 0 while the CPU computes the rest; `local/bench-v41/ab-rco-pcie.sh`, the
+configuration's flags with `STRATA_ELASTIC_COLS=1`, 2 rounds alternated, 2026-10-27, tok/s):
+
+| `--pcie` | 17K context, 128 tokens | Promessi Sposi, 300 tokens | CPU-computed experts (17K / Sposi) |
+| --- | --- | --- | --- |
+| 0 (the configuration) | 15.29 (first run) / 18.71 | 22.96 / 23.29 | 8,950 / 10,590 |
+| 0.15 | 19.09 / 19.03 | 23.01 / 23.12 | 7,650 / 9,080 |
+| 0.3 | 18.89 / 18.12 | 22.87 / 22.92 | 6,360 / 7,480 |
+
+The CPU computes 15-30% fewer experts and its time goes down by as much (1.73 -> 1.39 s on the 17K run), but the
+decode does not move beyond the spread: each expert card 0 takes costs it a copy of ~8 MB over PCIe in the same
+window. `--pcie 0` stays.
+
 ## The Engram tables, in either form
 
 The Engram rows come as the pack's own iq4_nl GGUF (`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`, 110.6 GB, one tensor a

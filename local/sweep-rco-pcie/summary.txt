@@ -1,0 +1,13 @@
+pcie0-r1                     huge17k        diff=1    decode: 128 tokens in 8.31 s = 15.29 tok/s; experts 17223 hit / 8950 cpu / 0 pcie / 179 file (65.8% VRAM hits), cpu 1694 ms, file 265 ms; spec reads 0 issued / 0 used; pr
+pcie0-r1                     sposi          diff=5    decode: 300 tokens in 13.02 s = 22.96 tok/s; experts 55366 hit / 10590 cpu / 0 pcie / 189 file (83.9% VRAM hits), cpu 2088 ms, file 261 ms; spec reads 0 issued / 0 used; 
+pcie0.15-r1                  huge17k        diff=1    decode: 128 tokens in 6.65 s = 19.09 tok/s; experts 17326 hit / 7636 cpu / 1316 pcie / 174 file (65.9% VRAM hits), cpu 1553 ms, file 253 ms; spec reads 0 issued / 0 used;
+pcie0.15-r1                  sposi          diff=6    decode: 300 tokens in 13.00 s = 23.01 tok/s; experts 55487 hit / 9080 cpu / 1571 pcie / 174 file (83.9% VRAM hits), cpu 1827 ms, file 226 ms; spec reads 0 issued / 0 used
+pcie0.3-r1                   huge17k        diff=1    decode: 128 tokens in 6.72 s = 18.89 tok/s; experts 17508 hit / 6367 cpu / 2656 pcie / 169 file (66.0% VRAM hits), cpu 1390 ms, file 248 ms; spec reads 0 issued / 0 used;
+pcie0.3-r1                   sposi          diff=2    decode: 300 tokens in 13.08 s = 22.87 tok/s; experts 55446 hit / 7472 cpu / 3128 pcie / 173 file (84.0% VRAM hits), cpu 1576 ms, file 216 ms; spec reads 0 issued / 0 used
+pcie0-r2                     huge17k        diff=1    decode: 128 tokens in 6.79 s = 18.71 tok/s; experts 17097 hit / 8966 cpu / 0 pcie / 188 file (65.6% VRAM hits), cpu 1731 ms, file 267 ms; spec reads 0 issued / 0 used; pr
+pcie0-r2                     sposi          diff=2    decode: 300 tokens in 12.84 s = 23.29 tok/s; experts 55375 hit / 10583 cpu / 0 pcie / 193 file (84.0% VRAM hits), cpu 2029 ms, file 243 ms; spec reads 0 issued / 0 used; 
+pcie0.15-r2                  huge17k        diff=1    decode: 128 tokens in 6.67 s = 19.03 tok/s; experts 17317 hit / 7672 cpu / 1322 pcie / 176 file (65.8% VRAM hits), cpu 1582 ms, file 252 ms; spec reads 0 issued / 0 used;
+pcie0.15-r2                  sposi          diff=6    decode: 300 tokens in 12.93 s = 23.12 tok/s; experts 55487 hit / 9080 cpu / 1571 pcie / 174 file (83.9% VRAM hits), cpu 1829 ms, file 225 ms; spec reads 0 issued / 0 used
+pcie0.3-r2                   huge17k        diff=1    decode: 128 tokens in 7.01 s = 18.12 tok/s; experts 17428 hit / 6348 cpu / 2645 pcie / 174 file (66.0% VRAM hits), cpu 1395 ms, file 605 ms; spec reads 0 issued / 0 used;
+pcie0.3-r2                   sposi          diff=6    decode: 300 tokens in 13.04 s = 22.92 tok/s; experts 55527 hit / 7491 cpu / 3135 pcie / 175 file (83.9% VRAM hits), cpu 1562 ms, file 227 ms; spec reads 0 issued / 0 used
+ABPCIEDONE
