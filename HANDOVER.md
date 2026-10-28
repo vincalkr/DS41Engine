@@ -33,6 +33,9 @@ Where ds41e stands and what is open. How it runs and every measured number: [REA
   (`STRATA_LOOKUP`, opt-in) gain 14-25% only on text copied whole and lose 10-25% on new text; off.
 - **The VRAM cache seeded by the conversation** (`STRATA_VRAM_CONV`, opt-in): 17.80 against 17.98 tok/s over
   12 turns; off.
+- **DSpark on the GSQ-RCO pack** (`STRATA_SERVE_DSPARK`, opt-in; the drafter now reads the pack's quantized
+  `token_embd`): 10.8-15.2 (depth 4) and 12.5-16.4 (depth 2) against 17.6-18.6 tok/s; off. Short chats run
+  15.0-19.8 tok/s, about as fast as long ones.
 - **The rank:** `local/update-rank.sh` measures a rank built from the chat's routing on code and documentation prompts
   and applies it only if faster.
 - **Images:** on when the encoder is in `models/vision-1017`: the VL router bias the pack lacks comes from

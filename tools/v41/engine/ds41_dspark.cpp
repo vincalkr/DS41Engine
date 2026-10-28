@@ -35,7 +35,8 @@ struct Ds41DSpark::Impl {
     ggml_context * wctx = nullptr;
     ggml_backend_buffer_t wbuf = nullptr;
     std::map<std::string, ggml_tensor *> w;
-    const uint8_t * embd = nullptr;    // trunk token_embd F16 rows on the mmap
+    const uint8_t * embd = nullptr;    // trunk token_embd rows on the mmap (F16 or a quantized type)
+    int embd_type = GGML_TYPE_F16;
     size_t wbytes = 0;
     // state: per block window ring [DH, WIN]; inputs
     ggml_context * sctx = nullptr;
@@ -100,7 +101,7 @@ bool Ds41DSpark::Impl::load(std::string & e) {
     const TensorInfo * out = main->find("output.weight", &si);
     const TensorInfo * te = main->find("token_embd.weight");
     if (!out || !te) { e = "the trunk GGUF lacks output.weight / token_embd.weight"; return false; }
-    if (te->type != GGML_TYPE_F16) { e = "token_embd must be F16"; return false; }
+    if (!ggml_get_type_traits((ggml_type) te->type)->to_float) { e = "token_embd: no row decoder for its type"; return false; }
     if (!cfg.shared_head) src.push_back({ main.get(), out });
     // STRATA_DSPARK_EXP_TYPE=<ggml type name> (q4_K, q3_K, q2_K, iq4_xs, ...): the routed experts
     // (mtp.*.ffn.experts.w1/w2/w3, MXFP4 in the sidecar) are requantized ON LOAD (dequantize -> quantize, CPU threads).
@@ -220,6 +221,7 @@ bool Ds41DSpark::Impl::load(std::string & e) {
     size_t se = 0;
     main->find("token_embd.weight", &se);
     embd = main->shard(se).tensor_data(*te);
+    embd_type = (int) te->type;
     return true;
 }
 
@@ -421,11 +423,12 @@ bool Ds41DSpark::step(const float * mh, const int * pos, int k, int bonus, int *
     const bool draft = bonus >= 0;
     if (draft) {
         const int p = pos[k - 1];
-        // embeddings of [bonus, noise x4] (trunk token_embd, F16 rows)
+        // embeddings of [bonus, noise x4] (trunk token_embd rows: F16, or a quantized type as in the GSQ-RCO pack)
         std::vector<float> emb((size_t) (im.D * im.BS));
+        const size_t erow = ggml_row_size((ggml_type) im.embd_type, im.D);
         for (int64_t t = 0; t < im.BS; ++t) {
             const int id = t == 0 ? bonus : im.cfg.noise_id;
-            ggml_fp16_to_fp32_row((const ggml_fp16_t *) (im.embd + (size_t) id * (size_t) im.D * 2), emb.data() + (size_t) (t * im.D), im.D);
+            ggml_get_type_traits((ggml_type) im.embd_type)->to_float(im.embd + (size_t) id * erow, emb.data() + (size_t) (t * im.D), im.D);
         }
         std::vector<int32_t> bp((size_t) im.BS);
         for (int64_t t = 0; t < im.BS; ++t) bp[(size_t) t] = p + 1 + (int) t;

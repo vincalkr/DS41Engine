@@ -211,6 +211,36 @@ The hit rate rises a little on the last turn (0.70-0.79 off, 0.76-0.79 on), the 
 2,128 experts, card 1 2,754 more and the RAM arena 10,001, so an expert the seed moves into VRAM was mostly in a fast
 tier already. The default stays off.
 
+## DSpark on the GSQ-RCO pack: slower, off (2026-10-28)
+
+`STRATA_SERVE_DSPARK` (the checkpoint's mtp.0-2 drafter, `V41-MTP-Vision-1017.Q2_K.gguf` from
+kaushikvira/DeepSeek-V4.1-Flash-1017-GSQ-agentic-strata, 5.66 GB, kept in `models/dspark-1017`) now loads on this pack:
+the drafter read its embedding rows as F16 only, and the pack's `token_embd` is quantized; it now decodes the rows
+with their type's `to_float`, as the trunk does. Drafts never change the output (each is verified), only the speed.
+
+Through the server (`local/bench-v41/ab-dspark.py`, `local/sweep-dspark/summary-rco.txt`): the configuration without
+the conversation disk, the `dev-code` review (16,709 tokens), three ~500-token follow-ups and an Italian prose request,
+256 tokens each, greedy, one run each, tok/s:
+
+| turn | off | conf 0.6, depth 4 | conf 0.6, depth 2 |
+| --- | ---: | ---: | ---: |
+| after the prompt | 17.6 | 12.5 | 14.8 |
+| +493 tokens | 18.6 | 10.8 | 12.5 |
+| +528 tokens | 17.8 | 15.2 | 16.4 |
+| +489 tokens | 18.3 | 11.9 | 12.8 |
+| prose, +309 tokens | 18.0 | 13.6 | 15.7 |
+
+The drafter takes 5.14 GB of card 0 (its VRAM cache holds 1,525 experts instead of ~2,128), but the first turn's hit
+rate is the same (0.753 against 0.752) and the speed still drops: the verify pass reads the experts of every drafted
+token, which at exact routing are mostly different experts, from the peer card, RAM and NVMe. Engines that report a
+gain from DSpark on this model pair it with a route bias toward cached experts (the drafted tokens then share
+experts), which changes the output. The default stays off.
+
+Short chats, for comparison (`local/bench-v41/short-chat.py`, `local/sweep-short/summary.txt`, the default
+configuration, 256 tokens greedy, 3 runs): a 48-token question 17.6-19.8 tok/s, follow-ups at 322 and 601 tokens
+16.1-19.2, a fresh 1,464-token prompt 15.0-19.0. The decode speed barely depends on the context length here; it is set
+by the expert reads (hit rate 0.76-0.81).
+
 ## The Engram tables, in either form
 
 The Engram rows come as the pack's own iq4_nl GGUF (`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`, 110.6 GB, one tensor a
