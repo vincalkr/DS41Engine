@@ -1,0 +1,13 @@
+base-r1                      huge17k        diff=1    decode: 128 tokens in 6.65 s = 19.11 tok/s; experts 17192 hit / 8990 cpu / 0 pcie / 176 file (65.7% VRAM hits), cpu 1649 ms, file 250 ms; spec reads 0 issued / 0 used; pr
+base-r1                      sposi          diff=5    decode: 300 tokens in 12.64 s = 23.65 tok/s; experts 55366 hit / 10590 cpu / 0 pcie / 189 file (83.9% VRAM hits), cpu 1934 ms, file 252 ms; spec reads 0 issued / 0 used; 
+spin-r1                      huge17k        diff=1    decode: 128 tokens in 6.70 s = 18.96 tok/s; experts 17220 hit / 8941 cpu / 0 pcie / 177 file (65.8% VRAM hits), cpu 1637 ms, file 237 ms; spec reads 0 issued / 0 used; pr
+spin-r1                      sposi          diff=5    decode: 300 tokens in 15.50 s = 19.30 tok/s; experts 55366 hit / 10590 cpu / 0 pcie / 189 file (83.9% VRAM hits), cpu 2058 ms, file 253 ms; spec reads 0 issued / 0 used; 
+base-r2                      huge17k        diff=1    decode: 128 tokens in 6.80 s = 18.69 tok/s; experts 17258 hit / 8954 cpu / 0 pcie / 177 file (65.8% VRAM hits), cpu 1779 ms, file 262 ms; spec reads 0 issued / 0 used; pr
+base-r2                      sposi          diff=5    decode: 300 tokens in 12.87 s = 23.24 tok/s; experts 55366 hit / 10590 cpu / 0 pcie / 189 file (83.9% VRAM hits), cpu 2065 ms, file 241 ms; spec reads 0 issued / 0 used; 
+spin-r2                      huge17k        diff=1    decode: 128 tokens in 6.63 s = 19.15 tok/s; experts 17184 hit / 8991 cpu / 0 pcie / 176 file (65.7% VRAM hits), cpu 1638 ms, file 235 ms; spec reads 0 issued / 0 used; pr
+spin-r2                      sposi          diff=2    decode: 300 tokens in 12.72 s = 23.51 tok/s; experts 55375 hit / 10583 cpu / 0 pcie / 193 file (84.0% VRAM hits), cpu 1938 ms, file 246 ms; spec reads 0 issued / 0 used; 
+base-r3                      huge17k        diff=1    decode: 128 tokens in 6.61 s = 19.21 tok/s; experts 17274 hit / 8922 cpu / 0 pcie / 170 file (65.9% VRAM hits), cpu 1619 ms, file 244 ms; spec reads 0 issued / 0 used; pr
+base-r3                      sposi          diff=5    decode: 300 tokens in 15.65 s = 19.10 tok/s; experts 55366 hit / 10590 cpu / 0 pcie / 189 file (83.9% VRAM hits), cpu 2026 ms, file 541 ms; spec reads 0 issued / 0 used; 
+spin-r3                      huge17k        diff=1    decode: 128 tokens in 6.54 s = 19.43 tok/s; experts 17130 hit / 8999 cpu / 0 pcie / 173 file (65.6% VRAM hits), cpu 1620 ms, file 235 ms; spec reads 0 issued / 0 used; pr
+spin-r3                      sposi          diff=2    decode: 300 tokens in 12.61 s = 23.72 tok/s; experts 55375 hit / 10583 cpu / 0 pcie / 193 file (84.0% VRAM hits), cpu 1894 ms, file 245 ms; spec reads 0 issued / 0 used; 
+ABSPINDONE

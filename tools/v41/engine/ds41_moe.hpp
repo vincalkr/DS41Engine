@@ -110,6 +110,10 @@ struct Ds41MoeGeom {
 /// layers present and alike -> the uniform geometry (per-layer vectors empty), exactly as before; otherwise the
 /// per-layer vectors.  Only the header region of the file is read; no tensor data is touched.
 bool ds41_moe_geom_from_gguf(const std::string& gguf, Ds41MoeGeom& g, std::string& err);
+/// STRATA_HIP_SPIN=1 (opt-in): every visible card's host synchronizations spin instead of yielding
+/// (cudaDeviceScheduleSpin), so a decode token's ~80 per-layer readbacks return as soon as the card is done.  Call
+/// before anything opens a device context; a no-op without the variable.
+void ds41_hip_spin();
 
 /// The native blob layout for `g` (the three role slices back to back) and its byte size.  False with `err` when
 /// ggml-cpu has no dot product for the pair at this geometry, i.e. when the CPU tier could not run at all.  For a

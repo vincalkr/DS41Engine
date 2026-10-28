@@ -1,0 +1,6 @@
+gu 29 d 29, 12 threads, 2 experts a layer, blob 7.74 MB: cold 188.7 us/expert (41.0 GB/s), hot 133.6 us/expert (57.9 GB/s), hot/cold 1.41x
+gu 29 d 29, 6 threads, 2 experts a layer, blob 7.74 MB: cold 235.1 us/expert (32.9 GB/s), hot 239.6 us/expert (32.3 GB/s), hot/cold 0.98x
+gu 16 d 29, 12 threads, 2 experts a layer, blob 8.66 MB: cold 209.9 us/expert (41.3 GB/s), hot 134.2 us/expert (64.6 GB/s), hot/cold 1.56x
+gu 16 d 29, 6 threads, 2 experts a layer, blob 8.66 MB: cold 262.4 us/expert (33.0 GB/s), hot 248.9 us/expert (34.8 GB/s), hot/cold 1.05x
+gu 17 d 29, 12 threads, 2 experts a layer, blob 9.40 MB: cold 215.9 us/expert (43.5 GB/s), hot 147.9 us/expert (63.5 GB/s), hot/cold 1.46x
+gu 17 d 29, 6 threads, 2 experts a layer, blob 9.40 MB: cold 270.6 us/expert (34.7 GB/s), hot 249.4 us/expert (37.7 GB/s), hot/cold 1.09x

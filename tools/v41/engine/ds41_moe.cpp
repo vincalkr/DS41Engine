@@ -6619,3 +6619,23 @@ std::vector<std::pair<int32_t, int32_t>> ds41_read_ranked(const std::string& pat
 }
 
 }  // namespace strata::v41
+
+void strata::v41::ds41_hip_spin() {
+#if defined(DS4_MOE_CUDA)
+    if (!std::getenv("STRATA_HIP_SPIN") || std::getenv("STRATA_HIP_SPIN")[0] == '0') return;
+    int n = 0;
+    if (cudaGetDeviceCount(&n) != cudaSuccess) return;
+#if defined(STRATA_ENABLE_HIP) || defined(__HIP_PLATFORM_AMD__)
+    for (int d = 0; d < n; ++d)
+        if (hipSetDevice(d) != hipSuccess || hipSetDeviceFlags(hipDeviceScheduleSpin) != hipSuccess)
+            std::fprintf(stderr, "STRATA_HIP_SPIN: card %d keeps its scheduling (a context was already open)\n", d);
+    (void) hipSetDevice(0);
+#else
+    for (int d = 0; d < n; ++d)
+        if (cudaSetDevice(d) != cudaSuccess || cudaSetDeviceFlags(cudaDeviceScheduleSpin) != cudaSuccess)
+            std::fprintf(stderr, "STRATA_HIP_SPIN: card %d keeps its scheduling (a context was already open)\n", d);
+    (void) cudaSetDevice(0);
+#endif
+    std::fprintf(stderr, "STRATA_HIP_SPIN: %d card(s) synchronize by spinning\n", n);
+#endif
+}

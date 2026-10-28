@@ -571,6 +571,7 @@ struct VisionInput {
 };
 
 int main(int argc, char ** argv) {
+    ds41_hip_spin();
     if (!std::getenv("DS41_GGML_DEBUG"))
         ggml_log_set([](ggml_log_level lv, const char * text, void *) { if (lv != GGML_LOG_LEVEL_DEBUG) std::fputs(text, stderr); }, nullptr);
     Args a;
@@ -857,6 +858,11 @@ int main(int argc, char ** argv) {
     constexpr int kFP = 4;
     std::vector<int> fp_ids(file_pred ? (size_t) kFP * (size_t) n_layer * 16 : 0, -1);
     long long fp_miss[kFP + 1] = {0}, fp_hit[kFP + 1][3] = {{0}}, fp_cand[kFP + 1][3] = {{0}};
+    // STRATA_FILE_PRED also scores the experts the CPU computes (in the arena, not in card 0's VRAM) against the
+    // prediction made from the state entering the layer (k=0, what finish_predict gives) and one layer earlier (k=1):
+    // the hit rate an L3 prefetch of predicted CPU experts would get.  [k][top 4 / 6 / 8 / 12 / 16]
+    std::vector<int> fp0_ids(file_pred ? 16 : 0, -1);
+    long long fc_n[2] = {0, 0}, fc_hit[2][5] = {{0}};
     // decode: the tier sums the routed experts on the card straight into the dense half's routed tensor (same bits as
     // the host sum; no parts readback / routed upload per layer).  STRATA_DEC_HOSTSUM=1 = the host round trip
     // the routed tensor's device address: re-read after every dense.set_columns (elastic columns reallocate it)
@@ -876,6 +882,7 @@ int main(int argc, char ** argv) {
         bool have_pred = false;
         for (int l = 0; l < n_layer; ++l) {
             if (file_pred) {
+                if (!dense.predict(l, fp0_ids.data(), 16)) std::fill(fp0_ids.begin(), fp0_ids.end(), -1);
                 for (int k = 1; k <= kFP; ++k) {
                     int * const pk = fp_ids.data() + ((size_t) (k - 1) * n_layer + (size_t) (l + k < n_layer ? l + k : 0)) * 16;
                     if (l + k < n_layer && !dense.predict(l + k, pk, 16)) std::fill(pk, pk + 16, -1);
@@ -905,6 +912,19 @@ int main(int argc, char ** argv) {
             g_routes.add(l, ids1.data(), 1);
             if (dprof) { const double t = now_ms(); dp[2] += t - ta; ta = t; }
             if (file_pred) {
+                for (int j = 0; j < top_k; ++j) {
+                    const int e = ids1[(size_t) j];
+                    if (e < 0 || tier.resident(l, e) || !tier.in_arena(l, e)) continue;
+                    static const int cut[5] = { 4, 6, 8, 12, 16 };
+                    for (int k = 0; k < 2; ++k) {
+                        if (k == 1 && l == 0) continue;
+                        const int * pk = k == 0 ? fp0_ids.data() : fp_ids.data() + (size_t) l * 16;
+                        ++fc_n[k];
+                        int at = 16;
+                        for (int i = 0; i < 16; ++i) if (pk[i] == e) { at = i; break; }
+                        for (int c = 0; c < 5; ++c) fc_hit[k][c] += at < cut[c];
+                    }
+                }
                 for (int j = 0; j < top_k; ++j) {
                     const int e = ids1[(size_t) j];
                     if (e < 0 || tier.resident(l, e) || tier.in_arena(l, e)) continue;
@@ -2557,6 +2577,11 @@ int main(int argc, char ** argv) {
     }
     if (dump_main) std::fclose(dump_main);
     if (file_pred) {
+        for (int k = 0; k < 2; ++k)
+            std::fprintf(stderr, "cpu-pred k=%d: %lld CPU-computed routes, in top4 %.1f%% top6 %.1f%% top8 %.1f%% top12 %.1f%% top16 %.1f%%\n",
+                         k, fc_n[k], 100.0 * fc_hit[k][0] / std::max(1LL, fc_n[k]), 100.0 * fc_hit[k][1] / std::max(1LL, fc_n[k]),
+                         100.0 * fc_hit[k][2] / std::max(1LL, fc_n[k]), 100.0 * fc_hit[k][3] / std::max(1LL, fc_n[k]),
+                         100.0 * fc_hit[k][4] / std::max(1LL, fc_n[k]));
         std::fprintf(stderr, "file-pred: %lld file-tier routes", fp_miss[0]);
         for (int k = 1; k <= kFP; ++k)
             std::fprintf(stderr, " | k=%d: %lld scored, in top4 %.1f%% top8 %.1f%% top16 %.1f%%", k, fp_miss[k],

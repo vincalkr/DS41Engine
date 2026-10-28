@@ -36,6 +36,9 @@ Where ds41e stands and what is open. How it runs and every measured number: [REA
 - **DSpark on the GSQ-RCO pack** (`STRATA_SERVE_DSPARK`, opt-in; the drafter now reads the pack's quantized
   `token_embd`): 10.8-15.2 (depth 4) and 12.5-16.4 (depth 2) against 17.6-18.6 tok/s; off. Short chats run
   15.0-19.8 tok/s, about as fast as long ones.
+- **CPU/card idle time:** experts in L3 compute 1.4-1.6x faster than from DRAM, and the next-layer prediction
+  catches 59-72% (top 8) of the CPU's experts: an L3 prefetch would gain ~3-6%, not built. Spinning host syncs
+  (`STRATA_HIP_SPIN`, opt-in): no change; off.
 - **The rank:** `local/update-rank.sh` measures a rank built from the chat's routing on code and documentation prompts
   and applies it only if faster.
 - **Images:** on when the encoder is in `models/vision-1017`: the VL router bias the pack lacks comes from

@@ -241,6 +241,50 @@ configuration, 256 tokens greedy, 3 runs): a 48-token question 17.6-19.8 tok/s, 
 16.1-19.2, a fresh 1,464-token prompt 15.0-19.0. The decode speed barely depends on the context length here; it is set
 by the expert reads (hit rate 0.76-0.81).
 
+## Idle time between the card and the CPU: measured (2026-10-28)
+
+A decode token alternates: card 0 runs a layer's attention while the CPU and the RAM wait, then card 0 waits for the
+CPU's experts. Two ways to use that time were measured before building anything.
+
+**Experts in L3.** `local/bench-v41/bench-cpu-expert-l3.sh` runs the engine's native CPU kernels the way the pool does
+(fixed row slices per thread, a barrier between gate/up and down), two experts a layer, on the pack's bytes; cold =
+new experts every layer (from DRAM), hot = the same two (from L3), `local/sweep-cpu-l3/summary.txt`:
+
+| gate/up / down | 12 threads, cold | 12 threads, hot | hot / cold | 6 threads, hot / cold |
+| --- | ---: | ---: | ---: | ---: |
+| IQ1_M / IQ1_M (7.74 MB) | 189 us (41.0 GB/s) | 134 us (57.9 GB/s) | 1.41x | 0.98x |
+| IQ2_XXS / IQ1_M (8.66 MB) | 210 us (41.3 GB/s) | 134 us (64.6 GB/s) | 1.56x | 1.05x |
+| IQ2_XS / IQ1_M (9.40 MB) | 216 us (43.5 GB/s) | 148 us (63.5 GB/s) | 1.46x | 1.09x |
+
+With 12 threads the kernels' own ceiling is ~58-65 GB/s, so an expert already in L3 computes 1.4-1.6x faster; with
+6 the arithmetic is the limit. (The IQ2_XXS / IQ2_XXS case hung in the bench's barrier and was not measured.)
+
+**How well the next layer's experts are predicted.** `STRATA_FILE_PRED=1` now also scores the experts the CPU
+computes (in the arena, not in card 0's VRAM) against `Ds41Dense::predict` from the state entering the layer (k=0,
+what `finish_predict` gives for free) and one layer earlier (k=1); one-shot, forced, `local/sweep-cpu-pred`:
+
+| | CPU-computed routes | top 4 | top 6 | top 8 | top 12 | top 16 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Promessi Sposi, k=0 | 13,179 | 45.9% | 63.6% | 71.6% | 78.6% | 82.1% |
+| Promessi Sposi, k=1 | 12,363 | 42.2% | 56.3% | 63.7% | 71.3% | 75.3% |
+| 17K context, k=0 | 11,007 | 42.2% | 52.5% | 59.2% | 68.4% | 74.1% |
+| 17K context, k=1 | 10,511 | 34.9% | 42.8% | 47.9% | 56.2% | 62.0% |
+
+Together: an L3 prefetch of the predicted CPU experts during the attention would serve ~60-70% of them from L3, a
+third faster each - about 2-3.5 ms of the CPU's 7-17 ms a token, +3-6% decode. Not built: it is at the size of the
+run-to-run spread.
+
+**Spinning host synchronizations** (`STRATA_HIP_SPIN=1`, opt-in: `hipDeviceScheduleSpin` on both cards;
+`local/bench-v41/ab-hip-spin.sh`, power-tune on, 3 rounds alternated, `local/sweep-hip-spin`, tok/s):
+
+| | 17K context, 128 tokens | Promessi Sposi, 300 tokens |
+| --- | --- | --- |
+| the configuration | 19.11 / 18.69 / 19.21 | 23.65 / 23.24 / 19.10 |
+| `STRATA_HIP_SPIN=1` | 18.96 / 19.15 / 19.43 | 19.30 / 23.51 / 23.72 |
+
+The same (one run in each arm drops to ~19 on Promessi Sposi, either arm): the ~6 ms of per-layer round trips are not
+the thread's wake-up. Off.
+
 ## The Engram tables, in either form
 
 The Engram rows come as the pack's own iq4_nl GGUF (`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf`, 110.6 GB, one tensor a

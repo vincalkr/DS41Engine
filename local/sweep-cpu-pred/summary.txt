@@ -1,0 +1,2 @@
+pred                         sposi          diff=5    decode: 300 tokens in 22.25 s = 13.44 tok/s; experts 55366 hit / 10590 cpu / 0 pcie / 189 file (83.9% VRAM hits), cpu 1940 ms, file 774 ms; spec reads 0 issued / 0 used; 
+pred17k                      huge17k        diff=1    decode: 128 tokens in 9.59 s = 13.24 tok/s; experts 17236 hit / 8870 cpu / 0 pcie / 188 file (66.0% VRAM hits), cpu 1635 ms, file 651 ms; spec reads 0 issued / 0 used; pr
