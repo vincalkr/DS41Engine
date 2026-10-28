@@ -35,7 +35,7 @@ number and how it was measured: [docs/ds4/V41_EXACT_FAST.md](docs/ds4/V41_EXACT_
 | GPU | RX 7900 XT / XTX (`gfx1100`); a second 24 GB card is used as an expert tier when present |
 | RAM | 128 GB class (the engine holds ~94 GB with the 80 GiB arena) |
 | CPU | x86-64 with AVX2 (AVX-512 used when present) |
-| disk | ~350 GB on an NVMe for `models/` (138 GB pack in four shards + 111 GB Engram GGUF + 0.9 GiB vision encoder); the checkpoint's own FP8 Engram rows instead of that GGUF are 203 GB |
+| disk | ~350 GB on an NVMe for `models/` (138 GB pack in four shards + 111 GB Engram GGUF + 0.9 GiB image encoder, used only by requests with images); the checkpoint's own FP8 Engram rows instead of that GGUF are 203 GB |
 | tools | `cmake` >= 3.24, gcc, Python 3, curl, `aria2c` (faster downloads) |
 
 ## Quick start
@@ -71,11 +71,19 @@ The level goes into the model's prompt (`Reasoning Effort: N`); the server also 
 (`reasoning_budget_by_effort` in the configuration: low 1024 tokens, high 4096, max none - at the cap it closes the
 thinking and the model answers). A request's own `reasoning_budget_tokens` wins.
 
-## Images (not with this pack)
+## Images
 
-Images need the model's image routing bias, `blk.N.exp_probs_b_vl.bias`, and the GSQ-RCO pack carries none, so there
-is no vision configuration and `--vision` says so when it is asked for. The engine's image encoder
-(`tools/v41/engine/ds41_vision.cpp`) stays for a pack that has the bias.
+Images need the model's image routing bias, `blk.N.exp_probs_b_vl.bias`, which the GSQ-RCO pack does not carry. It is
+in the repository as `local/rco-iq2xxs-meta/vl-bias.gguf` (61 KB): the checkpoint's `ffn.gate.bias_vl`, as
+ISTA-DASLab publish it (`exp_probs_b_vl.f32`), written by `tools/v41/ds41_vl_bias.py`; the configurations add it with
+`DS41_VL_BIAS`. The pack's text bias is bit-identical to the checkpoint's in all 40 layers, so the pack's routing was
+not recalibrated and the image bias fits it. With the image encoder in `models/vision-1017` (`local/fetch-rco-1017.sh`
+builds it from the checkpoint), `./run.sh` picks `local/ds41-local-vision.json` (`-1gpu-vision` for one card).
+
+The encoder (0.9 GiB) is loaded on card 0 only for a request with images, in the VRAM the expert cache gives up for
+the prompt, and freed before the cache re-opens: text requests never load it, and the expert cache opens with the same
+17.49 GiB as without images. A 22x70-patch image is loaded in 0.6 s and encoded in 0.2 s; encoded images are kept
+(8 by default, `STRATA_VISION_CACHE`), so a conversation re-sends them free.
 
 ## Conversations
 

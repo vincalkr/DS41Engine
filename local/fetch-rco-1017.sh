@@ -5,7 +5,15 @@
 #   DEST/../rco-iq2xxs/DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf                              110.6 GB, the pack's own
 #                                                                                          n-gram tables (IQ4_NL)
 #   local/rco-iq2xxs-meta/meta.gguf      the 511 KB geometry overlay (tools/v41/ds41_pack_meta.py), written last
+#   DEST/../vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf   0.9 GiB, the image encoder, built from the 1017
+#                                        checkpoint's vision tower (tools/v41/vision/make_vision_gguf.py; VISION=0 skips)
 #
+# The image routing bias the pack lacks is in the repo (local/rco-iq2xxs-meta/vl-bias.gguf, 61 KB, from ISTA-DASLab's
+# exp_probs_b_vl.f32 = the checkpoint's ffn.gate.bias_vl, by tools/v41/ds41_vl_bias.py), so with the encoder
+# ./run.sh starts with images on.
+#
+# The files come from revision $REV (2026-10-25): on 2026-10-27 the repository switched to llama.cpp's upstream
+# six-shard layout, which this engine does not read.
 # The engine reads the GGUF's weights, the Engram tables in either form (this IQ4_NL file, or the checkpoint's FP8 rows
 # from local/fetch-model.sh) and the overlay through DS41_META, because this pack carries llama.cpp/HF metadata
 # instead of the deepseek41.* keys; the overlay is built from local/rco-iq2xxs-meta/geometry-keys.json (in the repo).
@@ -17,7 +25,9 @@ export LC_ALL=C LANG=C
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 DEST=${1:-$HERE/models/rco-iq2xxs}
 REPO=ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF
-BASE=https://huggingface.co/$REPO/resolve/main
+REV=${REV:-653a9874aa38c356233c5f3cc8c96b19a43b57eb}
+REV_FIRST=ad1e899190574bee6c66d0112afc00a945737869
+BASE=https://huggingface.co/$REPO/resolve/$REV
 FILES=${FILES:-"DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf
 DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00002-of-00004.gguf
 DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00003-of-00004.gguf
@@ -30,7 +40,7 @@ AUTH=(); [ -n "$TOKEN" ] && AUTH=(-H "Authorization: Bearer $TOKEN")
 mkdir -p "$DEST"
 
 for f in $FILES; do
-    meta=$(curl -sf "${AUTH[@]}" "https://huggingface.co/api/models/$REPO/tree/main?recursive=false" \
+    meta=$(curl -sf "${AUTH[@]}" "https://huggingface.co/api/models/$REPO/tree/$REV?recursive=false" \
            | python3 -c "
 import json,sys
 for x in json.load(sys.stdin):
@@ -41,6 +51,16 @@ for x in json.load(sys.stdin):
     want=${meta%% *}; sha=${meta#* }
     cur=$(stat -c%s "$DEST/$f" 2>/dev/null || echo 0)
     if [ "$cur" = "$want" ]; then echo "have   $f ($want B)"; continue; fi
+    # a download from the first upload (2026-10-23) is complete too: the later revisions changed only the chat
+    # template shard 1 embeds, which the server does not read (it renders with tools/v41/dsv41_encoding.py)
+    if [ "$cur" != 0 ]; then
+        old=$(curl -sf "${AUTH[@]}" "https://huggingface.co/api/models/$REPO/tree/$REV_FIRST?recursive=false" \
+              | python3 -c "
+import json,sys
+for x in json.load(sys.stdin):
+    if x['path']=='$f': print(x['size']); break")
+        if [ "$cur" = "$old" ]; then echo "have   $f ($cur B, the 2026-10-23 upload)"; continue; fi
+    fi
     echo "get    $f ($cur of $want B, $CONN connections)"
     [ "$DRY_RUN" = 1 ] && continue
     aria2c -c --max-concurrent-downloads=1 -x"$CONN" -s"$CONN" -k4M --file-allocation=none \
@@ -85,6 +105,14 @@ if [ "$DRY_RUN" != 1 ]; then
     python3 "$HERE/tools/v41/engine/v41_pack_map.py" \
         "$DEST"/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-00001-of-00004.gguf > "$HERE/local/rco-iq2xxs-map.json"
     echo "fetch-rco: pack + tokenizer in $DEST, overlay in $HERE/$META/meta.gguf (the configurations set DS41_META to it)"
+    if [ "${VISION:-1}" != 0 ]; then
+        VIS="$DEST/../vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf"
+        if [ -s "$VIS" ]; then echo "have   the vision GGUF"
+        else
+            mkdir -p "$(dirname "$VIS")"
+            python3 "$HERE/tools/v41/vision/make_vision_gguf.py" --out "$VIS"
+        fi
+    fi
     echo "fetch-rco: --engram - the configurations name the checkpoint's FP8 rows in models/engram-1017 (203 GB, from"
     echo "           local/fetch-model.sh + local/ds4-engram-extract.py). Without them ./run.sh still starts: the engine"
     echo "           falls back to the pack's own $DEST/DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf and prints that it does."

@@ -1133,7 +1133,10 @@ bool Ds41Dense::init(const std::string & path, const Ds41DenseConfig & cfg, std:
     Impl & im = *p_;
     im.cfg = cfg;
     try {
+        // DS41_VL_BIAS=<GGUF> (opt-in): a file holding blk.N.exp_probs_b_vl.bias for a pack that lacks them
+        // (tools/v41/ds41_vl_bias.py), opened after the pack's shards
         im.model = std::make_unique<GgufModel>(GgufModel::open(path));
+        if (const char * vb = std::getenv("DS41_VL_BIAS"); vb && *vb) im.model->add_side(vb);
     } catch (const std::exception & e) {
         err = e.what();
         return false;

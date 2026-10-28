@@ -35,7 +35,10 @@ Where ds41e stands and what is open. How it runs and every measured number: [REA
   12 turns; off.
 - **The rank:** `local/update-rank.sh` measures a rank built from the chat's routing on code and documentation prompts
   and applies it only if faster.
-- **Images:** the pack has no VL router bias; a pack that has one would bring them back.
+- **Images:** on when the encoder is in `models/vision-1017`: the VL router bias the pack lacks comes from
+  `local/rco-iq2xxs-meta/vl-bias.gguf` (`DS41_VL_BIAS`); the encoder is loaded on card 0 per image request and freed.
+- **Prompt format:** `tools/v41/dsv41_encoding.py` is DeepSeek's 1017 encoder (2026-10-28; before it was the launch
+  one): a user turn of tool results only no longer opens a new turn, tool content may hold blocks (images).
 
 ## Constraints
 

@@ -11,8 +11,9 @@ through `tools/v41/serve/serve_ds41.py` by `./run.sh`), and the configurations, 
 - `./run.sh` starts the server on `127.0.0.1:8150` on cards 0 and 1 with `local/ds41-local.json`; `--gpu 0` /
   `--gpu 1` one card (`local/ds41-local-1gpu.json`); `--config FILE` any other. Never expose it beyond
   `127.0.0.1` without `--api-key`. `./stop.sh` stops this folder's server (Ctrl+C's way, `--force` after 60 s).
-  Images are off: the pack carries no `exp_probs_b_vl.bias` (the image routing bias); a pack that has one would get a
-  vision configuration.
+  With the image encoder in `models/vision-1017`, `./run.sh` picks `local/ds41-local-vision.json` (`-1gpu-vision`):
+  the pack lacks the image routing bias `exp_probs_b_vl.bias`, which `DS41_VL_BIAS` adds from
+  `local/rco-iq2xxs-meta/vl-bias.gguf`; the encoder is loaded on card 0 only for a request with images.
 - The model files live in `models/` inside this folder (`local/fetch-rco-1017.sh` puts them there); keep it that way.
   The model is DeepSeek-V4.1-Flash-1017 as the ISTA-DASLab GSQ-RCO IQ2_XXS pack (`models/rco-iq2xxs`, four shards,
   138.2 GB) read through the geometry overlay `local/rco-iq2xxs-meta/meta.gguf` (`DS41_META`, which

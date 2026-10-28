@@ -27,7 +27,8 @@ byte-identical to the one in use. In the engine: expert blobs are read from whic
 tensor (one buffered and one `O_DIRECT` descriptor per shard); the Engram tensors `engram_q` / `engram_k` /
 `engram_wkv` are stored BF16 and Q5_K and re-typed to F32 at load (on the CPU path too: ggml-cpu has no f32 x bf16
 binary op); `attn_output_a` is stored flattened; the embedding rows are Q5_K and go through the type traits; the VL
-router bias `exp_probs_b_vl.bias` is only required of a pack that has it, and this one has none, so images are off.
+router bias `exp_probs_b_vl.bias` is not in this pack: `DS41_VL_BIAS` adds it from `local/rco-iq2xxs-meta/vl-bias.gguf`
+(the checkpoint's `ffn.gate.bias_vl`; the pack's text bias is bit-identical to the checkpoint's, 2026-10-28).
 `test_ds41_geometry <shard 1>` passes with the overlay.
 
 ## Where an expert is computed

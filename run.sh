@@ -1,11 +1,12 @@
 #!/bin/sh
 # DeepSeek-V4.1-Flash-1017 on RX 7900 XTX (gfx1100, ROCm/HIP).
-#   ./run.sh                 two cards (0 and 1, card 1 as the expert tier), images on
+#   ./run.sh                 two cards (0 and 1, card 1 as the expert tier), images on when the encoder is there
 #   ./run.sh --gpu 1         one card (0 or 1)
 #   ./run.sh --gpu 0,1       two cards, as the default
 # --gpu picks the configuration: local/ds41-local-vision.json for two cards, local/ds41-local-1gpu-vision.json for
-# one; without the vision encoder in models/vision-1017 the text-only ones (local/ds41-local.json,
-# local/ds41-local-1gpu.json).  --config FILE uses that file instead.  Other arguments go to the server, for
+# one; without the vision encoder in models/vision-1017 (or the image routing bias local/rco-iq2xxs-meta/vl-bias.gguf)
+# the text-only ones (local/ds41-local.json, local/ds41-local-1gpu.json).  The encoder is loaded on card 0 only for a
+# request with images and freed after it; text requests never load it.  --config FILE uses that file instead.  Other arguments go to the server, for
 # example:  ./run.sh --port 8151.  The settings and the measured numbers: docs/ds4/.
 # The repository root is wherever this script lives, so the launcher works from a clone anywhere.
 R=$(cd "$(dirname "$0")" && pwd) || exit 1
@@ -58,9 +59,10 @@ if [ -z "$CFG" ]; then
         2) base=ds41-local ;;
         *) echo "run.sh: one or two cards (--gpu 0, --gpu 1, --gpu 0,1), not '$GPU'" >&2; exit 1 ;;
     esac
-    # the vision configurations need both the tower and the model's image routing bias; the published GSQ-RCO pack
-    # carries no exp_probs_b_vl.bias, so its configurations are the text-only ones.
-    if [ -s "$R/models/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf" ] && [ -s "$R/local/$base-vision.json" ]; then
+    # the vision configurations need the tower and the image routing bias (the pack has none: DS41_VL_BIAS adds
+    # local/rco-iq2xxs-meta/vl-bias.gguf, the checkpoint's bias_vl)
+    if [ -s "$R/models/vision-1017/DeepSeek-V4.1-Flash-1017-Vision.gguf" ] && [ -s "$R/local/rco-iq2xxs-meta/vl-bias.gguf" ] &&
+       [ -s "$R/local/$base-vision.json" ]; then
         CFG="$R/local/$base-vision.json"
     else
         CFG="$R/local/$base.json"

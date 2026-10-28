@@ -543,6 +543,15 @@ public:
     }
     /// Opens every shard of the model that `any_shard` belongs to (throws when one is missing).
     static GgufModel open(const std::string& any_shard) { return GgufModel(gguf_split_paths(any_shard)); }
+    /// A side file whose tensors join the model's (not a split shard: no split keys are checked); a name the model
+    /// already has is refused as for a shard.
+    void add_side(const std::string& path) {
+        shards_.push_back(std::make_unique<GgufFile>(path));
+        const size_t i = shards_.size() - 1;
+        for (const auto& t : shards_[i]->tensors())
+            if (!index_.emplace(t.name, std::make_pair(i, &t)).second)
+                throw std::runtime_error("GGUF: tensor " + t.name + " of " + path + " is already in the model");
+    }
 
     size_t size() const { return shards_.size(); }
     const GgufFile& shard(size_t i) const { return *shards_[i]; }
